@@ -1,0 +1,23 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Config & secrets
+.env
+.env.*
+config.toml
+!config.example.toml
+
+# IDE
+/.idea/
+/.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code (personal, not committed)
+.claude/settings.local.json
+.claude/.session/

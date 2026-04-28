@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+# Add member crates as you create them, e.g.:
+# members = ["cgm-bridge-core", "cgm-bridge"]
+members = []
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = []
+
+# Canonical version reference. Member crates use `serde = { workspace = true }`.
+# Renovate keeps these on the latest minor — no exact pins.
+[workspace.dependencies]
+# Core
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# Config & secrets
+config = { version = "0.15", default-features = false, features = ["toml"] }
+secrecy = "0.10"
+validator = { version = "0.20", features = ["derive"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# State
+tempfile = "3"
+
+# Test helpers (dev-dependencies in member crates)
+wiremock = "0.6"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
