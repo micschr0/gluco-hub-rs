@@ -131,6 +131,67 @@ impl NightscoutClient {
         format!("{}/api/v3/entries", self.base_url)
     }
 
+    /// `GET /api/v3/entries?count=1` — return the millisecond `date` of
+    /// the newest entry already known to Nightscout, or `None` when the
+    /// server has no entries yet.
+    ///
+    /// NS v3 wraps the result list in either `{"result": [...]}` or a
+    /// bare top-level array depending on deployment age; both shapes are
+    /// accepted. A `404 Not Found` (some self-hosted NS instances expose
+    /// no `entries` collection until the first write) is treated as
+    /// "empty registry" and returns `Ok(None)` rather than an error.
+    pub async fn fetch_last_entry_date(&self) -> Result<Option<i64>, NsError> {
+        let url = format!("{}?count=1", self.entries_url());
+        let resp = self
+            .http
+            .get(url)
+            .header("api-secret", api_secret_header(&self.secret))
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(NsError::Unauthorized);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            let code = status.as_u16();
+            if code == 429 || (500..=599).contains(&code) {
+                return Err(NsError::Retryable { status: code });
+            }
+            return Err(NsError::Status { status: code });
+        }
+        let raw = resp.bytes().await?;
+        // Empty body — same meaning as an empty registry.
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        // Try the wrapped shape first (newer NS); fall back to a bare
+        // array (older NS). When neither parses, treat as "no hint" and
+        // let the sink post everything — better than erroring and
+        // skipping the upload entirely.
+        #[derive(serde::Deserialize)]
+        struct Wrapped {
+            result: Vec<RawEntry>,
+        }
+        #[derive(serde::Deserialize)]
+        struct RawEntry {
+            date: Option<i64>,
+        }
+        let entries: Vec<RawEntry> = if let Ok(w) = serde_json::from_slice::<Wrapped>(&raw) {
+            w.result
+        } else if let Ok(arr) = serde_json::from_slice::<Vec<RawEntry>>(&raw) {
+            arr
+        } else {
+            tracing::warn!("ns lastEntry: decode failed; falling back to post-all");
+            return Ok(None);
+        };
+        Ok(entries.into_iter().filter_map(|e| e.date).max())
+    }
+
     /// `POST /api/v3/entries` with a JSON array of entries derived from
     /// `readings`. An empty `readings` slice is a no-op.
     ///

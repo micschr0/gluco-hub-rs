@@ -106,6 +106,17 @@ async fn mount_llu(server: &MockServer) {
 
 async fn mount_nightscout(server: &MockServer) {
     // sha1("e2e-secret") = 631a0d6c3813ee3a11e19b0a37a10ad75bbe8a0c
+    // The sink calls `GET /api/v3/entries?count=1` first to read the
+    // high-water mark; a 404 means "no prior entries, post everything".
+    Mock::given(method("GET"))
+        .and(path("/api/v3/entries"))
+        .and(header(
+            "api-secret",
+            "631a0d6c3813ee3a11e19b0a37a10ad75bbe8a0c",
+        ))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(server)
+        .await;
     Mock::given(method("POST"))
         .and(path("/api/v3/entries"))
         .and(header(
@@ -176,20 +187,26 @@ async fn full_pipeline_pulls_from_llu_and_pushes_to_nightscout() {
         .iter()
         .filter(|r| r.url.path() == "/llu/connections/patient-42/graph")
         .count();
-    let entries = requests
+    // Dedup adds a GET hit before the POST; assert each verb separately.
+    let entries_get = requests
         .iter()
-        .filter(|r| r.url.path() == "/api/v3/entries")
+        .filter(|r| r.method.as_str() == "GET" && r.url.path() == "/api/v3/entries")
+        .count();
+    let entries_post = requests
+        .iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v3/entries")
         .count();
     assert_eq!(logins, 1, "exactly one /auth/login");
     assert_eq!(connections, 1, "exactly one /connections");
     assert_eq!(graphs, 1, "exactly one /graph");
-    assert_eq!(entries, 1, "exactly one /api/v3/entries");
+    assert_eq!(entries_get, 1, "exactly one GET /api/v3/entries (dedup)");
+    assert_eq!(entries_post, 1, "exactly one POST /api/v3/entries");
 
     // --- Inspect the NS request body in detail; this is the key
     // alignment with the reference port.
     let ns_req = requests
         .iter()
-        .find(|r| r.url.path() == "/api/v3/entries")
+        .find(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v3/entries")
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&ns_req.body).expect("ns body json");
     let arr = body.as_array().expect("array");
