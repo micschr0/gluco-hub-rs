@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use ::config::{Config as ConfigBuilder, Environment, File, FileFormat};
 use serde::Deserialize;
 use thiserror::Error;
-use validator::Validate;
+use validator::{Validate, ValidationError};
 
 /// Top-level application configuration.
 ///
@@ -18,6 +18,10 @@ pub struct Config {
 
     #[validate(nested)]
     pub poller: PollerConfig,
+
+    #[serde(default)]
+    #[validate(nested)]
+    pub source: SourceConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Validate)]
@@ -33,6 +37,58 @@ pub struct PollerConfig {
     pub interval_secs: u64,
 }
 
+/// Source-specific configuration. Each variant lives behind a Cargo
+/// feature on the binary; deserialisation always parses every block but
+/// `build_default_source` only honours the ones whose feature is enabled.
+#[derive(Debug, Clone, Default, Deserialize, Validate)]
+pub struct SourceConfig {
+    #[serde(default)]
+    #[validate(nested)]
+    pub llu: Option<LluSourceConfig>,
+}
+
+/// `[source.llu]` block. The password lives in an environment variable
+/// referenced by `password_env`; the TOML never holds the secret itself.
+#[derive(Debug, Clone, Deserialize, Validate)]
+pub struct LluSourceConfig {
+    #[validate(email)]
+    pub email: String,
+
+    /// Name of the environment variable holding the LLU password.
+    #[validate(length(min = 1, max = 256))]
+    pub password_env: String,
+
+    /// LibreLink Up region (`EU`, `US`, `DE`, …). Validated against the
+    /// canonical region table — unknown values fail at config load time.
+    #[validate(custom(function = "validate_region"))]
+    pub region: String,
+
+    /// Optional patient identifier when the LLU account has more than one
+    /// linked patient. When absent, the first connection is selected.
+    #[validate(length(min = 1, max = 128))]
+    pub patient_id: Option<String>,
+}
+
+fn validate_region(value: &str) -> Result<(), ValidationError> {
+    #[cfg(feature = "source-llu")]
+    {
+        crate::sources::llu::Region::parse(value)
+            .map(|_| ())
+            .map_err(|_| ValidationError::new("unknown_llu_region"))
+    }
+    #[cfg(not(feature = "source-llu"))]
+    {
+        // Without the feature the field is descriptive-only; accept any
+        // 2..=4-letter ASCII string so users can prepare a config ahead
+        // of enabling the feature.
+        let len = value.len();
+        if !(2..=4).contains(&len) || !value.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(ValidationError::new("region_format"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("[CFG001] failed to read config: {0}")]
@@ -40,6 +96,9 @@ pub enum ConfigError {
 
     #[error("[CFG002] config validation failed: {0}")]
     Validate(#[from] validator::ValidationErrors),
+
+    #[error("[CFG003] required secret env var not set: {var}")]
+    MissingSecret { var: String },
 }
 
 const DEFAULT_PATH: &str = "config.toml";
@@ -71,6 +130,26 @@ pub fn load(override_path: Option<&Path>) -> Result<Config, ConfigError> {
     Ok(cfg)
 }
 
+/// Verify that every `*_env` reference resolves to a non-empty environment
+/// variable. Called by `check-config` so misconfiguration fails fast — no
+/// network round-trips required to learn that `LLU_PASSWORD` was forgotten.
+///
+/// The env-var *value* is never logged, returned, or stored; only its
+/// presence is checked.
+pub fn verify_secret_env_vars(cfg: &Config) -> Result<(), ConfigError> {
+    if let Some(llu) = cfg.source.llu.as_ref() {
+        let value = std::env::var(&llu.password_env).map_err(|_| ConfigError::MissingSecret {
+            var: llu.password_env.clone(),
+        })?;
+        if value.is_empty() {
+            return Err(ConfigError::MissingSecret {
+                var: llu.password_env.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,11 +159,11 @@ mod tests {
         let cfg = load(Some(Path::new("/nonexistent.toml"))).expect("defaults must load");
         assert_eq!(cfg.http.bind.to_string(), "127.0.0.1:8080");
         assert_eq!(cfg.poller.interval_secs, 60);
+        assert!(cfg.source.llu.is_none());
     }
 
     #[test]
     fn rejects_too_fast_polling() {
-        // Construct via TOML to exercise validator.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -100,5 +179,92 @@ interval_secs = 5
         .unwrap();
         let err = load(Some(&path)).expect_err("must reject");
         assert!(matches!(err, ConfigError::Validate(_)));
+    }
+
+    fn write_with_llu(dir: &std::path::Path, region: &str, patient_id: Option<&str>) -> PathBuf {
+        let path = dir.join("config.toml");
+        let extra = patient_id
+            .map(|id| format!("\npatient_id = \"{id}\""))
+            .unwrap_or_default();
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[http]
+bind = "127.0.0.1:9000"
+
+[poller]
+interval_secs = 60
+
+[source.llu]
+email = "patient@example.com"
+password_env = "TEST_LLU_PASSWORD"
+region = "{region}"{extra}
+"#
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn parses_llu_section_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_with_llu(dir.path(), "EU", Some("patient-1"));
+        let cfg = load(Some(&path)).expect("load");
+        let llu = cfg.source.llu.expect("llu present");
+        assert_eq!(llu.email, "patient@example.com");
+        assert_eq!(llu.region, "EU");
+        assert_eq!(llu.patient_id.as_deref(), Some("patient-1"));
+    }
+
+    #[test]
+    fn rejects_unknown_region() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_with_llu(dir.path(), "MARS", None);
+        let err = load(Some(&path)).expect_err("must reject MARS");
+        assert!(matches!(err, ConfigError::Validate(_)));
+    }
+
+    #[test]
+    fn rejects_invalid_email() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[http]
+bind = "127.0.0.1:9000"
+
+[poller]
+interval_secs = 60
+
+[source.llu]
+email = "not-an-email"
+password_env = "X"
+region = "EU"
+"#,
+        )
+        .unwrap();
+        let err = load(Some(&path)).expect_err("must reject");
+        assert!(matches!(err, ConfigError::Validate(_)));
+    }
+
+    #[test]
+    fn verify_secret_env_vars_detects_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_with_llu(dir.path(), "EU", None);
+        let cfg = load(Some(&path)).expect("load");
+        // Use a guaranteed-unset variable; do not touch process env.
+        let mut cfg = cfg;
+        cfg.source.llu.as_mut().unwrap().password_env =
+            "CGM_BRIDGE_TEST_DEFINITELY_UNSET_VAR".to_string();
+        let err = verify_secret_env_vars(&cfg).expect_err("missing");
+        match err {
+            ConfigError::MissingSecret { var } => {
+                assert_eq!(var, "CGM_BRIDGE_TEST_DEFINITELY_UNSET_VAR")
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }

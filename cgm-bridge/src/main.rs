@@ -64,7 +64,12 @@ async fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::CheckConfig => {
-            info!(http_addr = %cfg.http.bind, "configuration ok");
+            config::verify_secret_env_vars(&cfg).context("verify secret env vars")?;
+            info!(
+                http_addr = %cfg.http.bind,
+                llu_configured = cfg.source.llu.is_some(),
+                "configuration ok"
+            );
             Ok(())
         }
         Command::Run => serve(cfg).await,
@@ -79,14 +84,14 @@ async fn serve(cfg: config::Config) -> Result<()> {
         metrics_handle,
     };
 
-    if let Some(source) = build_default_source()? {
+    if let Some(source) = build_default_source(&cfg)? {
         let interval = Duration::from_secs(cfg.poller.interval_secs);
         let cache_for_poller = cache.clone();
         tokio::spawn(async move {
             poll_loop(source, cache_for_poller, interval).await;
         });
     } else {
-        warn!("no source compiled in; HTTP API will serve 503 until one is enabled");
+        warn!("no source configured; HTTP API will serve 503 until one is enabled");
     }
 
     let router = api::router(state);
@@ -103,20 +108,73 @@ async fn serve(cfg: config::Config) -> Result<()> {
     Ok(())
 }
 
-/// Build the default source for this binary feature set. V1 ships only
-/// LibreLink Up; until that lands, the `mock-source` feature wires in a
-/// canned source so the HTTP API can be exercised end-to-end.
-fn build_default_source() -> Result<Option<Arc<dyn Source>>> {
+/// Build the source to drive the poller. Priority order:
+/// 1. `source-llu` feature + `[source.llu]` block configured → LLU.
+/// 2. `mock-source` feature → MockSource fixture.
+/// 3. Otherwise, no source (HTTP API stays up; data endpoints serve 503).
+fn build_default_source(cfg: &config::Config) -> Result<Option<Arc<dyn Source>>> {
+    // Mark `cfg` used in every feature combination, including the
+    // no-default-features build where neither branch below compiles.
+    let _ = cfg;
+
+    #[cfg_attr(
+        not(any(feature = "source-llu", feature = "mock-source")),
+        allow(unused_mut)
+    )]
+    let mut source: Option<Arc<dyn Source>> = None;
+
+    #[cfg(feature = "source-llu")]
+    if let Some(llu) = cfg.source.llu.as_ref() {
+        source = Some(build_llu_source(llu).context("build LLU source")?);
+    }
+
     #[cfg(feature = "mock-source")]
-    {
+    if source.is_none() {
         let mock =
             cgm_bridge_core::MockSource::default_fixture().context("build MockSource fixture")?;
-        Ok(Some(Arc::new(mock)))
+        source = Some(Arc::new(mock));
     }
-    #[cfg(not(feature = "mock-source"))]
-    {
-        Ok(None)
+
+    Ok(source)
+}
+
+#[cfg(feature = "source-llu")]
+fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
+    use cgm_bridge_core::{PatientId, SourceId};
+    use secrecy::SecretString;
+    use sources::llu::Region;
+    use sources::llu::auth::{LluAuthClient, LluCredentials};
+    use sources::llu::source::{ConnectionSelection, LluSource};
+
+    let region = Region::parse(&llu.region).context("parse LLU region")?;
+    let password = std::env::var(&llu.password_env).map_err(|_| {
+        anyhow::anyhow!(
+            "[CFG003] required secret env var not set: {}",
+            llu.password_env
+        )
+    })?;
+    if password.is_empty() {
+        anyhow::bail!(
+            "[CFG003] required secret env var is empty: {}",
+            llu.password_env
+        );
     }
+
+    let creds = LluCredentials {
+        email: llu.email.clone(),
+        password: SecretString::from(password),
+        region,
+    };
+    let client = LluAuthClient::new().context("build LLU HTTP client")?;
+    let selection = match llu.patient_id.as_deref() {
+        Some(id) => ConnectionSelection::ByPatientId(
+            PatientId::new(id).context("invalid patient_id in [source.llu]")?,
+        ),
+        None => ConnectionSelection::First,
+    };
+    let id = SourceId::new("llu").context("build SourceId")?;
+    info!(region = ?region, "llu source configured");
+    Ok(Arc::new(LluSource::new(id, client, creds, selection)))
 }
 
 async fn poll_loop(source: Arc<dyn Source>, cache: ReadingCache, interval: Duration) {

@@ -15,3 +15,17 @@ bind = "0.0.0.0:8080"
 # How often the LibreLink Up source is polled, in seconds. LLU updates
 # every ~60 s; values below 30 are rejected to avoid rate-limiting.
 interval_secs = 60
+
+# Optional: real LibreLink Up source. Requires the `source-llu` Cargo
+# feature on the binary. Uncomment and fill in to drive the poller from
+# a real Libre account. The password itself is NEVER stored here — only
+# the name of the environment variable that holds it.
+#
+# [source.llu]
+# email = "you@example.com"
+# password_env = "LLU_PASSWORD"
+# # Region: AE, AP, AU, CA, DE, EU, EU2, FR, JP, US, LA, RU, CN.
+# region = "EU"
+# # Optional: pick a specific patient when the account has more than
+# # one linked. When absent, the first connection is used.
+# # patient_id = "00000000-0000-0000-0000-000000000000"
