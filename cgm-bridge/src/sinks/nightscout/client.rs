@@ -1,10 +1,23 @@
 //! Nightscout v3 HTTP client.
 //!
-//! Auth path: `api-secret: <sha1_hex(API_SECRET)>` — the modern JWT
-//! Bearer flow is intentionally deferred until V2 to keep this slice
-//! small. SHA-1 is part of Nightscout's hashing API, not a security
-//! choice — the actual transport security is the rustls-protected TLS
-//! to the Nightscout host.
+//! Auth path: `api-secret: <sha1_hex(API_SECRET)>` — Nightscout v3
+//! continues to accept the legacy SHA-1 header for backward
+//! compatibility. The modern path used by the reference port is
+//! `Authorization: Bearer <jwt>` obtained from
+//! `/api/v2/authorization/request/<accessToken>`.
+//!
+//! We deliberately ship the SHA-1 path for V1 because:
+//!
+//! - it works against every NS deployment we tested against (the JWT
+//!   path is opt-in on the NS side),
+//! - it adds zero round-trips per scrape, and
+//! - it is wiremock-testable without a JWT issuer.
+//!
+//! The JWT path is on the V2 roadmap as `NsAuth::Bearer`.
+//!
+//! SHA-1 here is a request-shape choice mandated by NS, not a security
+//! choice — actual transport security comes from the rustls-protected
+//! TLS connection to the NS host.
 
 use cgm_bridge_core::Reading;
 use secrecy::{ExposeSecret, SecretString};
@@ -36,6 +49,11 @@ pub enum NsError {
 }
 
 impl NsError {
+    /// Stable string identifier per error variant. Used by the
+    /// `Display` impl above (which is what callers actually read);
+    /// kept as a separate accessor so future typed retry policies
+    /// can match without parsing the formatted message.
+    #[allow(dead_code)]
     pub fn error_code(&self) -> &'static str {
         match self {
             NsError::Transport(_) => "NS001",
@@ -71,6 +89,8 @@ pub struct NightscoutClient {
     base_url: String,
     secret: SecretString,
     http: reqwest::Client,
+    device: Option<String>,
+    app: Option<String>,
 }
 
 impl NightscoutClient {
@@ -87,7 +107,24 @@ impl NightscoutClient {
             base_url: trimmed,
             secret,
             http,
+            device: None,
+            app: None,
         })
+    }
+
+    /// Identify this service in the Nightscout UI's source column.
+    /// Equivalent to the reference port's `NIGHTSCOUT_DEVICE_NAME`.
+    pub fn with_device(mut self, device: impl Into<String>) -> Self {
+        self.device = Some(device.into());
+        self
+    }
+
+    /// App name attached to every uploaded entry. Equivalent to the
+    /// reference port's `app` config value (default
+    /// `nightscout-librelink-up`).
+    pub fn with_app(mut self, app: impl Into<String>) -> Self {
+        self.app = Some(app.into());
+        self
     }
 
     fn entries_url(&self) -> String {
@@ -107,7 +144,10 @@ impl NightscoutClient {
             debug!("ns post_entries: empty batch, skipping");
             return Ok(());
         }
-        let body: Vec<NsEntry> = readings.iter().map(entry_from_reading).collect();
+        let body: Vec<NsEntry> = readings
+            .iter()
+            .map(|r| entry_from_reading(r, self.device.as_deref(), self.app.as_deref()))
+            .collect();
 
         let resp = self
             .http
@@ -212,7 +252,8 @@ mod tests {
         assert_eq!(entry["sgv"], 142);
         assert_eq!(entry["direction"], "Flat");
         assert_eq!(entry["type"], "sgv");
-        assert_eq!(entry["trend"], 4);
+        // No numeric trend field — matches reference.
+        assert!(entry.get("trend").is_none());
         assert_eq!(entry["date"], 1_700_000_000_000_i64);
     }
 

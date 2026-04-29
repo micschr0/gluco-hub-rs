@@ -92,6 +92,19 @@ pub struct NightscoutSinkConfig {
         custom(function = "validate_ascii_env_name")
     )]
     pub api_secret_env: String,
+
+    /// Identifies this service in the NS UI's source column. Defaults
+    /// to `"cgm-bridge"`. Mirrors the reference port's
+    /// `NIGHTSCOUT_DEVICE_NAME`.
+    #[serde(default)]
+    #[validate(length(min = 1, max = 128))]
+    pub device: Option<String>,
+
+    /// App name attached to every uploaded entry. Defaults to
+    /// `"cgm-bridge"`. Mirrors the reference port's `app` config value.
+    #[serde(default)]
+    #[validate(length(min = 1, max = 128))]
+    pub app: Option<String>,
 }
 
 fn validate_http_url(value: &str) -> Result<(), ValidationError> {

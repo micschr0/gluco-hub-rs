@@ -14,6 +14,9 @@ mod metrics;
 mod sinks;
 mod sources;
 
+#[cfg(all(test, feature = "source-llu", feature = "sink-nightscout"))]
+mod e2e_tests;
+
 #[derive(Debug, Parser)]
 #[command(name = "cgm-bridge", about = "LibreLink Up → HTTP/Nightscout bridge")]
 struct Cli {
@@ -353,6 +356,9 @@ fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Si
     use secrecy::SecretString;
     use sinks::nightscout::{NightscoutClient, NightscoutSink};
 
+    const DEFAULT_DEVICE: &str = "cgm-bridge";
+    const DEFAULT_APP: &str = "cgm-bridge";
+
     let secret = std::env::var(&ns.api_secret_env).map_err(|_| {
         anyhow::anyhow!(
             "[CFG003] required secret env var not set: {}",
@@ -365,9 +371,13 @@ fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Si
             ns.api_secret_env
         );
     }
+    let device = ns.device.as_deref().unwrap_or(DEFAULT_DEVICE);
+    let app = ns.app.as_deref().unwrap_or(DEFAULT_APP);
     let client = NightscoutClient::new(ns.base_url.clone(), SecretString::from(secret))
-        .context("build Nightscout client")?;
-    info!(base_url = %ns.base_url, "nightscout sink configured");
+        .context("build Nightscout client")?
+        .with_device(device)
+        .with_app(app);
+    info!(base_url = %ns.base_url, device, app, "nightscout sink configured");
     Ok(Arc::new(NightscoutSink::new(client)))
 }
 

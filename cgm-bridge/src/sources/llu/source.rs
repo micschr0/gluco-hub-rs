@@ -106,7 +106,21 @@ impl LluSource {
         connections: &'a [Connection],
     ) -> Result<&'a Connection, LluError> {
         let chosen = match &self.selection {
-            ConnectionSelection::First => connections.first(),
+            ConnectionSelection::First => {
+                if connections.len() > 1 {
+                    // Mirrors the reference port's
+                    // `nightscout-librelink-up` warn — multiple
+                    // patient links visible to the same account
+                    // means whoever set up `[source.llu]` probably
+                    // wants `patient_id = "..."` to disambiguate.
+                    warn!(
+                        candidates = connections.len(),
+                        "multiple LLU connections visible; selecting the first \
+                        — set [source.llu] patient_id to pin a specific patient"
+                    );
+                }
+                connections.first()
+            }
             ConnectionSelection::ByPatientId(id) => {
                 connections.iter().find(|c| c.patient_id == id.as_str())
             }
@@ -186,8 +200,12 @@ impl Source for LluSource {
 }
 
 fn into_core(e: LluError) -> CoreError {
+    // `LluError::Display` already starts with `[LLUxxx]` — re-using it
+    // keeps the message single-prefixed so `extract_error_code` in the
+    // poll-loop fan-out can parse the inner code without seeing
+    // `[LLU003] [LLU003] ...` duplicates.
     CoreError::Source {
-        message: format!("[{}] {}", e.error_code(), e),
+        message: e.to_string(),
     }
 }
 

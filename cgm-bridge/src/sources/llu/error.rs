@@ -34,6 +34,11 @@ pub enum LluError {
 }
 
 impl LluError {
+    /// Stable string identifier per error variant. The `Display` impl
+    /// above embeds the same code, but exposing it as a method lets
+    /// downstream typed-retry / classification logic match without
+    /// parsing the formatted message.
+    #[allow(dead_code)]
     pub fn error_code(&self) -> &'static str {
         match self {
             LluError::Transport(_) => "LLU001",

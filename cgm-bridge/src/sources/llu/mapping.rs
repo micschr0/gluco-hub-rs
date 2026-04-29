@@ -4,6 +4,16 @@
 //! <https://github.com/timoschlueter/nightscout-librelink-up/blob/main/src/helpers/helpers.ts>
 //! (`mapTrendArrow`): 1=SingleDown, 2=FortyFiveDown, 3=Flat,
 //! 4=FortyFiveUp, 5=SingleUp; everything else → `NotComputable`.
+//!
+//! Timestamp choice — `Timestamp` vs `FactoryTimestamp`:
+//! Each LLU `GlucoseItem` ships both fields. The reference port reads
+//! `FactoryTimestamp` (the sensor's local time at the time of the
+//! reading) and adjusts via JS `getTimezoneOffset`. We read `Timestamp`
+//! (the receiver-side time) and treat it as UTC. In practice both fields
+//! carry the same wall-clock value for a patient who scans on a phone in
+//! their own timezone; if a deployment surfaces a measurable skew, swap
+//! to `FactoryTimestamp` here — it is already deserialised at the wire
+//! layer (see `super::wire::GlucoseMeasurement`).
 
 use cgm_bridge_core::{GlucoseMgDl, PatientId, Reading, SourceId, Trend};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};

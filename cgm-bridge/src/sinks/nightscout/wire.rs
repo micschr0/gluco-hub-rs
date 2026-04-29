@@ -1,10 +1,28 @@
 //! Nightscout v3 `entries` wire format.
 //!
-//! Field set verified against the public Nightscout v3 API and CGM
-//! conventions: each entry carries a millisecond Unix timestamp, the
-//! glucose value in mg/dL (`sgv`), a textual `direction`, the trend
-//! integer using the Nightscout numbering (1=DoubleUp … 7=DoubleDown),
-//! and a fixed `type: "sgv"`.
+//! Field set verified against the reference port
+//! (`timoschlueter/nightscout-librelink-up`, `src/nightscout/apiv3.ts`):
+//!
+//! ```ignore
+//! const entryPayloads = entries.map((entry) => ({
+//!   type: "sgv",
+//!   sgv: entry.sgv,
+//!   direction: entry.direction?.toString(),
+//!   device: this.device,
+//!   date: entry.date.getTime(),
+//!   app: this.app,
+//! }));
+//! ```
+//!
+//! Notable choices:
+//! - We do NOT send a `trend` integer field. The reference doesn't, and
+//!   Nightscout dashboards key on `direction` (the textual form), so the
+//!   integer would be redundant at best and wrong at worst across NS
+//!   versions.
+//! - `device` and `app` are caller-provided strings — they identify this
+//!   service in the Nightscout UI. They round-trip through serde when set
+//!   and are omitted from the JSON when `None`, matching NS's optional
+//!   handling.
 
 use cgm_bridge_core::{Reading, Trend};
 use serde::Serialize;
@@ -43,9 +61,10 @@ impl From<Trend> for NsDirection {
     }
 }
 
-/// Nightscout's trend integer scheme (different from LLU's). Encoded
-/// alongside the textual `direction` for downstream tooling that prefers
-/// numeric input.
+/// Nightscout's trend integer scheme — kept as a private mapping for
+/// future use, but NOT serialised. The reference port omits it; relying
+/// on `direction` alone keeps us aligned with what NS dashboards expect.
+#[allow(dead_code)]
 fn ns_trend_int(t: Trend) -> u8 {
     match t {
         Trend::DoubleUp => 1,
@@ -55,13 +74,17 @@ fn ns_trend_int(t: Trend) -> u8 {
         Trend::FortyFiveDown => 5,
         Trend::SingleDown => 6,
         Trend::DoubleDown => 7,
-        // NS treats unknown trends as 0 / NOT COMPUTABLE.
         Trend::NotComputable | Trend::RateOutOfRange => 0,
     }
 }
 
 /// One Nightscout v3 entry. The `type` field must be a literal `"sgv"`
 /// for sensor-glucose-value entries.
+///
+/// `device` and `app` are operator-provided identifiers ("cgm-bridge",
+/// "cgm-bridge-llu", etc.) that show up in the NS UI's source column.
+/// Both omit from the JSON when `None` — matches the reference, which
+/// always sets them but only because its config has defaults.
 #[derive(Debug, Clone, Serialize)]
 pub struct NsEntry {
     /// Milliseconds since the Unix epoch.
@@ -71,19 +94,23 @@ pub struct NsEntry {
     pub direction: NsDirection,
     #[serde(rename = "type")]
     pub kind: &'static str,
-    pub trend: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 /// Build a Nightscout entry from a normalised `Reading`. Glucose is
 /// rounded half-away-from-zero; out-of-range values upstream are already
 /// rejected by `GlucoseMgDl::new`.
-pub fn entry_from_reading(r: &Reading) -> NsEntry {
+pub fn entry_from_reading(r: &Reading, device: Option<&str>, app: Option<&str>) -> NsEntry {
     NsEntry {
         date: r.timestamp.timestamp_millis(),
         sgv: r.glucose.get().round() as i64,
         direction: NsDirection::from(r.trend),
         kind: "sgv",
-        trend: ns_trend_int(r.trend),
+        device: device.map(str::to_string),
+        app: app.map(str::to_string),
     }
 }
 
@@ -137,36 +164,39 @@ mod tests {
     }
 
     #[test]
-    fn ns_trend_int_table() {
-        assert_eq!(ns_trend_int(Trend::DoubleUp), 1);
-        assert_eq!(ns_trend_int(Trend::SingleUp), 2);
-        assert_eq!(ns_trend_int(Trend::FortyFiveUp), 3);
-        assert_eq!(ns_trend_int(Trend::Flat), 4);
-        assert_eq!(ns_trend_int(Trend::FortyFiveDown), 5);
-        assert_eq!(ns_trend_int(Trend::SingleDown), 6);
-        assert_eq!(ns_trend_int(Trend::DoubleDown), 7);
-        assert_eq!(ns_trend_int(Trend::NotComputable), 0);
-        assert_eq!(ns_trend_int(Trend::RateOutOfRange), 0);
-    }
-
-    #[test]
     fn entry_rounds_glucose_and_uses_ms_precision() {
-        let entry = entry_from_reading(&reading(141.6, Trend::Flat));
+        let entry = entry_from_reading(&reading(141.6, Trend::Flat), None, None);
         assert_eq!(entry.sgv, 142);
         assert_eq!(entry.date, 1_700_000_000_000);
         assert_eq!(entry.kind, "sgv");
         assert_eq!(entry.direction, NsDirection::Flat);
-        assert_eq!(entry.trend, 4);
+        assert!(entry.device.is_none());
+        assert!(entry.app.is_none());
     }
 
     #[test]
-    fn entry_serializes_with_type_field_as_sgv() {
-        let entry = entry_from_reading(&reading(120.0, Trend::SingleUp));
+    fn entry_serializes_with_type_field_as_sgv_and_no_trend_int() {
+        let entry = entry_from_reading(
+            &reading(120.0, Trend::SingleUp),
+            Some("cgm-bridge"),
+            Some("cgm-bridge"),
+        );
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&entry).unwrap()).unwrap();
         assert_eq!(json["type"], "sgv");
         assert_eq!(json["sgv"], 120);
         assert_eq!(json["direction"], "SingleUp");
-        assert_eq!(json["trend"], 2);
+        assert_eq!(json["device"], "cgm-bridge");
+        assert_eq!(json["app"], "cgm-bridge");
+        // The reference port does not send a numeric `trend` — neither do we.
+        assert!(json.get("trend").is_none());
+    }
+
+    #[test]
+    fn entry_omits_device_and_app_when_absent() {
+        let entry = entry_from_reading(&reading(120.0, Trend::Flat), None, None);
+        let s = serde_json::to_string(&entry).unwrap();
+        assert!(!s.contains("device"), "got: {s}");
+        assert!(!s.contains("app"), "got: {s}");
     }
 }

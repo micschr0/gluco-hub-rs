@@ -31,8 +31,11 @@ impl Sink for NightscoutSink {
         self.client
             .post_entries(readings)
             .await
+            // `NsError::Display` already starts with `[NSxxx]` — re-using
+            // it keeps the message single-prefixed and grep-friendly via
+            // `extract_error_code` in the poll-loop fan-out.
             .map_err(|e| CoreError::Sink {
-                message: format!("[{}] {}", e.error_code(), e),
+                message: e.to_string(),
             })
     }
 }
