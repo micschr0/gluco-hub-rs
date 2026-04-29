@@ -141,6 +141,36 @@ Stable error-code prefixes (`CORE0xx`, `CFG0xx`, `API0xx`, `LLU0xx`,
 fields, so dashboards and alerts can keep grep-clean rules across
 versions.
 
+## Container
+
+A `Containerfile` ships a multi-stage build (rust:1-bookworm →
+gcr.io/distroless/cc-debian12:nonroot). The runtime image has no
+shell, no package manager, and runs as uid 65532.
+
+```bash
+docker build -t cgm-bridge:dev -f Containerfile .
+docker run --rm -p 8080:8080 \
+    -v "$PWD/config.toml:/etc/cgm-bridge/config.toml:ro" \
+    -e LLU_PASSWORD='…' \
+    -e NIGHTSCOUT_API_SECRET='…' \
+    cgm-bridge:dev run -c /etc/cgm-bridge/config.toml
+```
+
+Pass `--build-arg CGM_BRIDGE_GIT_SHA=$(git rev-parse HEAD)` so the
+`cgm_bridge_build_info{git_sha=…}` metric label resolves to the
+actual commit instead of `"unknown"`.
+
+Liveness / readiness in Kubernetes:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /healthz, port: 8080 }
+  initialDelaySeconds: 5
+readinessProbe:
+  httpGet: { path: /glucose/latest, port: 8080 }
+  failureThreshold: 5  # tolerate the cache being empty pre-first-poll
+```
+
 ## Operations
 
 - Logs: structured JSON on stdout. Set `CGM_BRIDGE_LOG_PRETTY=1` for
