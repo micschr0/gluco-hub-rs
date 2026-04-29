@@ -73,11 +73,6 @@ impl LluSource {
         }
     }
 
-    pub fn with_expiry_skew(mut self, skew: Duration) -> Self {
-        self.expiry_skew = skew;
-        self
-    }
-
     /// Returns valid tokens, logging in if none are cached or the cached
     /// pair is past its skew-adjusted expiry. The mutex is held for the
     /// duration of the login so concurrent callers share the round-trip.

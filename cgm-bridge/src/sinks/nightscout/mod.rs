@@ -1,13 +1,8 @@
-//! Nightscout v3 sink. Iteration 10 ships only the HTTP client + entry
-//! serialization; the `Sink` trait impl, `[sink.nightscout]` config, and
-//! poller fan-out land in iteration 11.
-
-#![allow(dead_code, unused_imports)]
+//! Nightscout v3 sink.
 
 pub mod client;
 pub mod sink;
 pub mod wire;
 
-pub use client::{NightscoutClient, NsError};
+pub use client::NightscoutClient;
 pub use sink::NightscoutSink;
-pub use wire::{NsDirection, NsEntry, entry_from_reading};

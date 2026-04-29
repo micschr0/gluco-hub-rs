@@ -28,23 +28,19 @@ pub struct GraphResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GraphData {
-    pub connection: Connection,
     /// Stream of historical measurements; LLU returns ~24 h of points.
     #[serde(rename = "graphData")]
     pub graph_data: Vec<GlucoseMeasurement>,
 }
 
 /// One LibreLink-Up "connection" (a patient-link visible to the account).
+/// Other LLU fields (`id`, `firstName`, etc.) are intentionally absent —
+/// serde drops them silently. The bridge only needs the `patientId` to
+/// resolve the graph URL.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Connection {
-    /// Stable connection identifier — used in `/graph` URL paths.
-    pub id: String,
     #[serde(rename = "patientId")]
     pub patient_id: String,
-    /// May be absent when the patient hasn't reported a fresh reading;
-    /// the singular `glucoseMeasurement` represents the latest value.
-    #[serde(rename = "glucoseMeasurement", default)]
-    pub glucose_measurement: Option<GlucoseMeasurement>,
 }
 
 /// Glucose sample shape used both for the singular `glucoseMeasurement`
@@ -67,7 +63,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_connections_response() {
+    fn parses_connections_response_drops_unused_fields() {
+        // The bridge only consumes `patientId`. Everything else (id,
+        // firstName, lastName, glucoseMeasurement, …) must round-trip
+        // through serde without breaking the parse — that's the point
+        // of explicit field-by-field renames instead of `deny_unknown_fields`.
         let raw = r#"{
             "status": 0,
             "data": [{
@@ -86,25 +86,7 @@ mod tests {
         let parsed: ConnectionsResponse = serde_json::from_str(raw).expect("parse");
         assert_eq!(parsed.status, 0);
         assert_eq!(parsed.data.len(), 1);
-        let conn = &parsed.data[0];
-        assert_eq!(conn.id, "abc-123");
-        assert_eq!(conn.patient_id, "patient-1");
-        let m = conn.glucose_measurement.as_ref().expect("measurement");
-        assert_eq!(m.value_in_mg_per_dl, 142.0);
-        assert_eq!(m.trend_arrow, Some(3));
-    }
-
-    #[test]
-    fn parses_connection_without_measurement() {
-        let raw = r#"{
-            "status": 0,
-            "data": [{
-                "id": "abc",
-                "patientId": "p"
-            }]
-        }"#;
-        let parsed: ConnectionsResponse = serde_json::from_str(raw).expect("parse");
-        assert!(parsed.data[0].glucose_measurement.is_none());
+        assert_eq!(parsed.data[0].patient_id, "patient-1");
     }
 
     #[test]

@@ -25,9 +25,6 @@ pub enum NsDirection {
     NotComputable,
     #[serde(rename = "RATE OUT OF RANGE")]
     RateOutOfRange,
-    /// Reserved for future fallback (e.g. CGMs that report no trend).
-    #[serde(rename = "NONE")]
-    None,
 }
 
 impl From<Trend> for NsDirection {
@@ -118,7 +115,6 @@ mod tests {
             (NsDirection::DoubleDown, "\"DoubleDown\""),
             (NsDirection::NotComputable, "\"NOT COMPUTABLE\""),
             (NsDirection::RateOutOfRange, "\"RATE OUT OF RANGE\""),
-            (NsDirection::None, "\"NONE\""),
         ];
         for (variant, expected) in cases {
             let got = serde_json::to_string(&variant).unwrap();

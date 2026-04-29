@@ -94,15 +94,10 @@ impl LluAuthClient {
         })
     }
 
-    /// Override the LLU app version sent in the `version` header. Useful
-    /// when LibreView starts rejecting an older value mid-deploy.
-    pub fn with_version(mut self, version: impl Into<String>) -> Self {
-        self.version = version.into();
-        self
-    }
-
-    /// Pin the base URL (without trailing slash). Intended for tests against
-    /// `wiremock`; real callers rely on `Region`-derived URLs.
+    /// Pin the base URL (without trailing slash). Intended for tests
+    /// against `wiremock`; real callers rely on `Region`-derived URLs.
+    /// Test-gated so production builds never expose the override.
+    #[cfg(test)]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url_override = Some(base_url.into());
         self
