@@ -6,6 +6,9 @@ license.workspace = true
 authors.workspace = true
 description = "Domain types and traits for cgm-bridge."
 
+[features]
+mock-source = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -13,3 +16,6 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

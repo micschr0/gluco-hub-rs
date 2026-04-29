@@ -7,9 +7,12 @@ authors.workspace = true
 description = "cgm-bridge binary: polls LibreLink Up, exposes glucose via HTTP, pushes to Nightscout."
 
 [features]
-default = ["source-llu", "sink-nightscout"]
+default = ["mock-source"]
 source-llu = []
 sink-nightscout = []
+# Enables the in-memory `MockSource` fixture so the HTTP API can be
+# exercised end-to-end before the LibreLink Up source lands.
+mock-source = ["cgm-bridge-core/mock-source"]
 
 [dependencies]
 cgm-bridge-core = { path = "../cgm-bridge-core" }
@@ -43,3 +46,4 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
+http-body-util = "0.1"

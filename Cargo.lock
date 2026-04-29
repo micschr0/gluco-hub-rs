@@ -242,6 +242,7 @@ dependencies = [
  "chrono",
  "clap",
  "config",
+ "http-body-util",
  "metrics",
  "metrics-exporter-prometheus",
  "reqwest",
@@ -268,6 +269,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 

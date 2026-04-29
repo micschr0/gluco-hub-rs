@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use cgm_bridge_core::{ReadingCache, Source};
 use clap::{Parser, Subcommand};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod api;
 mod config;
@@ -67,7 +70,22 @@ async fn run(cli: Cli) -> Result<()> {
 }
 
 async fn serve(cfg: config::Config) -> Result<()> {
-    let router = api::router();
+    let cache = ReadingCache::new();
+    let state = api::AppState {
+        cache: cache.clone(),
+    };
+
+    if let Some(source) = build_default_source()? {
+        let interval = Duration::from_secs(cfg.poller.interval_secs);
+        let cache_for_poller = cache.clone();
+        tokio::spawn(async move {
+            poll_loop(source, cache_for_poller, interval).await;
+        });
+    } else {
+        warn!("no source compiled in; HTTP API will serve 503 until one is enabled");
+    }
+
+    let router = api::router(state);
     let listener = tokio::net::TcpListener::bind(cfg.http.bind)
         .await
         .with_context(|| format!("bind {}", cfg.http.bind))?;
@@ -79,6 +97,46 @@ async fn serve(cfg: config::Config) -> Result<()> {
         .await
         .context("http server")?;
     Ok(())
+}
+
+/// Build the default source for this binary feature set. V1 ships only
+/// LibreLink Up; until that lands, the `mock-source` feature wires in a
+/// canned source so the HTTP API can be exercised end-to-end.
+fn build_default_source() -> Result<Option<Arc<dyn Source>>> {
+    #[cfg(feature = "mock-source")]
+    {
+        let mock =
+            cgm_bridge_core::MockSource::default_fixture().context("build MockSource fixture")?;
+        Ok(Some(Arc::new(mock)))
+    }
+    #[cfg(not(feature = "mock-source"))]
+    {
+        Ok(None)
+    }
+}
+
+async fn poll_loop(source: Arc<dyn Source>, cache: ReadingCache, interval: Duration) {
+    let source_id = source.id().as_str().to_string();
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        match source.fetch_latest().await {
+            Ok(batch) => {
+                let count = batch.len();
+                cache.update(&batch);
+                info!(source_id = %source_id, count, "cache updated");
+            }
+            Err(e) => {
+                error!(
+                    error_code = e.error_code(),
+                    source_id = %source_id,
+                    error = %e,
+                    "source fetch failed",
+                );
+            }
+        }
+    }
 }
 
 async fn shutdown_signal() {
