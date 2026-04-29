@@ -42,16 +42,12 @@ if [[ -z "${NS_API_SECRET:-}" ]]; then
 fi
 export NS_API_SECRET
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT"
+# shellcheck source=scripts/_dryrun-common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_dryrun-common.sh"
 
 # Translate operator-friendly env vars into the names the binary's
 # config crate already understands.
 export CGM_BRIDGE__SINK__NIGHTSCOUT__BASE_URL="${NS_BASE_URL}"
 export CGM_BRIDGE__SINK__NIGHTSCOUT__API_SECRET_ENV="NS_API_SECRET"
-
-# Tracing on stderr; the JSON summary is the sole stdout content.
-export RUST_LOG="${RUST_LOG:-cgm_bridge=info}"
-export CGM_BRIDGE_LOG_PRETTY="${CGM_BRIDGE_LOG_PRETTY:-1}"
 
 cargo run --quiet --features sink-nightscout -- ns-dryrun

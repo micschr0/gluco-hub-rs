@@ -55,6 +55,20 @@ pub fn parse_llu_timestamp(raw: &str) -> Result<DateTime<Utc>, LluError> {
 /// Out-of-range glucose values (sensor errors / sentinel readings) are
 /// rejected as `LluError::Protocol` rather than silently clamped — the
 /// poller's error counter then carries the `error_code = "LLU004"` label.
+/// Pick the measurement with the newest parseable timestamp from a
+/// graph-data slice. Returns `None` when the slice is empty or every
+/// timestamp fails to parse. Centralised here so callers (the dryrun
+/// probe, future TUI views) don't reach into [`parse_llu_timestamp`]
+/// directly.
+pub fn newest_measurement(
+    graph_data: &[GlucoseMeasurement],
+) -> Option<(DateTime<Utc>, &GlucoseMeasurement)> {
+    graph_data
+        .iter()
+        .filter_map(|m| parse_llu_timestamp(&m.timestamp).ok().map(|t| (t, m)))
+        .max_by_key(|(t, _)| *t)
+}
+
 pub fn reading_from_measurement(
     m: &GlucoseMeasurement,
     patient_id: &PatientId,

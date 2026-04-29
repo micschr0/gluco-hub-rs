@@ -31,8 +31,8 @@ if [[ -z "${LLU_EMAIL:-}" || -z "${LLU_PASSWORD:-}" ]]; then
 fi
 LLU_REGION="${LLU_REGION:-EU}"
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT"
+# shellcheck source=scripts/_dryrun-common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_dryrun-common.sh"
 
 # Translate operator-friendly env vars into the names the binary's
 # config crate already understands. The double underscore is the
@@ -46,10 +46,5 @@ fi
 if [[ -n "${LLU_PATIENT_ID:-}" ]]; then
     export CGM_BRIDGE__SOURCE__LLU__PATIENT_ID="${LLU_PATIENT_ID}"
 fi
-
-# Keep tracing on stderr so the JSON summary is the only thing on
-# stdout — pipe-friendly.
-export RUST_LOG="${RUST_LOG:-cgm_bridge=info}"
-export CGM_BRIDGE_LOG_PRETTY="${CGM_BRIDGE_LOG_PRETTY:-1}"
 
 cargo run --quiet --features source-llu -- dryrun

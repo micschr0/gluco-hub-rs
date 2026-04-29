@@ -224,6 +224,22 @@ pub fn load(override_path: Option<&Path>) -> Result<Config, ConfigError> {
 ///
 /// The env-var *value* is never logged, returned, or stored; only its
 /// presence is checked.
+/// Resolve a single secret env var by name. Returns the raw value on
+/// success; surfaces missing or empty values as `MissingSecret` so the
+/// `[CFG003]` prefix is the same regardless of caller. The value
+/// itself is NEVER logged or attached to the error.
+pub fn resolve_secret_env(var_name: &str) -> Result<String, ConfigError> {
+    let value = std::env::var(var_name).map_err(|_| ConfigError::MissingSecret {
+        var: var_name.to_string(),
+    })?;
+    if value.is_empty() {
+        return Err(ConfigError::MissingSecret {
+            var: var_name.to_string(),
+        });
+    }
+    Ok(value)
+}
+
 pub fn verify_secret_env_vars(cfg: &Config) -> Result<(), ConfigError> {
     let mut required: Vec<&str> = Vec::new();
     if let Some(llu) = cfg.source.llu.as_ref() {
@@ -236,14 +252,7 @@ pub fn verify_secret_env_vars(cfg: &Config) -> Result<(), ConfigError> {
         required.push(name);
     }
     for var in required {
-        let value = std::env::var(var).map_err(|_| ConfigError::MissingSecret {
-            var: var.to_string(),
-        })?;
-        if value.is_empty() {
-            return Err(ConfigError::MissingSecret {
-                var: var.to_string(),
-            });
-        }
+        resolve_secret_env(var)?;
     }
     Ok(())
 }

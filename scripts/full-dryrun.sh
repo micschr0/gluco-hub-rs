@@ -40,7 +40,6 @@ done
 
 stage() { echo; echo "==[$1] $2"; }
 
-SMOKE_RESULT="ok"
 LLU_RESULT="skip"
 NS_RESULT="skip"
 
@@ -89,4 +88,4 @@ else
 fi
 
 echo
-echo "full-dryrun: OK (smoke=$SMOKE_RESULT llu=$LLU_RESULT ns=$NS_RESULT)"
+echo "full-dryrun: OK (smoke=ok llu=$LLU_RESULT ns=$NS_RESULT)"

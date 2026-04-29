@@ -62,32 +62,43 @@ fn main() -> ExitCode {
     }
 }
 
-/// Map an error message that already starts with a stable
-/// `[XXX0nn]` prefix into the exit codes documented in
-/// `scripts/llu-dryrun.sh`. Runs on the formatted display of the
-/// error chain so it survives `anyhow::Context` wrapping.
-///
-/// Only reachable through the `Dryrun` subcommand, which is itself
-/// gated behind `feature = "source-llu"`. The function is also used
-/// from `#[cfg(test)]` to keep the contract pinned, hence two cfgs.
-#[cfg(any(feature = "source-llu", test))]
-fn classify_dryrun_exit(err_text: &str) -> ExitCode {
-    if err_text.contains("[LLU003]") {
-        ExitCode::from(3) // invalid credentials
-    } else if err_text.contains("[LLU002]")
-        || err_text.contains("[LLU004]")
-        || err_text.contains("[LLU006]")
-        || err_text.contains("[LLU007]")
-    {
-        ExitCode::from(4) // version / protocol / unknown-region / bad timestamp
-    } else if err_text.contains("[LLU001]") || err_text.contains("[LLU005]") {
-        ExitCode::from(5) // transport / redirect-loop
-    } else if err_text.contains("[CFG") {
-        ExitCode::from(2) // config / env
-    } else {
-        ExitCode::FAILURE
+/// First-match prefix-to-exit-code lookup. The string match survives
+/// `anyhow::Context` wrapping so the exit-code contract is stable
+/// across refactors that change error chain formatting.
+#[cfg(any(feature = "source-llu", feature = "sink-nightscout", test))]
+fn classify_by_prefix(err_text: &str, table: &[(&str, u8)]) -> ExitCode {
+    for (prefix, code) in table {
+        if err_text.contains(prefix) {
+            return ExitCode::from(*code);
+        }
     }
+    ExitCode::FAILURE
 }
+
+/// `scripts/llu-dryrun.sh` exit-code contract. Order matters: the
+/// first matching prefix wins.
+#[cfg(any(feature = "source-llu", test))]
+const DRYRUN_EXIT_TABLE: &[(&str, u8)] = &[
+    ("[LLU003]", 3), // invalid credentials
+    ("[LLU002]", 4), // status / version mismatch
+    ("[LLU004]", 4), // protocol
+    ("[LLU006]", 4), // unknown region
+    ("[LLU007]", 4), // bad timestamp
+    ("[LLU001]", 5), // transport
+    ("[LLU005]", 5), // redirect loop
+    ("[CFG", 2),     // config / env (any CFG0xx)
+];
+
+/// `scripts/ns-dryrun.sh` exit-code contract.
+#[cfg(any(feature = "sink-nightscout", test))]
+const NSDRYRUN_EXIT_TABLE: &[(&str, u8)] = &[
+    ("[NS005]", 2), // invalid base URL → config bucket
+    ("[CFG", 2),    // config / env
+    ("[NS001]", 3), // transport
+    ("[NS002]", 4), // 401 / 403 auth
+    ("[NS003]", 5), // unexpected status
+    ("[NS004]", 5), // retryable
+];
 
 fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -126,7 +137,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             Err(e) => {
                 let txt = format!("{e:#}");
                 error!(error = %txt, "llu dryrun failed");
-                Ok(classify_dryrun_exit(&txt))
+                Ok(classify_by_prefix(&txt, DRYRUN_EXIT_TABLE))
             }
         },
         #[cfg(feature = "sink-nightscout")]
@@ -135,25 +146,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             Err(e) => {
                 let txt = format!("{e:#}");
                 error!(error = %txt, "ns dryrun failed");
-                Ok(classify_nsdryrun_exit(&txt))
+                Ok(classify_by_prefix(&txt, NSDRYRUN_EXIT_TABLE))
             }
         },
-    }
-}
-
-/// `scripts/ns-dryrun.sh` exit-code contract. Pinned by unit test.
-#[cfg(any(feature = "sink-nightscout", test))]
-fn classify_nsdryrun_exit(err_text: &str) -> ExitCode {
-    if err_text.contains("[CFG") || err_text.contains("[NS005]") {
-        ExitCode::from(2) // config / env / invalid base URL
-    } else if err_text.contains("[NS001]") {
-        ExitCode::from(3) // transport / network
-    } else if err_text.contains("[NS002]") {
-        ExitCode::from(4) // 401 / 403 auth
-    } else if err_text.contains("[NS003]") || err_text.contains("[NS004]") {
-        ExitCode::from(5) // unexpected status / retryable
-    } else {
-        ExitCode::FAILURE
     }
 }
 
@@ -211,11 +206,7 @@ fn resolve_bearer_token(cfg: &config::Config) -> Result<Option<secrecy::SecretSt
     let Some(name) = cfg.http.bearer_token_env.as_deref() else {
         return Ok(None);
     };
-    let value = std::env::var(name)
-        .map_err(|_| anyhow::anyhow!("[CFG003] bearer_token_env not set: {name}"))?;
-    if value.is_empty() {
-        anyhow::bail!("[CFG003] bearer_token_env is empty: {name}");
-    }
+    let value = config::resolve_secret_env(name).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(Some(secrecy::SecretString::from(value)))
 }
 
@@ -249,34 +240,26 @@ fn build_default_source(cfg: &config::Config) -> Result<Option<Arc<dyn Source>>>
     Ok(source)
 }
 
+/// Resolve `[source.llu]` into a wired `LluAuthClient` + `LluCredentials`
+/// plus the version string actually sent in the `version` header. Shared
+/// between the long-running `serve` path and the one-shot `dryrun` probe
+/// so they cannot disagree on header values or env-var resolution.
 #[cfg(feature = "source-llu")]
-fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
-    use cgm_bridge_core::{PatientId, SourceId};
+fn build_llu_client_and_creds(
+    llu: &config::LluSourceConfig,
+) -> Result<(
+    sources::llu::auth::LluAuthClient,
+    sources::llu::auth::LluCredentials,
+    String,
+)> {
     use secrecy::SecretString;
     use sources::llu::Region;
     use sources::llu::auth::{LluAuthClient, LluCredentials};
     use sources::llu::headers::DEFAULT_LLU_VERSION;
-    use sources::llu::source::{ConnectionSelection, LluSource};
 
     let region = Region::parse(&llu.region).context("parse LLU region")?;
-    let password = std::env::var(&llu.password_env).map_err(|_| {
-        anyhow::anyhow!(
-            "[CFG003] required secret env var not set: {}",
-            llu.password_env
-        )
-    })?;
-    if password.is_empty() {
-        anyhow::bail!(
-            "[CFG003] required secret env var is empty: {}",
-            llu.password_env
-        );
-    }
-
-    let creds = LluCredentials {
-        email: llu.email.clone(),
-        password: SecretString::from(password),
-        region,
-    };
+    let password =
+        config::resolve_secret_env(&llu.password_env).map_err(|e| anyhow::anyhow!("{e}"))?;
     let resolved_version = llu
         .version
         .as_deref()
@@ -285,6 +268,20 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
     let client = LluAuthClient::new()
         .context("build LLU HTTP client")?
         .with_version(&resolved_version);
+    let creds = LluCredentials {
+        email: llu.email.clone(),
+        password: SecretString::from(password),
+        region,
+    };
+    Ok((client, creds, resolved_version))
+}
+
+#[cfg(feature = "source-llu")]
+fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
+    use cgm_bridge_core::{PatientId, SourceId};
+    use sources::llu::source::{ConnectionSelection, LluSource};
+
+    let (client, creds, resolved_version) = build_llu_client_and_creds(llu)?;
     let selection = match llu.patient_id.as_deref() {
         Some(id) => ConnectionSelection::ByPatientId(
             PatientId::new(id).context("invalid patient_id in [source.llu]")?,
@@ -292,11 +289,8 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
         None => ConnectionSelection::First,
     };
     let id = SourceId::new("llu").context("build SourceId")?;
-    // Logged at INFO so post-mortems can confirm exactly which `version`
-    // header the bridge sent — recovers from a 4xx without spelunking
-    // through the running config.
     info!(
-        region = ?region,
+        region = ?creds.region,
         llu_version = %resolved_version,
         "llu source configured"
     );
@@ -305,15 +299,11 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
 
 /// One-shot LLU probe. Logs in, lists connections, fetches one graph,
 /// prints a single-line JSON summary to stdout. Errors propagate with
-/// their `[LLU0xx]` / `[CFG0xx]` prefix so `classify_dryrun_exit` can
+/// their `[LLU0xx]` / `[CFG0xx]` prefix so `classify_by_prefix` can
 /// map them to operator-facing exit codes.
 #[cfg(feature = "source-llu")]
 async fn dryrun(cfg: &config::Config) -> Result<()> {
     use cgm_bridge_core::PatientId;
-    use secrecy::SecretString;
-    use sources::llu::Region;
-    use sources::llu::auth::{LluAuthClient, LluCredentials};
-    use sources::llu::headers::DEFAULT_LLU_VERSION;
 
     let llu = cfg.source.llu.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
@@ -321,32 +311,8 @@ async fn dryrun(cfg: &config::Config) -> Result<()> {
             CGM_BRIDGE__SOURCE__LLU__* env overrides"
         )
     })?;
-    let region = Region::parse(&llu.region).context("parse LLU region")?;
-    let password = std::env::var(&llu.password_env).map_err(|_| {
-        anyhow::anyhow!(
-            "[CFG003] required secret env var not set: {}",
-            llu.password_env
-        )
-    })?;
-    if password.is_empty() {
-        anyhow::bail!(
-            "[CFG003] required secret env var is empty: {}",
-            llu.password_env
-        );
-    }
-    let resolved_version = llu
-        .version
-        .as_deref()
-        .unwrap_or(DEFAULT_LLU_VERSION)
-        .to_string();
-    let client = LluAuthClient::new()
-        .context("build llu client")?
-        .with_version(&resolved_version);
-    let creds = LluCredentials {
-        email: llu.email.clone(),
-        password: SecretString::from(password),
-        region,
-    };
+    let (client, creds, resolved_version) = build_llu_client_and_creds(llu)?;
+    let region = creds.region;
 
     info!(region = ?region, llu_version = %resolved_version, "llu dryrun: logging in");
     let tokens = client.login(&creds).await?;
@@ -371,25 +337,13 @@ async fn dryrun(cfg: &config::Config) -> Result<()> {
     let pid = PatientId::new(selected.patient_id.clone()).context("invalid patient_id from LLU")?;
     let graph = client.graph(&tokens, region, &pid).await?;
 
-    // Find the newest measurement by parsing the LLU timestamp string;
-    // safe to fall back to None if it doesn't parse.
-    let latest = graph
-        .data
-        .graph_data
-        .iter()
-        .filter_map(|m| {
-            sources::llu::mapping::parse_llu_timestamp(&m.timestamp)
-                .ok()
-                .map(|t| (t, m))
+    let latest = sources::llu::mapping::newest_measurement(&graph.data.graph_data).map(|(t, m)| {
+        serde_json::json!({
+            "mgdl": m.value_in_mg_per_dl,
+            "trend_arrow": m.trend_arrow,
+            "timestamp_iso": t.to_rfc3339(),
         })
-        .max_by_key(|(t, _)| *t)
-        .map(|(t, m)| {
-            serde_json::json!({
-                "mgdl": m.value_in_mg_per_dl,
-                "trend_arrow": m.trend_arrow,
-                "timestamp_iso": t.to_rfc3339(),
-            })
-        });
+    });
 
     let summary = serde_json::json!({
         "llu_version": resolved_version,
@@ -402,8 +356,6 @@ async fn dryrun(cfg: &config::Config) -> Result<()> {
         "graph_count": graph.data.graph_data.len(),
         "latest": latest,
     });
-    // Operator-facing summary on stdout. Distinct from the structured
-    // tracing logs which still go to stderr.
     println!("{}", serde_json::to_string(&summary).expect("json"));
     Ok(())
 }
@@ -422,18 +374,8 @@ async fn nsdryrun(cfg: &config::Config) -> Result<()> {
             CGM_BRIDGE__SINK__NIGHTSCOUT__* env overrides"
         )
     })?;
-    let secret = std::env::var(&ns.api_secret_env).map_err(|_| {
-        anyhow::anyhow!(
-            "[CFG003] required secret env var not set: {}",
-            ns.api_secret_env
-        )
-    })?;
-    if secret.is_empty() {
-        anyhow::bail!(
-            "[CFG003] required secret env var is empty: {}",
-            ns.api_secret_env
-        );
-    }
+    let secret =
+        config::resolve_secret_env(&ns.api_secret_env).map_err(|e| anyhow::anyhow!("{e}"))?;
     let client = NightscoutClient::new(ns.base_url.clone(), SecretString::from(secret))
         .context("build nightscout client")?;
 
@@ -599,18 +541,8 @@ fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Si
     const DEFAULT_DEVICE: &str = "cgm-bridge";
     const DEFAULT_APP: &str = "cgm-bridge";
 
-    let secret = std::env::var(&ns.api_secret_env).map_err(|_| {
-        anyhow::anyhow!(
-            "[CFG003] required secret env var not set: {}",
-            ns.api_secret_env
-        )
-    })?;
-    if secret.is_empty() {
-        anyhow::bail!(
-            "[CFG003] required secret env var is empty: {}",
-            ns.api_secret_env
-        );
-    }
+    let secret =
+        config::resolve_secret_env(&ns.api_secret_env).map_err(|e| anyhow::anyhow!("{e}"))?;
     let device = ns.device.as_deref().unwrap_or(DEFAULT_DEVICE);
     let app = ns.app.as_deref().unwrap_or(DEFAULT_APP);
     let client = NightscoutClient::new(ns.base_url.clone(), SecretString::from(secret))
@@ -790,7 +722,7 @@ mod tests {
     fn dryrun_exit_classification() {
         // The classification operates on `format!("{e:#}")` style
         // anyhow chains, so embed the prefix in any larger message.
-        let mk = |s: &str| classify_dryrun_exit(&format!("oops: {s} extra"));
+        let mk = |s: &str| classify_by_prefix(&format!("oops: {s} extra"), DRYRUN_EXIT_TABLE);
         // anyhow's ExitCode does not impl PartialEq; stringify for compare.
         let to_n = |c: ExitCode| format!("{c:?}");
 
@@ -808,7 +740,7 @@ mod tests {
     /// `dryrun_exit_classification` for the sink side.
     #[test]
     fn ns_dryrun_exit_classification() {
-        let mk = |s: &str| classify_nsdryrun_exit(&format!("oops: {s} extra"));
+        let mk = |s: &str| classify_by_prefix(&format!("oops: {s} extra"), NSDRYRUN_EXIT_TABLE);
         let to_n = |c: ExitCode| format!("{c:?}");
 
         assert_eq!(to_n(mk("[CFG003]")), to_n(ExitCode::from(2)));
