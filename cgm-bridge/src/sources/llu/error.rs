@@ -28,6 +28,9 @@ pub enum LluError {
 
     #[error("[LLU008] LLU rejected token on {endpoint}: 401")]
     Unauthorized { endpoint: &'static str },
+
+    #[error("[LLU009] no LLU connection matched selection: {selection}")]
+    NoConnection { selection: String },
 }
 
 impl LluError {
@@ -41,6 +44,7 @@ impl LluError {
             LluError::UnknownRegion { .. } => "LLU006",
             LluError::BadTimestamp { .. } => "LLU007",
             LluError::Unauthorized { .. } => "LLU008",
+            LluError::NoConnection { .. } => "LLU009",
         }
     }
 }

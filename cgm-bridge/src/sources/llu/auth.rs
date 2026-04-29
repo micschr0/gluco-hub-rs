@@ -23,6 +23,7 @@ pub struct LluCredentials {
 
 /// Bearer token + account-id hash returned by a successful login. Both are
 /// secrets — the `Debug` impl avoids leaking them.
+#[derive(Clone)]
 pub struct LluTokens {
     pub bearer: SecretString,
     /// `sha256(user.id)` rendered as lowercase hex, sent verbatim in the

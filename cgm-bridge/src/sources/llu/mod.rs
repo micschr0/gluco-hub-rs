@@ -12,6 +12,7 @@ pub mod error;
 pub mod headers;
 pub mod mapping;
 pub mod region;
+pub mod source;
 pub mod wire;
 
 // Re-exports kept stable for the upcoming 4b iteration that wires the
