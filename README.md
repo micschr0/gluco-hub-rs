@@ -204,10 +204,18 @@ cargo deny check
 
 A GitHub Actions workflow (`.github/workflows/deny.yml`) running
 `EmbarkStudios/cargo-deny-action@v2 --all-features` on every push,
-PR, and weekly cron is the recommended CI step. (Not committed yet
-in this branch — the OAuth token used during V1 lacked the
-`workflow` scope; add the file in a separate PR with appropriate
-credentials.)
+PR, and weekly cron is the recommended CI step. The drop-in file
+is checked in at [`docs/ci/deny-workflow.yml`](./docs/ci/deny-workflow.yml).
+Copy it to `.github/workflows/deny.yml` and push with a token that
+has the GitHub `workflow` scope:
+
+```bash
+mkdir -p .github/workflows
+cp docs/ci/deny-workflow.yml .github/workflows/deny.yml
+git add .github/workflows/deny.yml
+git commit -m "ci: enforce cargo-deny policy on push and PR"
+git push
+```
 
 ## Documentation
 

@@ -1,0 +1,34 @@
+# Drop-in workflow file for `cargo deny check`.
+#
+# Place at `.github/workflows/deny.yml` in your fork. Could not be
+# committed automatically by the V1 development branch because the
+# OAuth token in use lacked the `workflow` scope. Once the file is
+# under `.github/workflows/` and pushed, every push and PR (and the
+# weekly cron) runs `cargo-deny-action` against the policy in
+# `deny.toml` at the repo root.
+
+name: cargo-deny
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Re-run weekly so new advisories against unchanged dep trees still
+    # surface — the runtime tree won't change but the advisory database
+    # will.
+    - cron: "0 6 * * 1"
+
+jobs:
+  deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # Matches `[graph] all-features = true` in deny.toml so every
+          # feature combination is policy-checked.
+          command: check
+          arguments: --all-features
