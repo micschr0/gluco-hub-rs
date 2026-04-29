@@ -29,6 +29,7 @@ mod tests {
         let state = AppState {
             cache: ReadingCache::new(),
             metrics_handle: handle,
+            bearer_token: None,
         };
         let app = router_with_state(state);
         let resp = app

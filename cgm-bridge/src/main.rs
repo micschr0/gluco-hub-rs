@@ -77,11 +77,19 @@ async fn run(cli: Cli) -> Result<()> {
 }
 
 async fn serve(cfg: config::Config) -> Result<()> {
+    // Fail fast if any referenced secret env var is missing — better to
+    // crash on startup than to start serving 401s after the bearer token
+    // ended up empty.
+    config::verify_secret_env_vars(&cfg).context("verify secret env vars")?;
+
     let metrics_handle = metrics::init_recorder().context("init metrics recorder")?;
     let cache = ReadingCache::new();
+    let bearer_token = resolve_bearer_token(&cfg)?;
+    info!(auth_enabled = bearer_token.is_some(), "http auth state");
     let state = api::AppState {
         cache: cache.clone(),
         metrics_handle,
+        bearer_token,
     };
 
     if let Some(source) = build_default_source(&cfg)? {
@@ -106,6 +114,24 @@ async fn serve(cfg: config::Config) -> Result<()> {
         .await
         .context("http server")?;
     Ok(())
+}
+
+/// Resolve the optional Bearer token from the env var named in
+/// `[http] bearer_token_env`. Returns `Ok(None)` when the operator has
+/// not opted in to auth. Errors when the env var is referenced but
+/// unset/empty (already pre-checked by `verify_secret_env_vars`, but
+/// kept defensive in case of a race where the var is unset between
+/// startup and here).
+fn resolve_bearer_token(cfg: &config::Config) -> Result<Option<secrecy::SecretString>> {
+    let Some(name) = cfg.http.bearer_token_env.as_deref() else {
+        return Ok(None);
+    };
+    let value = std::env::var(name)
+        .map_err(|_| anyhow::anyhow!("[CFG003] bearer_token_env not set: {name}"))?;
+    if value.is_empty() {
+        anyhow::bail!("[CFG003] bearer_token_env is empty: {name}");
+    }
+    Ok(Some(secrecy::SecretString::from(value)))
 }
 
 /// Build the source to drive the poller. Priority order:

@@ -43,6 +43,7 @@ validator = { workspace = true }
 
 clap = { workspace = true }
 tempfile = { workspace = true }
+subtle = { workspace = true }
 
 # Optional, only pulled in by `source-llu`.
 sha2 = { workspace = true, optional = true }

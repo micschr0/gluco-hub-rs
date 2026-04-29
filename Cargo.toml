@@ -50,6 +50,9 @@ tempfile = "3"
 # Crypto (LLU account-id is sha256 of userId)
 sha2 = "0.10"
 
+# Constant-time byte comparison (Bearer auth token check)
+subtle = "2"
+
 # Test helpers (dev-dependencies in member crates)
 wiremock = "0.6"
 

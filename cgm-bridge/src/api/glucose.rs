@@ -70,6 +70,7 @@ mod tests {
         let state = AppState {
             cache: ReadingCache::new(),
             metrics_handle: handle,
+            bearer_token: None,
         };
         let app = router_with_state(state);
         let resp = app
@@ -96,6 +97,7 @@ mod tests {
         let app = router_with_state(AppState {
             cache: cache.clone(),
             metrics_handle: handle,
+            bearer_token: None,
         });
         let resp = app
             .oneshot(Request::get("/glucose/latest").body(Body::empty()).unwrap())

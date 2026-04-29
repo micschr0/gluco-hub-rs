@@ -10,6 +10,10 @@
 [http]
 # Address the HTTP API listens on.
 bind = "0.0.0.0:8080"
+# Optional: when set, /glucose/* requires `Authorization: Bearer <token>`
+# where the token equals the value of the named environment variable.
+# /healthz and /metrics stay public.
+# bearer_token_env = "CGM_BRIDGE_BEARER_TOKEN"
 
 [poller]
 # How often the LibreLink Up source is polled, in seconds. LLU updates

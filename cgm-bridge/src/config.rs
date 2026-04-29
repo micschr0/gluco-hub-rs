@@ -27,6 +27,23 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct HttpConfig {
     pub bind: SocketAddr,
+
+    /// Optional: name of the env var holding a Bearer token. When set,
+    /// `/glucose/*` requires `Authorization: Bearer <token>`. `/healthz`
+    /// and `/metrics` always stay public.
+    #[serde(default)]
+    #[validate(
+        length(min = 1, max = 256),
+        custom(function = "validate_ascii_env_name")
+    )]
+    pub bearer_token_env: Option<String>,
+}
+
+fn validate_ascii_env_name(value: &str) -> Result<(), ValidationError> {
+    if value.is_empty() || !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(ValidationError::new("env_var_name"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, Validate)]
@@ -137,13 +154,20 @@ pub fn load(override_path: Option<&Path>) -> Result<Config, ConfigError> {
 /// The env-var *value* is never logged, returned, or stored; only its
 /// presence is checked.
 pub fn verify_secret_env_vars(cfg: &Config) -> Result<(), ConfigError> {
+    let mut required: Vec<&str> = Vec::new();
     if let Some(llu) = cfg.source.llu.as_ref() {
-        let value = std::env::var(&llu.password_env).map_err(|_| ConfigError::MissingSecret {
-            var: llu.password_env.clone(),
+        required.push(&llu.password_env);
+    }
+    if let Some(name) = cfg.http.bearer_token_env.as_deref() {
+        required.push(name);
+    }
+    for var in required {
+        let value = std::env::var(var).map_err(|_| ConfigError::MissingSecret {
+            var: var.to_string(),
         })?;
         if value.is_empty() {
             return Err(ConfigError::MissingSecret {
-                var: llu.password_env.clone(),
+                var: var.to_string(),
             });
         }
     }
