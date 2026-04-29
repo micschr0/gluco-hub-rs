@@ -34,6 +34,13 @@ enum Command {
     Run,
     /// Validate the configuration and exit.
     CheckConfig,
+    /// One-shot LLU connectivity probe: log in, list connections,
+    /// fetch one graph, print a JSON summary to stdout. No HTTP server,
+    /// no Nightscout push, no cache writes. Use BEFORE wiring the sink
+    /// to confirm the operator's LLU credentials + region + version
+    /// actually work against the live API.
+    #[cfg(feature = "source-llu")]
+    Dryrun,
 }
 
 fn main() -> ExitCode {
@@ -41,11 +48,38 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
     match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
             error!(error = %e, "fatal");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Map an error message that already starts with a stable
+/// `[XXX0nn]` prefix into the exit codes documented in
+/// `scripts/llu-dryrun.sh`. Runs on the formatted display of the
+/// error chain so it survives `anyhow::Context` wrapping.
+///
+/// Only reachable through the `Dryrun` subcommand, which is itself
+/// gated behind `feature = "source-llu"`. The function is also used
+/// from `#[cfg(test)]` to keep the contract pinned, hence two cfgs.
+#[cfg(any(feature = "source-llu", test))]
+fn classify_dryrun_exit(err_text: &str) -> ExitCode {
+    if err_text.contains("[LLU003]") {
+        ExitCode::from(3) // invalid credentials
+    } else if err_text.contains("[LLU002]")
+        || err_text.contains("[LLU004]")
+        || err_text.contains("[LLU006]")
+        || err_text.contains("[LLU007]")
+    {
+        ExitCode::from(4) // version / protocol / unknown-region / bad timestamp
+    } else if err_text.contains("[LLU001]") || err_text.contains("[LLU005]") {
+        ExitCode::from(5) // transport / redirect-loop
+    } else if err_text.contains("[CFG") {
+        ExitCode::from(2) // config / env
+    } else {
+        ExitCode::FAILURE
     }
 }
 
@@ -63,7 +97,7 @@ fn init_tracing() {
 }
 
 #[tokio::main(flavor = "multi_thread")]
-async fn run(cli: Cli) -> Result<()> {
+async fn run(cli: Cli) -> Result<ExitCode> {
     let cfg = config::load(cli.config.as_deref()).context("failed to load configuration")?;
 
     match cli.command {
@@ -74,9 +108,21 @@ async fn run(cli: Cli) -> Result<()> {
                 llu_configured = cfg.source.llu.is_some(),
                 "configuration ok"
             );
-            Ok(())
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Run => serve(cfg).await,
+        Command::Run => {
+            serve(cfg).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        #[cfg(feature = "source-llu")]
+        Command::Dryrun => match dryrun(&cfg).await {
+            Ok(()) => Ok(ExitCode::SUCCESS),
+            Err(e) => {
+                let txt = format!("{e:#}");
+                error!(error = %txt, "llu dryrun failed");
+                Ok(classify_dryrun_exit(&txt))
+            }
+        },
     }
 }
 
@@ -224,6 +270,111 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
         "llu source configured"
     );
     Ok(Arc::new(LluSource::new(id, client, creds, selection)))
+}
+
+/// One-shot LLU probe. Logs in, lists connections, fetches one graph,
+/// prints a single-line JSON summary to stdout. Errors propagate with
+/// their `[LLU0xx]` / `[CFG0xx]` prefix so `classify_dryrun_exit` can
+/// map them to operator-facing exit codes.
+#[cfg(feature = "source-llu")]
+async fn dryrun(cfg: &config::Config) -> Result<()> {
+    use cgm_bridge_core::PatientId;
+    use secrecy::SecretString;
+    use sources::llu::Region;
+    use sources::llu::auth::{LluAuthClient, LluCredentials};
+    use sources::llu::headers::DEFAULT_LLU_VERSION;
+
+    let llu = cfg.source.llu.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "[CFG004] dryrun requires [source.llu] config or \
+            CGM_BRIDGE__SOURCE__LLU__* env overrides"
+        )
+    })?;
+    let region = Region::parse(&llu.region).context("parse LLU region")?;
+    let password = std::env::var(&llu.password_env).map_err(|_| {
+        anyhow::anyhow!(
+            "[CFG003] required secret env var not set: {}",
+            llu.password_env
+        )
+    })?;
+    if password.is_empty() {
+        anyhow::bail!(
+            "[CFG003] required secret env var is empty: {}",
+            llu.password_env
+        );
+    }
+    let resolved_version = llu
+        .version
+        .as_deref()
+        .unwrap_or(DEFAULT_LLU_VERSION)
+        .to_string();
+    let client = LluAuthClient::new()
+        .context("build llu client")?
+        .with_version(&resolved_version);
+    let creds = LluCredentials {
+        email: llu.email.clone(),
+        password: SecretString::from(password),
+        region,
+    };
+
+    info!(region = ?region, llu_version = %resolved_version, "llu dryrun: logging in");
+    let tokens = client.login(&creds).await?;
+    info!("llu dryrun: login ok");
+
+    let connections = client.connections(&tokens, region).await?;
+    if connections.is_empty() {
+        anyhow::bail!("[LLU009] no connections returned for this account");
+    }
+
+    let selected = match llu.patient_id.as_deref() {
+        Some(pid) => connections
+            .iter()
+            .find(|c| c.patient_id == pid)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "[LLU009] configured patient_id {pid} not present in connections list"
+                )
+            })?,
+        None => &connections[0],
+    };
+    let pid = PatientId::new(selected.patient_id.clone()).context("invalid patient_id from LLU")?;
+    let graph = client.graph(&tokens, region, &pid).await?;
+
+    // Find the newest measurement by parsing the LLU timestamp string;
+    // safe to fall back to None if it doesn't parse.
+    let latest = graph
+        .data
+        .graph_data
+        .iter()
+        .filter_map(|m| {
+            sources::llu::mapping::parse_llu_timestamp(&m.timestamp)
+                .ok()
+                .map(|t| (t, m))
+        })
+        .max_by_key(|(t, _)| *t)
+        .map(|(t, m)| {
+            serde_json::json!({
+                "mgdl": m.value_in_mg_per_dl,
+                "trend_arrow": m.trend_arrow,
+                "timestamp_iso": t.to_rfc3339(),
+            })
+        });
+
+    let summary = serde_json::json!({
+        "llu_version": resolved_version,
+        "region": format!("{region:?}"),
+        "patients": connections
+            .iter()
+            .map(|c| c.patient_id.as_str())
+            .collect::<Vec<_>>(),
+        "selected_patient_id": selected.patient_id,
+        "graph_count": graph.data.graph_data.len(),
+        "latest": latest,
+    });
+    // Operator-facing summary on stdout. Distinct from the structured
+    // tracing logs which still go to stderr.
+    println!("{}", serde_json::to_string(&summary).expect("json"));
+    Ok(())
 }
 
 async fn poll_loop(
@@ -556,5 +707,26 @@ mod tests {
             sink_push_timeout(Duration::from_secs(5)),
             Duration::from_secs(5)
         );
+    }
+
+    /// `scripts/llu-dryrun.sh` documents these exit codes — keep them
+    /// pinned by test so a future refactor doesn't silently shift the
+    /// operator-visible contract.
+    #[test]
+    fn dryrun_exit_classification() {
+        // The classification operates on `format!("{e:#}")` style
+        // anyhow chains, so embed the prefix in any larger message.
+        let mk = |s: &str| classify_dryrun_exit(&format!("oops: {s} extra"));
+        // anyhow's ExitCode does not impl PartialEq; stringify for compare.
+        let to_n = |c: ExitCode| format!("{c:?}");
+
+        assert_eq!(to_n(mk("[LLU003]")), to_n(ExitCode::from(3)));
+        assert_eq!(to_n(mk("[LLU002]")), to_n(ExitCode::from(4)));
+        assert_eq!(to_n(mk("[LLU004]")), to_n(ExitCode::from(4)));
+        assert_eq!(to_n(mk("[LLU001]")), to_n(ExitCode::from(5)));
+        assert_eq!(to_n(mk("[CFG003]")), to_n(ExitCode::from(2)));
+        assert_eq!(to_n(mk("[CFG004]")), to_n(ExitCode::from(2)));
+        // Unknown / unclassified → generic failure.
+        assert_eq!(to_n(mk("totally unrelated panic")), to_n(ExitCode::FAILURE));
     }
 }

@@ -22,6 +22,26 @@ It builds the binary, boots it on `127.0.0.1:18080`, hits `/healthz`,
 means the full `Source → cache → API` path works end-to-end. No LLU
 account, no Nightscout instance, no env vars required.
 
+**Before you wire Nightscout** — once you have an LLU account, run
+the live one-shot probe:
+
+```bash
+export LLU_EMAIL='you@example.com'
+export LLU_PASSWORD='…'
+export LLU_REGION='EU'      # optional, defaults to EU
+# export LLU_VERSION='4.17.0'   # if LibreView rejects 4.16.0
+# export LLU_PATIENT_ID='…'     # multi-patient accounts
+bash scripts/llu-dryrun.sh
+```
+
+It logs in, lists connections, fetches one graph, and prints a
+single-line JSON summary on stdout — *without* an HTTP server,
+without writing the cache, and without touching Nightscout.
+Exit codes: `0` ok, `2` config/env, `3` invalid credentials,
+`4` status / protocol / version mismatch, `5` transport / WAF.
+This is the cheapest way to confirm the LLU side works in
+isolation before debugging the rest of the pipeline.
+
 For a real deployment:
 
 ```bash
