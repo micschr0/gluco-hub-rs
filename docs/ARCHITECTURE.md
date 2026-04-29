@@ -71,6 +71,18 @@ sequenceDiagram
     end
 ```
 
+## Build identity
+
+`cgm_bridge_build_info{version, git_sha, features}` is a constant
+gauge set to `1` on first scrape. Joining other metrics on this
+label-set lets dashboards group by build — useful for "which build
+is leaking?" post-mortems and for sanity-checking that a deployment
+actually rolled. `version` is `CARGO_PKG_VERSION`, `git_sha` is
+`option_env!("CGM_BRIDGE_GIT_SHA")` (set by CI:
+`CGM_BRIDGE_GIT_SHA=$(git rev-parse HEAD) cargo build`; falls back
+to `"unknown"` for ad-hoc dev builds), `features` is the alphabetical
+comma-joined list of enabled Cargo features.
+
 ## HTTP routing
 
 ```mermaid
