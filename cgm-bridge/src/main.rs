@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 
 mod api;
 mod config;
+mod metrics;
 
 #[derive(Debug, Parser)]
 #[command(name = "cgm-bridge", about = "LibreLink Up → HTTP/Nightscout bridge")]
@@ -70,9 +71,11 @@ async fn run(cli: Cli) -> Result<()> {
 }
 
 async fn serve(cfg: config::Config) -> Result<()> {
+    let metrics_handle = metrics::init_recorder().context("init metrics recorder")?;
     let cache = ReadingCache::new();
     let state = api::AppState {
         cache: cache.clone(),
+        metrics_handle,
     };
 
     if let Some(source) = build_default_source()? {
@@ -124,10 +127,30 @@ async fn poll_loop(source: Arc<dyn Source>, cache: ReadingCache, interval: Durat
         match source.fetch_latest().await {
             Ok(batch) => {
                 let count = batch.len();
+                let newest = batch.iter().max_by_key(|r| r.timestamp).cloned();
                 cache.update(&batch);
+                ::metrics::counter!(
+                    metrics::COUNTER_FETCH_SUCCESS,
+                    "source_id" => source_id.clone(),
+                )
+                .increment(1);
+                ::metrics::counter!(metrics::COUNTER_CACHE_UPDATES).increment(1);
+                if let Some(latest) = newest {
+                    ::metrics::gauge!(
+                        metrics::GAUGE_GLUCOSE,
+                        "patient_id" => latest.patient_id.as_str().to_string(),
+                        "source_id" => latest.source_id.as_str().to_string(),
+                    )
+                    .set(latest.glucose.get());
+                }
                 info!(source_id = %source_id, count, "cache updated");
             }
             Err(e) => {
+                ::metrics::counter!(
+                    metrics::COUNTER_FETCH_ERRORS,
+                    "error_code" => e.error_code(),
+                )
+                .increment(1);
                 error!(
                     error_code = e.error_code(),
                     source_id = %source_id,

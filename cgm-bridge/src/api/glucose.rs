@@ -66,8 +66,10 @@ mod tests {
 
     #[tokio::test]
     async fn returns_503_when_cache_empty() {
+        let handle = crate::metrics::init_recorder().expect("recorder");
         let state = AppState {
             cache: ReadingCache::new(),
+            metrics_handle: handle,
         };
         let app = router_with_state(state);
         let resp = app
@@ -90,8 +92,10 @@ mod tests {
             glucose: GlucoseMgDl::new(123.0).unwrap(),
             trend: Trend::Flat,
         }]);
+        let handle = crate::metrics::init_recorder().expect("recorder");
         let app = router_with_state(AppState {
             cache: cache.clone(),
+            metrics_handle: handle,
         });
         let resp = app
             .oneshot(Request::get("/glucose/latest").body(Body::empty()).unwrap())
