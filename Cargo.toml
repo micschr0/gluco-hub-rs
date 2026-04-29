@@ -1,13 +1,12 @@
 [workspace]
 resolver = "3"
-# Add member crates as you create them, e.g.:
-# members = ["cgm-bridge-core", "cgm-bridge"]
-members = []
+members = ["cgm-bridge-core", "cgm-bridge"]
 
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = []
+version = "0.1.0"
 
 # Canonical version reference. Member crates use `serde = { workspace = true }`.
 # Renovate keeps these on the latest minor — no exact pins.
@@ -23,6 +22,7 @@ anyhow = "1"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
 
 # HTTP
 axum = "0.8"
@@ -38,7 +38,7 @@ metrics-exporter-prometheus = "0.16"
 
 # Config & secrets
 config = { version = "0.15", default-features = false, features = ["toml"] }
-secrecy = "0.10"
+secrecy = { version = "0.10", features = ["serde"] }
 validator = { version = "0.20", features = ["derive"] }
 
 # CLI
