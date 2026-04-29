@@ -179,6 +179,8 @@ credentials.)
 
 ## Documentation
 
+- `docs/ARCHITECTURE.md` — data flow + sequence diagrams, error-code
+  reference, feature matrix, configuration reference, module map.
 - `CLAUDE.md` — engineering conventions (errors, logging, secrets, …).
 - `config.example.toml` — schema reference.
 - `deny.toml` — supply-chain policy enforced by `cargo deny`.
