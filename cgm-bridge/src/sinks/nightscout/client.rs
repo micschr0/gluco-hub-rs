@@ -195,11 +195,20 @@ impl NightscoutClient {
     /// `POST /api/v3/entries` with a JSON array of entries derived from
     /// `readings`. An empty `readings` slice is a no-op.
     ///
-    /// Status mapping:
+    /// Status mapping (per attempt):
     /// - 2xx → `Ok(())`. Empty body on `201 Created` is normal.
-    /// - 401 → `NsError::Unauthorized`.
-    /// - 429, 5xx → `NsError::Retryable { status }` (caller decides backoff).
-    /// - Anything else → `NsError::Status { status }`.
+    /// - 401 → `NsError::Unauthorized` (terminal; no retry).
+    /// - 429, 5xx → `NsError::Retryable { status }` — automatically
+    ///   retried up to [`MAX_POST_RETRIES`] times with exponential
+    ///   backoff (200 ms, 400 ms). The final failure surfaces with
+    ///   the same status as the last attempt.
+    /// - Anything else → `NsError::Status { status }` (terminal).
+    ///
+    /// Each retry increments
+    /// `cgm_sink_post_retry_total{sink="nightscout", attempt=N}`. No
+    /// `Retry-After` header parsing in V1 — the bounded backoff is
+    /// chosen to ride out the 1–3 s blips typical of NS instances
+    /// behind a CDN without amplifying real outages.
     pub async fn post_entries(&self, readings: &[Reading]) -> Result<(), NsError> {
         if readings.is_empty() {
             debug!("ns post_entries: empty batch, skipping");
@@ -210,15 +219,41 @@ impl NightscoutClient {
             .map(|r| entry_from_reading(r, self.device.as_deref(), self.app.as_deref()))
             .collect();
 
+        let mut attempt: u32 = 0;
+        loop {
+            match self.try_post_entries(&body).await {
+                Ok(()) => return Ok(()),
+                Err(NsError::Retryable { status }) if attempt < MAX_POST_RETRIES => {
+                    attempt += 1;
+                    let delay = retry_backoff(attempt);
+                    ::metrics::counter!(
+                        "cgm_sink_post_retry_total",
+                        "sink" => "nightscout",
+                        "attempt" => attempt.to_string(),
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        attempt,
+                        status,
+                        delay_ms = delay.as_millis() as u64,
+                        "ns retryable; backing off"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn try_post_entries(&self, body: &[NsEntry]) -> Result<(), NsError> {
         let resp = self
             .http
             .post(self.entries_url())
             .header("api-secret", api_secret_header(&self.secret))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&body)
+            .json(body)
             .send()
             .await?;
-
         let status = resp.status();
         if status.is_success() {
             return Ok(());
@@ -232,6 +267,18 @@ impl NightscoutClient {
         }
         Err(NsError::Status { status: code })
     }
+}
+
+/// Bounded retry budget per `post_entries` call. With base 200 ms,
+/// the worst-case wall time is `200 + 400 = 600 ms` of sleep before
+/// returning the final error — well under the smallest valid
+/// `[poller] interval_secs = 30 s`, so retries never bleed into the
+/// next poll tick.
+const MAX_POST_RETRIES: u32 = 2;
+
+fn retry_backoff(attempt: u32) -> std::time::Duration {
+    // attempt=1 → 200ms, attempt=2 → 400ms.
+    std::time::Duration::from_millis(200_u64 << (attempt.saturating_sub(1)))
 }
 
 #[cfg(test)]
@@ -334,7 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maps_502_to_retryable() {
+    async fn maps_502_to_retryable_after_exhausting_retries() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/v3/entries"))
@@ -346,6 +393,66 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, NsError::Retryable { status: 502 }));
+        // 1 initial attempt + MAX_POST_RETRIES retries (2) = 3 POSTs.
+        let posts = server
+            .received_requests()
+            .await
+            .expect("requests")
+            .into_iter()
+            .filter(|r| r.method.as_str() == "POST")
+            .count();
+        assert_eq!(posts, 3, "expected initial + 2 retries");
+    }
+
+    #[tokio::test]
+    async fn retries_succeed_after_two_502s_then_201() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .respond_with(ResponseTemplate::new(502))
+            .up_to_n_times(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+        client(&server)
+            .post_entries(&[reading()])
+            .await
+            .expect("ok after retries");
+        let posts = server
+            .received_requests()
+            .await
+            .expect("requests")
+            .into_iter()
+            .filter(|r| r.method.as_str() == "POST")
+            .count();
+        assert_eq!(posts, 3, "two 502s + one 201");
+    }
+
+    #[tokio::test]
+    async fn non_retryable_400_is_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+        let err = client(&server)
+            .post_entries(&[reading()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NsError::Status { status: 400 }));
+        let posts = server
+            .received_requests()
+            .await
+            .expect("requests")
+            .into_iter()
+            .filter(|r| r.method.as_str() == "POST")
+            .count();
+        assert_eq!(posts, 1, "400 must be terminal — no retry");
     }
 
     #[tokio::test]
@@ -361,20 +468,5 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, NsError::Retryable { status: 429 }));
-    }
-
-    #[tokio::test]
-    async fn maps_400_to_status() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
-            .respond_with(ResponseTemplate::new(400))
-            .mount(&server)
-            .await;
-        let err = client(&server)
-            .post_entries(&[reading()])
-            .await
-            .unwrap_err();
-        assert!(matches!(err, NsError::Status { status: 400 }));
     }
 }

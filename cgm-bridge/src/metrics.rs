@@ -15,6 +15,7 @@ pub const COUNTER_FETCH_SUCCESS: &str = "cgm_source_fetch_success_total";
 pub const COUNTER_FETCH_ERRORS: &str = "cgm_source_fetch_errors_total";
 pub const COUNTER_SINK_SUCCESS: &str = "cgm_sink_push_success_total";
 pub const COUNTER_SINK_ERRORS: &str = "cgm_sink_push_errors_total";
+pub const COUNTER_SINK_RETRY: &str = "cgm_sink_post_retry_total";
 pub const GAUGE_GLUCOSE: &str = "cgm_glucose_mgdl";
 pub const GAUGE_BUILD_INFO: &str = "cgm_bridge_build_info";
 
@@ -97,6 +98,11 @@ fn describe_all() {
     describe_counter!(
         COUNTER_SINK_ERRORS,
         "Number of failed sink pushes, labelled by sink and error_code"
+    );
+    describe_counter!(
+        COUNTER_SINK_RETRY,
+        "Number of in-process retries against a sink (transient 429 / 5xx); \
+        labelled by sink and attempt number (1-based)"
     );
     describe_gauge!(
         GAUGE_GLUCOSE,
