@@ -1,0 +1,48 @@
+# cgm-bridge configuration.
+#
+# Secrets are NEVER embedded here. Where a secret is needed, the field
+# carries the *name* of the environment variable that holds it
+# (e.g. `bearer_token_env = "CGM_BRIDGE_BEARER_TOKEN"`).
+#
+# Any value can also be overridden by an environment variable using the
+# `CGM_BRIDGE__SECTION__KEY` convention, e.g. `CGM_BRIDGE__HTTP__BIND`.
+
+[http]
+# Address the HTTP API listens on.
+bind = "0.0.0.0:8080"
+# Optional: when set, /glucose/* requires `Authorization: Bearer <token>`
+# where the token equals the value of the named environment variable.
+# /healthz and /metrics stay public.
+# bearer_token_env = "CGM_BRIDGE_BEARER_TOKEN"
+
+[poller]
+# How often the LibreLink Up source is polled, in seconds. LLU updates
+# every ~60 s; values below 30 are rejected to avoid rate-limiting.
+interval_secs = 60
+
+# Optional: real LibreLink Up source. Requires the `source-llu` Cargo
+# feature on the binary. Uncomment and fill in to drive the poller from
+# a real Libre account. The password itself is NEVER stored here — only
+# the name of the environment variable that holds it.
+#
+# [source.llu]
+# email = "you@example.com"
+# password_env = "LLU_PASSWORD"
+# # Region: AE, AP, AU, CA, DE, EU, EU2, FR, JP, US, LA, RU, CN.
+# region = "EU"
+# # Optional: pick a specific patient when the account has more than
+# # one linked. When absent, the first connection is used.
+# # patient_id = "00000000-0000-0000-0000-000000000000"
+# # LibreLink Up app version sent in the `version` header. Defaults to
+# # the binary's pinned value. Override here, OR at runtime via the env
+# # var `CGM_BRIDGE__SOURCE__LLU__VERSION=4.17.0`, when LibreView starts
+# # rejecting the default — no recompile required.
+# # version = "4.16.0"
+
+# Optional: Nightscout sink. Requires the `sink-nightscout` Cargo
+# feature on the binary. Uncomment and fill in to push every batch of
+# readings to a self-hosted Nightscout instance.
+#
+# [sink.nightscout]
+# base_url = "https://nightscout.example.com"
+# api_secret_env = "NIGHTSCOUT_API_SECRET"

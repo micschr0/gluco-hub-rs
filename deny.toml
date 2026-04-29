@@ -1,0 +1,60 @@
+# cgm-bridge supply-chain policy.
+# CLAUDE.md mandates `cargo deny check` for every new dep — this file
+# encodes the policy so the gate is reproducible across machines and CI.
+
+[graph]
+# Lint every feature combination, not just the default-features build.
+all-features = true
+targets = []
+
+[advisories]
+version = 2
+yanked = "deny"
+# Add per-CVE waivers here, NEVER as broad `ignore = ["*"]`.
+ignore = []
+
+[licenses]
+version = 2
+# Conservative permissive set. Anything outside this list fails the
+# `licenses` check; an exception requires editing this file with a
+# comment + reviewer sign-off.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "OpenSSL",
+    # Used by `webpki-roots`, which ships Mozilla's CA trust list. The
+    # data itself is CDLA-Permissive-2.0; the Rust crate code is
+    # MIT/Apache-2.0. Mozilla considers this permissive-equivalent.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace path-deps (`{ path = "../foo" }`) have no version and look
+# like wildcards to cargo-deny — but they're internal, not pulled from
+# crates.io. This flag allows them while still rejecting external
+# wildcards.
+allow-wildcard-paths = true
+# Per CLAUDE.md: rustls only, no OpenSSL anywhere in the tree.
+# Adding any of these to a Cargo.toml fails this check loudly.
+deny = [
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "native-tls" },
+    { name = "git2" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

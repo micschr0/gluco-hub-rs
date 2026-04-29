@@ -1,0 +1,10 @@
+target/
+**/target/
+.git/
+.github/
+docs/
+scripts/
+README.md
+CLAUDE.md
+config.toml
+*.log
