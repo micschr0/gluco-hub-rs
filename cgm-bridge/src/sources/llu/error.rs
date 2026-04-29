@@ -22,6 +22,9 @@ pub enum LluError {
 
     #[error("[LLU006] unknown LibreLink Up region: {value}")]
     UnknownRegion { value: String },
+
+    #[error("[LLU007] could not parse LLU timestamp: {raw}")]
+    BadTimestamp { raw: String },
 }
 
 impl LluError {
@@ -33,6 +36,7 @@ impl LluError {
             LluError::Protocol { .. } => "LLU004",
             LluError::RedirectLoop => "LLU005",
             LluError::UnknownRegion { .. } => "LLU006",
+            LluError::BadTimestamp { .. } => "LLU007",
         }
     }
 }

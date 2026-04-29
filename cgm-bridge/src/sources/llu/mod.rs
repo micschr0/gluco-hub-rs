@@ -10,7 +10,9 @@
 pub mod auth;
 pub mod error;
 pub mod headers;
+pub mod mapping;
 pub mod region;
+pub mod wire;
 
 // Re-exports kept stable for the upcoming 4b iteration that wires the
 // `Source` impl. They are dead-code under `source-llu` alone — silence the
