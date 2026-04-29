@@ -141,6 +141,7 @@ exit-code contracts are also keyed off these prefixes via
 | NS003   | `cgm-bridge/src/sinks/nightscout/client.rs` | Nightscout returned non-success status |
 | NS004   | `cgm-bridge/src/sinks/nightscout/client.rs` | Nightscout returned a transient error (5xx, 429) |
 | NS005   | `cgm-bridge/src/sinks/nightscout/client.rs` | invalid Nightscout base URL |
+| MQTT001 | `cgm-bridge/src/sinks/mqtt/mod.rs`   | V2 placeholder sink invoked (real client lands in V2) |
 
 ## Cargo features
 
@@ -149,6 +150,7 @@ exit-code contracts are also keyed off these prefixes via
 | `mock-source`     | `cgm-bridge`, `cgm-bridge-core` | Default. Wires an in-memory canned source so the API runs out of the box. |
 | `source-llu`      | `cgm-bridge`         | Real LibreLink Up source. Honours `[source.llu]`; takes precedence over `mock-source`. Activates `dep:sha2`. |
 | `sink-nightscout` | `cgm-bridge`         | Nightscout v3 sink. Honours `[sink.nightscout]`; fans out from the poller. Activates `dep:sha1`. |
+| `sink-mqtt`       | `cgm-bridge`         | V2 placeholder. Compiles a `MqttSink` stub returning `[MQTT001]`. Not wired into `build_sinks` — the real `rumqttc`-backed implementation lands in V2. |
 
 `build_default_source(&Config)` and `build_sinks(&Config)` in
 `main.rs` apply the feature gates at runtime. A binary built with

@@ -325,6 +325,13 @@ region = "{region}"{extra}
         assert_eq!(llu.patient_id.as_deref(), Some("patient-1"));
     }
 
+    /// `validate_region` is only strict when the `source-llu` feature is
+    /// enabled (it consults the real `Region::parse` lookup). Without
+    /// the feature the loose 2..=4-letter ASCII fallback accepts
+    /// "MARS" — that's by design (operators preparing a config ahead
+    /// of enabling the feature) but means the strict-rejection test
+    /// only makes sense in the `source-llu` build.
+    #[cfg(feature = "source-llu")]
     #[test]
     fn rejects_unknown_region() {
         let dir = tempfile::tempdir().unwrap();

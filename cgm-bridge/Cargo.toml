@@ -14,6 +14,10 @@ publish = false
 default = ["mock-source"]
 source-llu = ["dep:sha2"]
 sink-nightscout = ["dep:sha1"]
+# V2 placeholder. Enables the `MqttSink` trait stub so the binary
+# compiles with a typed Sink for MQTT, but every push returns
+# `[MQTT001]` until the real `rumqttc`-backed implementation lands.
+sink-mqtt = []
 # Enables the in-memory `MockSource` fixture so the HTTP API can be
 # exercised end-to-end before the LibreLink Up source lands.
 mock-source = ["cgm-bridge-core/mock-source"]

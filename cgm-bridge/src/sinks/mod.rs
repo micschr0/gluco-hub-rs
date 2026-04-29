@@ -3,3 +3,6 @@
 
 #[cfg(feature = "sink-nightscout")]
 pub mod nightscout;
+
+#[cfg(feature = "sink-mqtt")]
+pub mod mqtt;
