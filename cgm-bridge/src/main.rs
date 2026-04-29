@@ -11,6 +11,7 @@ use tracing::{error, info, warn};
 mod api;
 mod config;
 mod metrics;
+mod sources;
 
 #[derive(Debug, Parser)]
 #[command(name = "cgm-bridge", about = "LibreLink Up → HTTP/Nightscout bridge")]

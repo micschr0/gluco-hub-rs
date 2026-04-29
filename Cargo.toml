@@ -47,6 +47,9 @@ clap = { version = "4", features = ["derive"] }
 # State
 tempfile = "3"
 
+# Crypto (LLU account-id is sha256 of userId)
+sha2 = "0.10"
+
 # Test helpers (dev-dependencies in member crates)
 wiremock = "0.6"
 
