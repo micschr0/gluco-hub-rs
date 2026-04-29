@@ -25,6 +25,9 @@ pub enum LluError {
 
     #[error("[LLU007] could not parse LLU timestamp: {raw}")]
     BadTimestamp { raw: String },
+
+    #[error("[LLU008] LLU rejected token on {endpoint}: 401")]
+    Unauthorized { endpoint: &'static str },
 }
 
 impl LluError {
@@ -37,6 +40,7 @@ impl LluError {
             LluError::RedirectLoop => "LLU005",
             LluError::UnknownRegion { .. } => "LLU006",
             LluError::BadTimestamp { .. } => "LLU007",
+            LluError::Unauthorized { .. } => "LLU008",
         }
     }
 }

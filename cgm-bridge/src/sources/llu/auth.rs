@@ -5,9 +5,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
+use cgm_bridge_core::PatientId;
+
 use super::error::LluError;
-use super::headers::{DEFAULT_LLU_VERSION, base_headers};
+use super::headers::{DEFAULT_LLU_VERSION, authorized_headers, base_headers};
 use super::region::Region;
+use super::wire::{Connection, ConnectionsResponse, GraphResponse};
 
 /// Credentials needed to authenticate against LibreLink Up. The password is
 /// kept inside `SecretString` so it never appears in `Debug` output or logs.
@@ -63,6 +66,10 @@ pub fn account_id_hash(user_id: &str) -> String {
     out
 }
 
+/// One-stop client for the LibreLink Up surface used by the bridge:
+/// auth, connections list, and per-patient graph. Each method is a thin
+/// HTTP call — token caching and 401 retry live one layer up in
+/// `LluSource` (4c.2).
 #[derive(Debug, Clone)]
 pub struct LluAuthClient {
     http: reqwest::Client,
@@ -100,11 +107,26 @@ impl LluAuthClient {
         self
     }
 
+    fn base_url_for(&self, region: Region) -> String {
+        self.base_url_override
+            .clone()
+            .unwrap_or_else(|| region.base_url())
+    }
+
     fn login_url(&self, region: Region) -> String {
-        match &self.base_url_override {
-            Some(base) => format!("{}/llu/auth/login", base),
-            None => format!("{}/llu/auth/login", region.base_url()),
-        }
+        format!("{}/llu/auth/login", self.base_url_for(region))
+    }
+
+    fn connections_url(&self, region: Region) -> String {
+        format!("{}/llu/connections", self.base_url_for(region))
+    }
+
+    fn graph_url(&self, region: Region, patient_id: &PatientId) -> String {
+        format!(
+            "{}/llu/connections/{}/graph",
+            self.base_url_for(region),
+            patient_id.as_str()
+        )
     }
 
     /// Authenticate with LibreLink Up. Follows at most one region redirect:
@@ -177,6 +199,72 @@ impl LluAuthClient {
             }
         }
         Err(LluError::RedirectLoop)
+    }
+
+    /// `GET /llu/connections` — list patient links visible to the
+    /// authenticated account. The response wraps `Vec<Connection>`; this
+    /// method returns the inner vector for ergonomics.
+    pub async fn connections(
+        &self,
+        tokens: &LluTokens,
+        region: Region,
+    ) -> Result<Vec<Connection>, LluError> {
+        let url = self.connections_url(region);
+        let resp = self
+            .http
+            .get(&url)
+            .headers(authorized_headers(tokens, &self.version))
+            .send()
+            .await?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(LluError::Unauthorized {
+                endpoint: "connections",
+            });
+        }
+        let raw = resp.bytes().await?;
+        let parsed: ConnectionsResponse =
+            serde_json::from_slice(&raw).map_err(|e| LluError::Protocol {
+                reason: format!("connections decode: {e}"),
+            })?;
+        if parsed.status != 0 {
+            return Err(LluError::Status {
+                status: parsed.status,
+            });
+        }
+        Ok(parsed.data)
+    }
+
+    /// `GET /llu/connections/{patientId}/graph` — return ~24 h of
+    /// historical readings plus the current measurement. Note that LLU
+    /// keys this on the `patientId` field of `Connection`, NOT on
+    /// `Connection.id`.
+    pub async fn graph(
+        &self,
+        tokens: &LluTokens,
+        region: Region,
+        patient_id: &PatientId,
+    ) -> Result<GraphResponse, LluError> {
+        let url = self.graph_url(region, patient_id);
+        let resp = self
+            .http
+            .get(&url)
+            .headers(authorized_headers(tokens, &self.version))
+            .send()
+            .await?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(LluError::Unauthorized { endpoint: "graph" });
+        }
+        let raw = resp.bytes().await?;
+        let parsed: GraphResponse =
+            serde_json::from_slice(&raw).map_err(|e| LluError::Protocol {
+                reason: format!("graph decode: {e}"),
+            })?;
+        if parsed.status != 0 {
+            return Err(LluError::Status {
+                status: parsed.status,
+            });
+        }
+        Ok(parsed)
     }
 }
 
@@ -418,5 +506,121 @@ mod tests {
             .with_base_url(server.uri());
         let err = client.login(&creds(Region::Eu)).await.unwrap_err();
         assert!(matches!(err, LluError::RedirectLoop));
+    }
+
+    fn fake_tokens() -> LluTokens {
+        LluTokens {
+            bearer: SecretString::from("test-bearer".to_string()),
+            account_id_hash: account_id_hash("user-1"),
+            expires_at: UNIX_EPOCH + Duration::from_secs(9_999_999_999),
+        }
+    }
+
+    #[tokio::test]
+    async fn connections_returns_data_on_happy_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections"))
+            .and(header("authorization", "Bearer test-bearer"))
+            .and(header("account-id", account_id_hash("user-1").as_str()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 0,
+                "data": [{
+                    "id": "conn-1",
+                    "patientId": "patient-1",
+                    "glucoseMeasurement": {
+                        "Timestamp": "3/26/2024 4:38:38 PM",
+                        "ValueInMgPerDl": 142.0,
+                        "TrendArrow": 3
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LluAuthClient::new()
+            .expect("client")
+            .with_base_url(server.uri());
+        let conns = client
+            .connections(&fake_tokens(), Region::Eu)
+            .await
+            .expect("connections");
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].patient_id, "patient-1");
+    }
+
+    #[tokio::test]
+    async fn connections_rejects_malformed_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("nope"))
+            .mount(&server)
+            .await;
+
+        let client = LluAuthClient::new()
+            .expect("client")
+            .with_base_url(server.uri());
+        let err = client
+            .connections(&fake_tokens(), Region::Eu)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LluError::Protocol { .. }));
+    }
+
+    #[tokio::test]
+    async fn graph_returns_data_on_happy_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections/patient-1/graph"))
+            .and(header("authorization", "Bearer test-bearer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 0,
+                "data": {
+                    "connection": { "id": "conn-1", "patientId": "patient-1" },
+                    "activeSensors": [],
+                    "graphData": [
+                        {
+                            "Timestamp": "3/26/2024 4:33:38 PM",
+                            "ValueInMgPerDl": 138.0,
+                            "TrendArrow": 3
+                        }
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LluAuthClient::new()
+            .expect("client")
+            .with_base_url(server.uri());
+        let pid = PatientId::new("patient-1").expect("pid");
+        let resp = client
+            .graph(&fake_tokens(), Region::Eu, &pid)
+            .await
+            .expect("graph");
+        assert_eq!(resp.data.graph_data.len(), 1);
+        assert_eq!(resp.data.graph_data[0].value_in_mg_per_dl, 138.0);
+    }
+
+    #[tokio::test]
+    async fn graph_maps_401_to_unauthorized() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections/patient-1/graph"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let client = LluAuthClient::new()
+            .expect("client")
+            .with_base_url(server.uri());
+        let pid = PatientId::new("patient-1").expect("pid");
+        let err = client
+            .graph(&fake_tokens(), Region::Eu, &pid)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LluError::Unauthorized { endpoint } if endpoint == "graph"));
+        assert_eq!(err.error_code(), "LLU008");
     }
 }
