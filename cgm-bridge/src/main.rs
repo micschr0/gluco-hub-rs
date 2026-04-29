@@ -41,6 +41,12 @@ enum Command {
     /// actually work against the live API.
     #[cfg(feature = "source-llu")]
     Dryrun,
+    /// One-shot Nightscout connectivity probe: read-only
+    /// `GET /api/v3/entries?count=1`. Confirms the api-secret hashes
+    /// correctly and the NS host is reachable, WITHOUT writing any
+    /// entry. Counterpart of `dryrun` for the sink side.
+    #[cfg(feature = "sink-nightscout")]
+    NsDryrun,
 }
 
 fn main() -> ExitCode {
@@ -123,6 +129,31 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 Ok(classify_dryrun_exit(&txt))
             }
         },
+        #[cfg(feature = "sink-nightscout")]
+        Command::NsDryrun => match nsdryrun(&cfg).await {
+            Ok(()) => Ok(ExitCode::SUCCESS),
+            Err(e) => {
+                let txt = format!("{e:#}");
+                error!(error = %txt, "ns dryrun failed");
+                Ok(classify_nsdryrun_exit(&txt))
+            }
+        },
+    }
+}
+
+/// `scripts/ns-dryrun.sh` exit-code contract. Pinned by unit test.
+#[cfg(any(feature = "sink-nightscout", test))]
+fn classify_nsdryrun_exit(err_text: &str) -> ExitCode {
+    if err_text.contains("[CFG") || err_text.contains("[NS005]") {
+        ExitCode::from(2) // config / env / invalid base URL
+    } else if err_text.contains("[NS001]") {
+        ExitCode::from(3) // transport / network
+    } else if err_text.contains("[NS002]") {
+        ExitCode::from(4) // 401 / 403 auth
+    } else if err_text.contains("[NS003]") || err_text.contains("[NS004]") {
+        ExitCode::from(5) // unexpected status / retryable
+    } else {
+        ExitCode::FAILURE
     }
 }
 
@@ -373,6 +404,49 @@ async fn dryrun(cfg: &config::Config) -> Result<()> {
     });
     // Operator-facing summary on stdout. Distinct from the structured
     // tracing logs which still go to stderr.
+    println!("{}", serde_json::to_string(&summary).expect("json"));
+    Ok(())
+}
+
+/// One-shot NS read-only probe. Runs `GET /api/v3/entries?count=1`
+/// against the configured NS instance, prints a JSON summary on
+/// stdout. Never writes — by design.
+#[cfg(feature = "sink-nightscout")]
+async fn nsdryrun(cfg: &config::Config) -> Result<()> {
+    use secrecy::SecretString;
+    use sinks::nightscout::NightscoutClient;
+
+    let ns = cfg.sink.nightscout.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "[CFG004] ns-dryrun requires [sink.nightscout] config or \
+            CGM_BRIDGE__SINK__NIGHTSCOUT__* env overrides"
+        )
+    })?;
+    let secret = std::env::var(&ns.api_secret_env).map_err(|_| {
+        anyhow::anyhow!(
+            "[CFG003] required secret env var not set: {}",
+            ns.api_secret_env
+        )
+    })?;
+    if secret.is_empty() {
+        anyhow::bail!(
+            "[CFG003] required secret env var is empty: {}",
+            ns.api_secret_env
+        );
+    }
+    let client = NightscoutClient::new(ns.base_url.clone(), SecretString::from(secret))
+        .context("build nightscout client")?;
+
+    info!(base_url = %ns.base_url, "ns dryrun: probing /api/v3/entries");
+    let last_ms = client.fetch_last_entry_date().await?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let age_secs = last_ms.map(|d| (now_ms - d) / 1_000);
+
+    let summary = serde_json::json!({
+        "base_url": ns.base_url,
+        "last_entry_date_ms": last_ms,
+        "last_entry_age_secs": age_secs,
+    });
     println!("{}", serde_json::to_string(&summary).expect("json"));
     Ok(())
 }
@@ -727,6 +801,22 @@ mod tests {
         assert_eq!(to_n(mk("[CFG003]")), to_n(ExitCode::from(2)));
         assert_eq!(to_n(mk("[CFG004]")), to_n(ExitCode::from(2)));
         // Unknown / unclassified → generic failure.
+        assert_eq!(to_n(mk("totally unrelated panic")), to_n(ExitCode::FAILURE));
+    }
+
+    /// `scripts/ns-dryrun.sh` exit-code contract. Pinned mirror of
+    /// `dryrun_exit_classification` for the sink side.
+    #[test]
+    fn ns_dryrun_exit_classification() {
+        let mk = |s: &str| classify_nsdryrun_exit(&format!("oops: {s} extra"));
+        let to_n = |c: ExitCode| format!("{c:?}");
+
+        assert_eq!(to_n(mk("[CFG003]")), to_n(ExitCode::from(2)));
+        assert_eq!(to_n(mk("[NS005]")), to_n(ExitCode::from(2)));
+        assert_eq!(to_n(mk("[NS001]")), to_n(ExitCode::from(3)));
+        assert_eq!(to_n(mk("[NS002]")), to_n(ExitCode::from(4)));
+        assert_eq!(to_n(mk("[NS003]")), to_n(ExitCode::from(5)));
+        assert_eq!(to_n(mk("[NS004]")), to_n(ExitCode::from(5)));
         assert_eq!(to_n(mk("totally unrelated panic")), to_n(ExitCode::FAILURE));
     }
 }

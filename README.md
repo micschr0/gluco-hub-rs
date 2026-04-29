@@ -42,6 +42,21 @@ Exit codes: `0` ok, `2` config/env, `3` invalid credentials,
 This is the cheapest way to confirm the LLU side works in
 isolation before debugging the rest of the pipeline.
 
+**Confirm Nightscout reachability** — once LLU is verified, prove
+the sink path with a read-only probe:
+
+```bash
+export NS_BASE_URL='https://nightscout.example.com'
+export NS_API_SECRET='…'         # or NS_API_SECRET_FILE=/run/secrets/ns
+bash scripts/ns-dryrun.sh
+```
+
+It hits `GET /api/v3/entries?count=1` exactly once — **never POSTs**
+— and prints `{base_url, last_entry_date_ms, last_entry_age_secs}`.
+Exit codes: `0` ok, `2` config/env / invalid URL, `3` transport,
+`4` 401/403 auth, `5` unexpected status. Catches a wrong api-secret
+or unreachable host before the bridge writes anything.
+
 For a real deployment:
 
 ```bash
