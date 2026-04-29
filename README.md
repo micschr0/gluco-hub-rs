@@ -57,6 +57,13 @@ Exit codes: `0` ok, `2` config/env / invalid URL, `3` transport,
 `4` 401/403 auth, `5` unexpected status. Catches a wrong api-secret
 or unreachable host before the bridge writes anything.
 
+**One command for all three** — `scripts/full-dryrun.sh` chains
+smoke + llu-dryrun + ns-dryrun fail-fast, skipping any live stage
+whose credentials aren't set. Zero env vars → smoke-only run for CI.
+Both LLU and NS env vars set → full pre-flight in under a minute.
+Exit code is the offending stage (`1` smoke, `2` llu, `3` ns) or
+`0` if everything green.
+
 For a real deployment:
 
 ```bash
