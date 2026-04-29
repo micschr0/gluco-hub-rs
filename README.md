@@ -10,6 +10,20 @@ LibreLink Up  ──poll──▶  in-memory cache  ──┬──▶  GET /glu
 
 ## Quick start
 
+For a credentials-free smoke test against the in-memory `MockSource`
+(useful as the very first thing on a fresh checkout):
+
+```bash
+bash scripts/smoke.sh
+```
+
+It builds the binary, boots it on `127.0.0.1:18080`, hits `/healthz`,
+`/glucose/latest`, and `/metrics`, then sends `SIGTERM`. Exit code `0`
+means the full `Source → cache → API` path works end-to-end. No LLU
+account, no Nightscout instance, no env vars required.
+
+For a real deployment:
+
 ```bash
 # 1. Build with the source/sink features you need.
 cargo build --release --features "source-llu sink-nightscout"
@@ -107,13 +121,19 @@ versions.
 - **advisories** — `cargo-deny` consults the advisory database;
   yanked crates fail.
 
-CI runs `cargo deny check --all-features` on every push / PR and
-weekly (advisories shift independent of code).
+Run locally:
 
 ```bash
 cargo install --locked cargo-deny
 cargo deny check
 ```
+
+A GitHub Actions workflow (`.github/workflows/deny.yml`) running
+`EmbarkStudios/cargo-deny-action@v2 --all-features` on every push,
+PR, and weekly cron is the recommended CI step. (Not committed yet
+in this branch — the OAuth token used during V1 lacked the
+`workflow` scope; add the file in a separate PR with appropriate
+credentials.)
 
 ## Documentation
 
