@@ -13,6 +13,8 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 pub const COUNTER_CACHE_UPDATES: &str = "cgm_cache_updates_total";
 pub const COUNTER_FETCH_SUCCESS: &str = "cgm_source_fetch_success_total";
 pub const COUNTER_FETCH_ERRORS: &str = "cgm_source_fetch_errors_total";
+pub const COUNTER_SINK_SUCCESS: &str = "cgm_sink_push_success_total";
+pub const COUNTER_SINK_ERRORS: &str = "cgm_sink_push_errors_total";
 pub const GAUGE_GLUCOSE: &str = "cgm_glucose_mgdl";
 
 static HANDLE: Mutex<Option<PrometheusHandle>> = Mutex::new(None);
@@ -44,6 +46,14 @@ fn describe_all() {
     describe_counter!(
         COUNTER_FETCH_ERRORS,
         "Number of failed source fetches, labelled by error_code"
+    );
+    describe_counter!(
+        COUNTER_SINK_SUCCESS,
+        "Number of successful sink pushes, labelled by sink"
+    );
+    describe_counter!(
+        COUNTER_SINK_ERRORS,
+        "Number of failed sink pushes, labelled by sink and error_code"
     );
     describe_gauge!(
         GAUGE_GLUCOSE,

@@ -22,6 +22,10 @@ pub struct Config {
     #[serde(default)]
     #[validate(nested)]
     pub source: SourceConfig,
+
+    #[serde(default)]
+    #[validate(nested)]
+    pub sink: SinkConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Validate)]
@@ -62,6 +66,39 @@ pub struct SourceConfig {
     #[serde(default)]
     #[validate(nested)]
     pub llu: Option<LluSourceConfig>,
+}
+
+/// Sink-specific configuration. Mirrors `SourceConfig`: each variant
+/// lives behind a Cargo feature on the binary; the loader parses every
+/// block and the binary's wiring honours only those whose feature is on.
+#[derive(Debug, Clone, Default, Deserialize, Validate)]
+pub struct SinkConfig {
+    #[serde(default)]
+    #[validate(nested)]
+    pub nightscout: Option<NightscoutSinkConfig>,
+}
+
+/// `[sink.nightscout]` block. The API secret lives in an environment
+/// variable referenced by `api_secret_env`; the TOML never holds it.
+#[derive(Debug, Clone, Deserialize, Validate)]
+pub struct NightscoutSinkConfig {
+    #[validate(length(min = 5, max = 512), custom(function = "validate_http_url"))]
+    pub base_url: String,
+
+    /// Name of the environment variable holding the Nightscout API
+    /// secret (raw, NOT pre-hashed).
+    #[validate(
+        length(min = 1, max = 256),
+        custom(function = "validate_ascii_env_name")
+    )]
+    pub api_secret_env: String,
+}
+
+fn validate_http_url(value: &str) -> Result<(), ValidationError> {
+    if !(value.starts_with("http://") || value.starts_with("https://")) {
+        return Err(ValidationError::new("url_scheme"));
+    }
+    Ok(())
 }
 
 /// `[source.llu]` block. The password lives in an environment variable
@@ -157,6 +194,9 @@ pub fn verify_secret_env_vars(cfg: &Config) -> Result<(), ConfigError> {
     let mut required: Vec<&str> = Vec::new();
     if let Some(llu) = cfg.source.llu.as_ref() {
         required.push(&llu.password_env);
+    }
+    if let Some(ns) = cfg.sink.nightscout.as_ref() {
+        required.push(&ns.api_secret_env);
     }
     if let Some(name) = cfg.http.bearer_token_env.as_deref() {
         required.push(name);

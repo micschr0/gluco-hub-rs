@@ -5,7 +5,9 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod client;
+pub mod sink;
 pub mod wire;
 
 pub use client::{NightscoutClient, NsError};
+pub use sink::NightscoutSink;
 pub use wire::{NsDirection, NsEntry, entry_from_reading};

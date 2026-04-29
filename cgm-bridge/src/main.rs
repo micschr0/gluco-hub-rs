@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use cgm_bridge_core::{ReadingCache, Source};
+use cgm_bridge_core::{Reading, ReadingCache, Sink, Source};
 use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
 
@@ -93,11 +93,15 @@ async fn serve(cfg: config::Config) -> Result<()> {
         bearer_token,
     };
 
+    let sinks = build_sinks(&cfg)?;
+    info!(sink_count = sinks.len(), "sinks configured");
+
     if let Some(source) = build_default_source(&cfg)? {
         let interval = Duration::from_secs(cfg.poller.interval_secs);
         let cache_for_poller = cache.clone();
+        let sinks_for_poller = sinks.clone();
         tokio::spawn(async move {
-            poll_loop(source, cache_for_poller, interval).await;
+            poll_loop(source, cache_for_poller, sinks_for_poller, interval).await;
         });
     } else {
         warn!("no source configured; HTTP API will serve 503 until one is enabled");
@@ -204,8 +208,14 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
     Ok(Arc::new(LluSource::new(id, client, creds, selection)))
 }
 
-async fn poll_loop(source: Arc<dyn Source>, cache: ReadingCache, interval: Duration) {
+async fn poll_loop(
+    source: Arc<dyn Source>,
+    cache: ReadingCache,
+    sinks: Vec<Arc<dyn Sink>>,
+    interval: Duration,
+) {
     let source_id = source.id().as_str().to_string();
+    let sink_timeout = sink_push_timeout(interval);
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -230,6 +240,10 @@ async fn poll_loop(source: Arc<dyn Source>, cache: ReadingCache, interval: Durat
                     .set(latest.glucose.get());
                 }
                 info!(source_id = %source_id, count, "cache updated");
+
+                if !sinks.is_empty() {
+                    fan_out_to_sinks(&sinks, &batch, sink_timeout).await;
+                }
             }
             Err(e) => {
                 ::metrics::counter!(
@@ -246,6 +260,115 @@ async fn poll_loop(source: Arc<dyn Source>, cache: ReadingCache, interval: Durat
             }
         }
     }
+}
+
+/// Per-sink push timeout: never longer than the poll interval, capped
+/// at 20 s so a stuck sink can't starve the next tick.
+fn sink_push_timeout(interval: Duration) -> Duration {
+    interval.min(Duration::from_secs(20))
+}
+
+/// Push `batch` to every sink concurrently, with a per-sink timeout.
+/// Errors are logged + counted; a failing sink never propagates and never
+/// blocks the next poll tick.
+async fn fan_out_to_sinks(sinks: &[Arc<dyn Sink>], batch: &[Reading], timeout: Duration) {
+    use futures::future::join_all;
+
+    let pushes = sinks.iter().map(|sink| {
+        let sink = Arc::clone(sink);
+        let batch_owned: Vec<Reading> = batch.to_vec();
+        async move {
+            let name = sink.name();
+            match tokio::time::timeout(timeout, sink.push(&batch_owned)).await {
+                Ok(Ok(())) => {
+                    ::metrics::counter!(
+                        metrics::COUNTER_SINK_SUCCESS,
+                        "sink" => name,
+                    )
+                    .increment(1);
+                }
+                Ok(Err(e)) => {
+                    let code = extract_error_code(&format!("{e}"));
+                    ::metrics::counter!(
+                        metrics::COUNTER_SINK_ERRORS,
+                        "sink" => name,
+                        "error_code" => code.clone(),
+                    )
+                    .increment(1);
+                    warn!(
+                        sink = name,
+                        error_code = %code,
+                        error = %e,
+                        "sink push failed",
+                    );
+                }
+                Err(_elapsed) => {
+                    ::metrics::counter!(
+                        metrics::COUNTER_SINK_ERRORS,
+                        "sink" => name,
+                        "error_code" => "TIMEOUT",
+                    )
+                    .increment(1);
+                    warn!(
+                        sink = name,
+                        timeout_secs = timeout.as_secs(),
+                        "sink push timed out"
+                    );
+                }
+            }
+        }
+    });
+    join_all(pushes).await;
+}
+
+/// Extract a `[CODE]` prefix from an error's `Display` representation.
+/// Returns `"UNKNOWN"` when the message is not in our `[XXNNN] ...` shape
+/// — that's defensive: a future variant without a code shouldn't crash.
+fn extract_error_code(message: &str) -> String {
+    if let Some(rest) = message.strip_prefix('[')
+        && let Some(end) = rest.find(']')
+    {
+        return rest[..end].to_string();
+    }
+    "UNKNOWN".to_string()
+}
+
+/// Build the configured sinks. Order is config-driven; future sinks
+/// (MQTT, webhook) slot in as additional entries.
+fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<dyn Sink>>> {
+    let _ = cfg;
+    #[cfg_attr(not(feature = "sink-nightscout"), allow(unused_mut))]
+    let mut sinks: Vec<Arc<dyn Sink>> = Vec::new();
+
+    #[cfg(feature = "sink-nightscout")]
+    if let Some(ns) = cfg.sink.nightscout.as_ref() {
+        sinks.push(build_nightscout_sink(ns).context("build Nightscout sink")?);
+    }
+
+    Ok(sinks)
+}
+
+#[cfg(feature = "sink-nightscout")]
+fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Sink>> {
+    use secrecy::SecretString;
+    use sinks::nightscout::{NightscoutClient, NightscoutSink};
+
+    let secret = std::env::var(&ns.api_secret_env).map_err(|_| {
+        anyhow::anyhow!(
+            "[CFG003] required secret env var not set: {}",
+            ns.api_secret_env
+        )
+    })?;
+    if secret.is_empty() {
+        anyhow::bail!(
+            "[CFG003] required secret env var is empty: {}",
+            ns.api_secret_env
+        );
+    }
+    let client = NightscoutClient::new(ns.base_url.clone(), SecretString::from(secret))
+        .context("build Nightscout client")?;
+    info!(base_url = %ns.base_url, "nightscout sink configured");
+    Ok(Arc::new(NightscoutSink::new(client)))
 }
 
 async fn shutdown_signal() {
@@ -269,4 +392,144 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
     info!("shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cgm_bridge_core::{CoreError, GlucoseMgDl, PatientId, Reading, SourceId, Trend};
+    use chrono::{TimeZone, Utc};
+    use std::sync::Mutex as StdMutex;
+
+    /// Test sink that records every push and can be set to fail.
+    struct RecorderSink {
+        name: &'static str,
+        calls: Arc<StdMutex<usize>>,
+        fail_with: Option<&'static str>,
+        delay: Option<Duration>,
+    }
+
+    #[async_trait::async_trait]
+    impl Sink for RecorderSink {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        async fn push(&self, _: &[Reading]) -> Result<(), CoreError> {
+            if let Some(d) = self.delay {
+                tokio::time::sleep(d).await;
+            }
+            *self.calls.lock().expect("calls mutex") += 1;
+            if let Some(code) = self.fail_with {
+                return Err(CoreError::Sink {
+                    message: format!("[{}] simulated failure", code),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    fn one_reading() -> Reading {
+        Reading {
+            patient_id: PatientId::new("p1").unwrap(),
+            source_id: SourceId::new("llu").unwrap(),
+            timestamp: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+            glucose: GlucoseMgDl::new(120.0).unwrap(),
+            trend: Trend::Flat,
+        }
+    }
+
+    #[test]
+    fn extract_error_code_handles_known_and_unknown_shapes() {
+        assert_eq!(extract_error_code("[NS004] retry me"), "NS004");
+        assert_eq!(extract_error_code("CORE004 something"), "UNKNOWN");
+        assert_eq!(extract_error_code("[unterminated"), "UNKNOWN");
+        assert_eq!(extract_error_code(""), "UNKNOWN");
+    }
+
+    #[tokio::test]
+    async fn fan_out_calls_every_sink_on_success() {
+        let calls_a = Arc::new(StdMutex::new(0));
+        let calls_b = Arc::new(StdMutex::new(0));
+        let sinks: Vec<Arc<dyn Sink>> = vec![
+            Arc::new(RecorderSink {
+                name: "a",
+                calls: calls_a.clone(),
+                fail_with: None,
+                delay: None,
+            }),
+            Arc::new(RecorderSink {
+                name: "b",
+                calls: calls_b.clone(),
+                fail_with: None,
+                delay: None,
+            }),
+        ];
+        fan_out_to_sinks(&sinks, &[one_reading()], Duration::from_secs(5)).await;
+        assert_eq!(*calls_a.lock().unwrap(), 1);
+        assert_eq!(*calls_b.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn fan_out_isolates_sink_failures() {
+        let calls_ok = Arc::new(StdMutex::new(0));
+        let calls_bad = Arc::new(StdMutex::new(0));
+        let sinks: Vec<Arc<dyn Sink>> = vec![
+            Arc::new(RecorderSink {
+                name: "good",
+                calls: calls_ok.clone(),
+                fail_with: None,
+                delay: None,
+            }),
+            Arc::new(RecorderSink {
+                name: "bad",
+                calls: calls_bad.clone(),
+                fail_with: Some("NS004"),
+                delay: None,
+            }),
+        ];
+        // The function returns `()`; failures are absorbed.
+        fan_out_to_sinks(&sinks, &[one_reading()], Duration::from_secs(5)).await;
+        assert_eq!(*calls_ok.lock().unwrap(), 1);
+        assert_eq!(*calls_bad.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn fan_out_times_out_slow_sink_without_blocking_others() {
+        let calls_fast = Arc::new(StdMutex::new(0));
+        let calls_slow = Arc::new(StdMutex::new(0));
+        let sinks: Vec<Arc<dyn Sink>> = vec![
+            Arc::new(RecorderSink {
+                name: "fast",
+                calls: calls_fast.clone(),
+                fail_with: None,
+                delay: None,
+            }),
+            Arc::new(RecorderSink {
+                name: "slow",
+                calls: calls_slow.clone(),
+                fail_with: None,
+                delay: Some(Duration::from_secs(5)),
+            }),
+        ];
+        let started = std::time::Instant::now();
+        fan_out_to_sinks(&sinks, &[one_reading()], Duration::from_millis(50)).await;
+        // Total wall time bounded by the timeout, not by the slow sink.
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(*calls_fast.lock().unwrap(), 1);
+        // The slow sink never finished its body before the timeout fired,
+        // so its `calls` counter was not incremented.
+        assert_eq!(*calls_slow.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn sink_push_timeout_caps_at_20_secs() {
+        assert_eq!(
+            sink_push_timeout(Duration::from_secs(60)),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            sink_push_timeout(Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+    }
 }

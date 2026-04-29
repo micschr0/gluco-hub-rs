@@ -33,3 +33,11 @@ interval_secs = 60
 # # Optional: pick a specific patient when the account has more than
 # # one linked. When absent, the first connection is used.
 # # patient_id = "00000000-0000-0000-0000-000000000000"
+
+# Optional: Nightscout sink. Requires the `sink-nightscout` Cargo
+# feature on the binary. Uncomment and fill in to push every batch of
+# readings to a self-hosted Nightscout instance.
+#
+# [sink.nightscout]
+# base_url = "https://nightscout.example.com"
+# api_secret_env = "NIGHTSCOUT_API_SECRET"
