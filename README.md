@@ -94,10 +94,32 @@ versions.
   when LibreView rejects the pinned default; the resolved value is
   logged at INFO on startup as `llu_version`.
 
+## Supply chain
+
+`cargo deny check` enforces the policy in [`deny.toml`](./deny.toml):
+
+- **licenses** — explicit allow-list (MIT, Apache-2.0, BSD-2/3,
+  ISC, MPL-2.0, Zlib, CC0-1.0, Unicode-3.0/DFS-2016,
+  CDLA-Permissive-2.0). Anything else fails.
+- **bans** — `openssl`, `openssl-sys`, `native-tls`, `git2` are
+  explicitly denied (rustls only, per `CLAUDE.md`).
+- **sources** — only `crates.io`; unknown registries / git-deps fail.
+- **advisories** — `cargo-deny` consults the advisory database;
+  yanked crates fail.
+
+CI runs `cargo deny check --all-features` on every push / PR and
+weekly (advisories shift independent of code).
+
+```bash
+cargo install --locked cargo-deny
+cargo deny check
+```
+
 ## Documentation
 
 - `CLAUDE.md` — engineering conventions (errors, logging, secrets, …).
 - `config.example.toml` — schema reference.
+- `deny.toml` — supply-chain policy enforced by `cargo deny`.
 
 ## License
 

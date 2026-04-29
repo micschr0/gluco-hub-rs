@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "cgm-bridge binary: polls LibreLink Up, exposes glucose via HTTP, pushes to Nightscout."
+# Binary crate — never published to crates.io. Marking explicitly so
+# `cargo deny check bans` accepts the path dependency on
+# cgm-bridge-core without flagging it as a wildcard-on-public-crate.
+publish = false
 
 [features]
 default = ["mock-source"]
