@@ -134,6 +134,27 @@ pub struct LluSourceConfig {
     /// linked patient. When absent, the first connection is selected.
     #[validate(length(min = 1, max = 128))]
     pub patient_id: Option<String>,
+
+    /// Optional LibreLink Up app version sent in the `version` header.
+    /// Defaults to the binary's pinned `DEFAULT_LLU_VERSION` when unset.
+    /// Override here, or at runtime via the env var
+    /// `CGM_BRIDGE__SOURCE__LLU__VERSION`, when LibreView rejects the
+    /// pinned default — no recompile required.
+    #[serde(default)]
+    #[validate(length(min = 1, max = 32), custom(function = "validate_llu_version"))]
+    pub version: Option<String>,
+}
+
+/// Conservative version-string validator: every char must be ASCII
+/// graphic or a literal space. Mirrors `reqwest::header::HeaderValue`'s
+/// acceptance set so misconfiguration fails at config load, not deep
+/// inside the HTTP layer at the first poll. Deliberately not semver-
+/// strict — LibreView ships values like `4.16.0-rc1` from time to time.
+fn validate_llu_version(value: &str) -> Result<(), ValidationError> {
+    if value.is_empty() || !value.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+        return Err(ValidationError::new("llu_version_format"));
+    }
+    Ok(())
 }
 
 fn validate_region(value: &str) -> Result<(), ValidationError> {

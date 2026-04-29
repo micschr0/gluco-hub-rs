@@ -94,6 +94,15 @@ impl LluAuthClient {
         })
     }
 
+    /// Override the LLU app version sent in the `version` header. Useful
+    /// when LibreView starts rejecting an older value mid-deploy — the
+    /// operator bumps the value via config or env var without a recompile.
+    /// The string is otherwise treated as opaque; no semver parsing.
+    pub fn with_version(mut self, version: impl Into<String>) -> Self {
+        self.version = version.into();
+        self
+    }
+
     /// Pin the base URL (without trailing slash). Intended for tests
     /// against `wiremock`; real callers rely on `Region`-derived URLs.
     /// Test-gated so production builds never expose the override.

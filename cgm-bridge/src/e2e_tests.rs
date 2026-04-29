@@ -272,3 +272,37 @@ async fn full_pipeline_survives_nightscout_502_and_keeps_cache_fresh() {
     // poll loop does NOT roll back on sink errors.
     assert_eq!(cache.latest().unwrap().glucose.get(), 142.0);
 }
+
+/// Regression lock for iteration 12 — `with_version` was once removed
+/// because nothing called it; the resulting silent pin to
+/// `DEFAULT_LLU_VERSION` would block every operator the moment LibreView
+/// rotates the accepted app version. This test fails loudly if any
+/// future refactor breaks the `[source.llu] version` → `version` header
+/// wiring.
+#[tokio::test]
+async fn custom_version_propagates_to_login_header() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/llu/auth/login"))
+        // Strict matcher: anything other than "9.9.9" fails the test.
+        .and(header("version", "9.9.9"))
+        .and(header("product", "llu.ios"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(login_body()))
+        .mount(&server)
+        .await;
+
+    let client = LluAuthClient::new()
+        .expect("client")
+        .with_base_url(server.uri())
+        .with_version("9.9.9");
+    let creds = LluCredentials {
+        email: "patient@example.com".to_string(),
+        password: SecretString::from("hunter2"),
+        region: Region::Eu,
+    };
+    let tokens = client.login(&creds).await.expect("login");
+    assert_eq!(
+        secrecy::ExposeSecret::expose_secret(&tokens.bearer),
+        "tok-e2e"
+    );
+}

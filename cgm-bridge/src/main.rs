@@ -178,6 +178,7 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
     use secrecy::SecretString;
     use sources::llu::Region;
     use sources::llu::auth::{LluAuthClient, LluCredentials};
+    use sources::llu::headers::DEFAULT_LLU_VERSION;
     use sources::llu::source::{ConnectionSelection, LluSource};
 
     let region = Region::parse(&llu.region).context("parse LLU region")?;
@@ -199,7 +200,14 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
         password: SecretString::from(password),
         region,
     };
-    let client = LluAuthClient::new().context("build LLU HTTP client")?;
+    let resolved_version = llu
+        .version
+        .as_deref()
+        .unwrap_or(DEFAULT_LLU_VERSION)
+        .to_string();
+    let client = LluAuthClient::new()
+        .context("build LLU HTTP client")?
+        .with_version(&resolved_version);
     let selection = match llu.patient_id.as_deref() {
         Some(id) => ConnectionSelection::ByPatientId(
             PatientId::new(id).context("invalid patient_id in [source.llu]")?,
@@ -207,7 +215,14 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
         None => ConnectionSelection::First,
     };
     let id = SourceId::new("llu").context("build SourceId")?;
-    info!(region = ?region, "llu source configured");
+    // Logged at INFO so post-mortems can confirm exactly which `version`
+    // header the bridge sent — recovers from a 4xx without spelunking
+    // through the running config.
+    info!(
+        region = ?region,
+        llu_version = %resolved_version,
+        "llu source configured"
+    );
     Ok(Arc::new(LluSource::new(id, client, creds, selection)))
 }
 

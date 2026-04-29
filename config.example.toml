@@ -33,6 +33,11 @@ interval_secs = 60
 # # Optional: pick a specific patient when the account has more than
 # # one linked. When absent, the first connection is used.
 # # patient_id = "00000000-0000-0000-0000-000000000000"
+# # LibreLink Up app version sent in the `version` header. Defaults to
+# # the binary's pinned value. Override here, OR at runtime via the env
+# # var `CGM_BRIDGE__SOURCE__LLU__VERSION=4.17.0`, when LibreView starts
+# # rejecting the default — no recompile required.
+# # version = "4.16.0"
 
 # Optional: Nightscout sink. Requires the `sink-nightscout` Cargo
 # feature on the binary. Uncomment and fill in to push every batch of

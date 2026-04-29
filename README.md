@@ -89,6 +89,10 @@ versions.
   human-readable output during development.
 - Filtering: `RUST_LOG=cgm_bridge=debug,reqwest=info`.
 - Shutdown: `SIGINT` and `SIGTERM` both trigger graceful shutdown.
+- LibreLink Up app version: `[source.llu] version` (TOML) or
+  `CGM_BRIDGE__SOURCE__LLU__VERSION=4.17.0` (env). Bump and restart
+  when LibreView rejects the pinned default; the resolved value is
+  logged at INFO on startup as `llu_version`.
 
 ## Documentation
 
