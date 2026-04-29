@@ -11,6 +11,7 @@ use tracing::{error, info, warn};
 mod api;
 mod config;
 mod metrics;
+mod sinks;
 mod sources;
 
 #[derive(Debug, Parser)]

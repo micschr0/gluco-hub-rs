@@ -9,7 +9,7 @@ description = "cgm-bridge binary: polls LibreLink Up, exposes glucose via HTTP, 
 [features]
 default = ["mock-source"]
 source-llu = ["dep:sha2"]
-sink-nightscout = []
+sink-nightscout = ["dep:sha1"]
 # Enables the in-memory `MockSource` fixture so the HTTP API can be
 # exercised end-to-end before the LibreLink Up source lands.
 mock-source = ["cgm-bridge-core/mock-source"]
@@ -45,8 +45,9 @@ clap = { workspace = true }
 tempfile = { workspace = true }
 subtle = { workspace = true }
 
-# Optional, only pulled in by `source-llu`.
+# Optional, only pulled in by their respective features.
 sha2 = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
