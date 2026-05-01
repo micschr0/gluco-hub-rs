@@ -1,12 +1,3 @@
-# Drop-in workflow file for `cargo deny check`.
-#
-# Place at `.github/workflows/deny.yml` in your fork. Could not be
-# committed automatically by the V1 development branch because the
-# OAuth token in use lacked the `workflow` scope. Once the file is
-# under `.github/workflows/` and pushed, every push and PR (and the
-# weekly cron) runs `cargo-deny-action` against the policy in
-# `deny.toml` at the repo root.
-
 name: cargo-deny
 
 on:
@@ -19,6 +10,11 @@ on:
     # surface — the runtime tree won't change but the advisory database
     # will.
     - cron: "0 6 * * 1"
+
+# Prevent redundant runs on rapid pushes to the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   deny:

@@ -2,6 +2,7 @@
 name = "cgm-bridge"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "cgm-bridge binary: polls LibreLink Up, exposes glucose via HTTP, pushes to Nightscout."

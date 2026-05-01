@@ -202,20 +202,37 @@ cargo install --locked cargo-deny
 cargo deny check
 ```
 
-A GitHub Actions workflow (`.github/workflows/deny.yml`) running
-`EmbarkStudios/cargo-deny-action@v2 --all-features` on every push,
-PR, and weekly cron is the recommended CI step. The drop-in file
-is checked in at [`docs/ci/deny-workflow.yml`](./docs/ci/deny-workflow.yml).
-Copy it to `.github/workflows/deny.yml` and push with a token that
-has the GitHub `workflow` scope:
+## Continuous integration
+
+Two GitHub Actions workflows are checked in as drop-ins under
+[`docs/ci/`](./docs/ci/) — they live there and not under
+`.github/workflows/` because the development OAuth token lacks the
+`workflow` scope. Install them once with a token that has
+`workflow`:
 
 ```bash
 mkdir -p .github/workflows
+cp docs/ci/ci-workflow.yml   .github/workflows/ci.yml
 cp docs/ci/deny-workflow.yml .github/workflows/deny.yml
-git add .github/workflows/deny.yml
-git commit -m "ci: enforce cargo-deny policy on push and PR"
+git add .github/workflows/
+git commit -m "ci: install build + cargo-deny workflows"
 git push
 ```
+
+- **`ci.yml`** — `fmt` / `clippy` (all-features and
+  no-default-features) / `test` / release `build`. Uses
+  `actions-rust-lang/setup-rust-toolchain@v1` (bundles
+  `Swatinem/rust-cache@v2`); a concurrency group cancels
+  superseded PR runs; the cache only saves on `main`. The release
+  build wires `CGM_BRIDGE_GIT_SHA=${{ github.sha }}` so the
+  `cgm_bridge_build_info` gauge carries a real commit hash.
+- **`deny.yml`** — `EmbarkStudios/cargo-deny-action@v2
+  --all-features` on every push, every PR, and a weekly cron.
+  Renovate is also wired in — see [`renovate.json`](./renovate.json)
+  — with `rangeStrategy: "update-lockfile"` (semantically correct
+  for Cargo, where `"1"` already covers `1.x`), grouped tokio /
+  serde / axum+tower / tracing PRs, weekly `lockFileMaintenance`,
+  and automerge gated on green CI.
 
 ## Documentation
 
