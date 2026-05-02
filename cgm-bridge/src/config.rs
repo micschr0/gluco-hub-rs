@@ -76,6 +76,12 @@ pub struct SinkConfig {
     #[serde(default)]
     #[validate(nested)]
     pub nightscout: Option<NightscoutSinkConfig>,
+
+    /// V2 MQTT sink. Parsed unconditionally; honoured only when the
+    /// `sink-mqtt` feature is enabled (see `build_sinks` in `main.rs`).
+    #[serde(default)]
+    #[validate(nested)]
+    pub mqtt: Option<MqttSinkConfig>,
 }
 
 /// `[sink.nightscout]` block. The API secret lives in an environment
@@ -110,6 +116,124 @@ pub struct NightscoutSinkConfig {
 fn validate_http_url(value: &str) -> Result<(), ValidationError> {
     if !(value.starts_with("http://") || value.starts_with("https://")) {
         return Err(ValidationError::new("url_scheme"));
+    }
+    Ok(())
+}
+
+/// QoS level for MQTT publishes. Deserialised from a TOML integer
+/// (`qos = 1`) and validated against the MQTT 5 fixed set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(try_from = "u8")]
+#[allow(clippy::enum_variant_names)] // matches MQTT spec terminology
+pub enum MqttQos {
+    AtMostOnce,
+    #[default]
+    AtLeastOnce,
+    ExactlyOnce,
+}
+
+impl TryFrom<u8> for MqttQos {
+    type Error = String;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::AtMostOnce),
+            1 => Ok(Self::AtLeastOnce),
+            2 => Ok(Self::ExactlyOnce),
+            other => Err(format!("qos must be 0, 1, or 2; got {other}")),
+        }
+    }
+}
+
+/// `[sink.mqtt]` block. The password lives in an env var referenced
+/// by `password_env`; TOML never holds the secret itself.
+#[derive(Debug, Clone, Deserialize, Validate)]
+#[cfg_attr(not(feature = "sink-mqtt"), allow(dead_code))]
+pub struct MqttSinkConfig {
+    /// Broker hostname or IP — no scheme prefix.
+    #[validate(length(min = 1, max = 253))]
+    pub broker_host: String,
+
+    /// Broker port (1883 = plain MQTT, 8883 = MQTT-over-TLS by IANA).
+    #[validate(range(min = 1, max = 65535))]
+    pub broker_port: u16,
+
+    /// MQTT client-id. MQTT 5 allows up to 65535 chars but most brokers
+    /// cap at 23 for backwards-compat; we follow the conservative limit.
+    #[validate(
+        length(min = 1, max = 23),
+        custom(function = "validate_mqtt_client_id")
+    )]
+    pub client_id: String,
+
+    /// Optional MQTT username.
+    #[serde(default)]
+    #[validate(length(min = 1, max = 256))]
+    pub username: Option<String>,
+
+    /// Name of the env var holding the MQTT password (never the value).
+    #[serde(default)]
+    #[validate(
+        length(min = 1, max = 256),
+        custom(function = "validate_ascii_env_name")
+    )]
+    pub password_env: Option<String>,
+
+    /// Topic prefix. Readings publish to `<prefix>/glucose`, health to
+    /// `<prefix>/_health`. Typically `cgm-bridge/<client_id>`.
+    #[validate(length(min = 1, max = 200), custom(function = "validate_topic_prefix"))]
+    pub topic_prefix: String,
+
+    /// QoS for glucose publishes. 0/1/2 — defaults to 1.
+    #[serde(default)]
+    pub qos: MqttQos,
+
+    /// Keep-alive interval in seconds. 30 is sensible for mobile/LTE.
+    #[serde(default = "default_mqtt_keep_alive")]
+    #[validate(range(min = 5, max = 300))]
+    pub keep_alive_secs: u64,
+
+    /// MQTT v5 session-expiry-interval in seconds. 0 = clean-start
+    /// every connect (recommended for a stateless publisher).
+    #[serde(default)]
+    pub session_expiry_secs: u32,
+
+    /// Enable TLS (rustls). Default `true`; flip to `false` only for
+    /// local plaintext brokers in dev.
+    #[serde(default = "default_true")]
+    pub tls: bool,
+
+    /// Whether to embed `patient_id` in the JSON payload. Defaults to
+    /// `true` — flip to `false` for shared brokers where the bridge
+    /// should not leak the patient identifier.
+    #[serde(default = "default_true")]
+    pub include_patient_id: bool,
+}
+
+fn default_mqtt_keep_alive() -> u64 {
+    30
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn validate_mqtt_client_id(value: &str) -> Result<(), ValidationError> {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        Ok(())
+    } else {
+        Err(ValidationError::new("mqtt_client_id_chars"))
+    }
+}
+
+fn validate_topic_prefix(value: &str) -> Result<(), ValidationError> {
+    // MQTT topics must not contain wildcards (#, +) and must not start
+    // or end with '/'. Embedded '/' segments are fine.
+    if value.contains('#') || value.contains('+') || value.starts_with('/') || value.ends_with('/')
+    {
+        return Err(ValidationError::new("topic_prefix_chars"));
     }
     Ok(())
 }
@@ -247,6 +371,11 @@ pub fn verify_secret_env_vars(cfg: &Config) -> Result<(), ConfigError> {
     }
     if let Some(ns) = cfg.sink.nightscout.as_ref() {
         required.push(&ns.api_secret_env);
+    }
+    if let Some(mqtt) = cfg.sink.mqtt.as_ref()
+        && let Some(env_name) = mqtt.password_env.as_deref()
+    {
+        required.push(env_name);
     }
     if let Some(name) = cfg.http.bearer_token_env.as_deref() {
         required.push(name);

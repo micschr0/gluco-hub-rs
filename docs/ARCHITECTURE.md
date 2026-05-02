@@ -141,7 +141,13 @@ exit-code contracts are also keyed off these prefixes via
 | NS003   | `cgm-bridge/src/sinks/nightscout/client.rs` | Nightscout returned non-success status |
 | NS004   | `cgm-bridge/src/sinks/nightscout/client.rs` | Nightscout returned a transient error (5xx, 429) |
 | NS005   | `cgm-bridge/src/sinks/nightscout/client.rs` | invalid Nightscout base URL |
-| MQTT001 | `cgm-bridge/src/sinks/mqtt/mod.rs`   | V2 placeholder sink invoked (real client lands in V2) |
+| MQTT001 | `cgm-bridge/src/sinks/mqtt/error.rs` | TCP / socket-level transport failure |
+| MQTT002 | `cgm-bridge/src/sinks/mqtt/error.rs` | TLS handshake failed |
+| MQTT003 | `cgm-bridge/src/sinks/mqtt/error.rs` | Broker refused CONNECT (auth, banned client-id, busy) |
+| MQTT004 | `cgm-bridge/src/sinks/mqtt/error.rs` | Publish channel closed or full (EventLoop dead) |
+| MQTT005 | `cgm-bridge/src/sinks/mqtt/error.rs` | Local payload / serialisation error |
+| MQTT006 | `cgm-bridge/src/sinks/mqtt/error.rs` | Keep-alive timeout |
+| MQTT007 | `cgm-bridge/src/sinks/mqtt/error.rs` | MQTT protocol-state error / unexpected packet |
 
 ## Cargo features
 
@@ -150,7 +156,7 @@ exit-code contracts are also keyed off these prefixes via
 | `mock-source`     | `cgm-bridge`, `cgm-bridge-core` | Default. Wires an in-memory canned source so the API runs out of the box. |
 | `source-llu`      | `cgm-bridge`         | Real LibreLink Up source. Honours `[source.llu]`; takes precedence over `mock-source`. Activates `dep:sha2`. |
 | `sink-nightscout` | `cgm-bridge`         | Nightscout v3 sink. Honours `[sink.nightscout]`; fans out from the poller. Activates `dep:sha1`. |
-| `sink-mqtt`       | `cgm-bridge`         | V2 placeholder. Compiles a `MqttSink` stub returning `[MQTT001]`. Not wired into `build_sinks` — the real `rumqttc`-backed implementation lands in V2. |
+| `sink-mqtt`       | `cgm-bridge`         | V2 MQTT v5 sink (rumqttc 0.25, rustls only). Honours `[sink.mqtt]`; LWT-driven `_health` topic, schema `v: 1` glucose payload, exponential reconnect backoff. Activates `dep:rumqttc`, `dep:bytes`, `dep:tokio-util`. |
 
 `build_default_source(&Config)` and `build_sinks(&Config)` in
 `main.rs` apply the feature gates at runtime. A binary built with

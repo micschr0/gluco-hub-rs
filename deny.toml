@@ -11,7 +11,36 @@ targets = []
 version = 2
 yanked = "deny"
 # Add per-CVE waivers here, NEVER as broad `ignore = ["*"]`.
-ignore = []
+#
+# All current waivers chain back to a single root: `rumqttc 0.25.1`
+# pins old transitive `tokio-rustls 0.26` → `rustls 0.23` →
+# `rustls-webpki 0.102.x` + `rustls-pemfile 2.x`. Both have been
+# superseded upstream (rustls-webpki 0.103.13, pemfile parsing moved
+# into rustls-pki-types ≥ 1.9), but rumqttc has not yet released a
+# bump. cgm-bridge is an outbound MQTT v5 client connecting to a
+# single, operator-controlled broker; it never parses CRLs and never
+# uses URI-typed name constraints, so each of the four issues below
+# is unreachable in this deployment. Revisit on every rumqttc release.
+ignore = [
+    # rustls-pemfile is unmaintained but the code is identical to the
+    # PEM parser in rustls-pki-types. We only feed it platform-native
+    # CA bytes from `rustls-native-certs` — no operator-supplied PEM.
+    { id = "RUSTSEC-2025-0134", reason = "thin wrapper around live rustls-pki-types code; only platform-CA input" },
+    # CRL distributionPoint handling: only kicks in when a CRL is
+    # consulted. `TlsConfiguration::default()` (the only path we use)
+    # builds a rustls ClientConfig without revocation checking.
+    { id = "RUSTSEC-2026-0049", reason = "cgm-bridge does not consult CRLs; unreachable" },
+    # URI-typed name constraints. Our broker certs use DNS names; the
+    # rustls API we touch does not expose URI-name assertions.
+    { id = "RUSTSEC-2026-0098", reason = "cgm-bridge does not use URI name constraints; unreachable" },
+    # Wildcard handling inside DNS-name name-constraint subtrees.
+    # Reachable only after signature verification of a misissued cert;
+    # cgm-bridge talks to one operator-pinned broker, so no path.
+    { id = "RUSTSEC-2026-0099", reason = "outbound MQTT, single operator-controlled broker; not reachable" },
+    # Panic in BorrowedCertRevocationList::from_der parsing — same
+    # root as 2026-0049, gated on CRL parsing we never invoke.
+    { id = "RUSTSEC-2026-0104", reason = "cgm-bridge does not parse CRLs; unreachable" },
+]
 
 [licenses]
 version = 2

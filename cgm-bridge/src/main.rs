@@ -519,10 +519,13 @@ fn extract_error_code(message: &str) -> String {
 }
 
 /// Build the configured sinks. Order is config-driven; future sinks
-/// (MQTT, webhook) slot in as additional entries.
+/// (webhook, …) slot in as additional entries.
 fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<dyn Sink>>> {
     let _ = cfg;
-    #[cfg_attr(not(feature = "sink-nightscout"), allow(unused_mut))]
+    #[cfg_attr(
+        not(any(feature = "sink-nightscout", feature = "sink-mqtt")),
+        allow(unused_mut)
+    )]
     let mut sinks: Vec<Arc<dyn Sink>> = Vec::new();
 
     #[cfg(feature = "sink-nightscout")]
@@ -530,7 +533,38 @@ fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<dyn Sink>>> {
         sinks.push(build_nightscout_sink(ns).context("build Nightscout sink")?);
     }
 
+    #[cfg(feature = "sink-mqtt")]
+    if let Some(mqtt) = cfg.sink.mqtt.as_ref() {
+        sinks.push(build_mqtt_sink(mqtt).context("build MQTT sink")?);
+    }
+
     Ok(sinks)
+}
+
+#[cfg(feature = "sink-mqtt")]
+fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
+    use secrecy::SecretString;
+    use sinks::mqtt::MqttSink;
+
+    let password = cfg
+        .password_env
+        .as_deref()
+        .map(config::resolve_secret_env)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .map(SecretString::from);
+
+    info!(
+        broker = %cfg.broker_host,
+        port = cfg.broker_port,
+        client_id = %cfg.client_id,
+        tls = cfg.tls,
+        topic_prefix = %cfg.topic_prefix,
+        "mqtt sink configured"
+    );
+
+    let sink = MqttSink::new(cfg, password).map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(Arc::new(sink))
 }
 
 #[cfg(feature = "sink-nightscout")]

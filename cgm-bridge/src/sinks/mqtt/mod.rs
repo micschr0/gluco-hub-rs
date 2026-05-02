@@ -1,61 +1,63 @@
-//! MQTT sink — V2 placeholder.
+//! MQTT v5 sink (V2). Backed by `rumqttc 0.25` (rustls only — no
+//! OpenSSL anywhere in the tree per CLAUDE.md).
 //!
-//! Per CLAUDE.md's roadmap, MQTT lands in V2. This module exists so
-//! V2 can plug in a `rumqttc`-backed implementation without
-//! introducing a new feature flag, restructuring `sinks/mod.rs`, or
-//! changing how `build_sinks` discovers concrete sinks. Every push
-//! returns `[MQTT001]` until the real client lands.
+//! Topic layout:
+//! * `<prefix>/glucose` — one JSON payload per Reading, QoS configurable,
+//!   retain = false (stale glucose is dangerous).
+//! * `<prefix>/_health` — retained, QoS 1; LWT carries `online: false`,
+//!   poll loop publishes `online: true` on every successful ConnAck.
 //!
-//! Intentionally NOT wired into `build_sinks` — operators who flip
-//! the feature flag and configure `[sink.mqtt]` would otherwise see
-//! every poll fail with `[MQTT001]`. The stub is kept reachable
-//! through the public API so V2 can swap the body in place.
+//! Wire schema is `v: 1`. Bumping `v` is a breaking change for
+//! subscribers and must be accompanied by a doc update.
 
-use async_trait::async_trait;
-use cgm_bridge_core::{CoreError, Reading, Sink};
+pub mod error;
+pub mod sink;
+pub mod wire;
 
-/// V2 placeholder. Construction is free; every push fails with a
-/// stable `[MQTT001]` prefix so the upcoming real implementation can
-/// be dropped in without changing call sites or test fixtures.
-///
-/// `dead_code` is allowed because production code never constructs
-/// the placeholder — only V2 will, once the real client lands.
-#[allow(dead_code)]
-#[derive(Debug, Default)]
-pub struct MqttSink;
-
-#[allow(dead_code)]
-impl MqttSink {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl Sink for MqttSink {
-    fn name(&self) -> &'static str {
-        "mqtt"
-    }
-
-    async fn push(&self, _readings: &[Reading]) -> Result<(), CoreError> {
-        Err(CoreError::Sink {
-            message: "[MQTT001] MQTT sink is a V2 placeholder; not yet implemented".to_string(),
-        })
-    }
-}
+pub use sink::MqttSink;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cgm_bridge_core::{GlucoseMgDl, PatientId, Reading, SourceId, Trend};
+    use chrono::Utc;
 
-    #[tokio::test]
-    async fn placeholder_returns_v2_error() {
-        let sink = MqttSink::new();
-        assert_eq!(sink.name(), "mqtt");
-        let err = sink.push(&[]).await.unwrap_err();
-        let CoreError::Sink { message } = err else {
-            panic!("expected Sink error, got {err:?}");
+    fn one_reading() -> Reading {
+        Reading {
+            patient_id: PatientId::new("p1").unwrap(),
+            source_id: SourceId::new("llu").unwrap(),
+            timestamp: Utc::now(),
+            glucose: GlucoseMgDl::new(120.0).unwrap(),
+            trend: Trend::Flat,
+        }
+    }
+
+    /// Smoke test: payload module produces JSON of the agreed shape.
+    /// (Broker-level integration is left to operator-run smoke scripts.)
+    #[test]
+    fn glucose_payload_is_v1_json() {
+        let r = one_reading();
+        let p = wire::glucose_payload(&r, true);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains(r#""v":1"#));
+        assert!(json.contains(r#""mgdl":120.0"#));
+        assert!(json.contains(r#""trend":"Flat""#));
+        assert!(json.contains(r#""patient":"p1""#));
+    }
+
+    #[test]
+    fn error_codes_match_display() {
+        use super::error::MqttError;
+        let e = MqttError::Transport {
+            message: "x".into(),
         };
-        assert!(message.contains("[MQTT001]"), "got: {message}");
+        assert_eq!(e.code(), "MQTT001");
+        assert!(e.to_string().contains("[MQTT001]"));
+
+        let e = MqttError::ConnectRefused {
+            reason: "BadUserName".into(),
+        };
+        assert_eq!(e.code(), "MQTT003");
+        assert!(e.to_string().contains("[MQTT003]"));
     }
 }

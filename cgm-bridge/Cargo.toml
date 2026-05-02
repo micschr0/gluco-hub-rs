@@ -15,10 +15,10 @@ publish = false
 default = ["mock-source"]
 source-llu = ["dep:sha2"]
 sink-nightscout = ["dep:sha1"]
-# V2 placeholder. Enables the `MqttSink` trait stub so the binary
-# compiles with a typed Sink for MQTT, but every push returns
-# `[MQTT001]` until the real `rumqttc`-backed implementation lands.
-sink-mqtt = []
+# V2: real MQTT v5 sink backed by rumqttc + rustls. Pulls in the
+# rumqttc client, the bytes crate (LastWill payload), and tokio-util
+# (CancellationToken for graceful shutdown).
+sink-mqtt = ["dep:rumqttc", "dep:bytes", "dep:tokio-util"]
 # Enables the in-memory `MockSource` fixture so the HTTP API can be
 # exercised end-to-end before the LibreLink Up source lands.
 mock-source = ["cgm-bridge-core/mock-source"]
@@ -58,6 +58,9 @@ subtle = { workspace = true }
 # Optional, only pulled in by their respective features.
 sha2 = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }
+rumqttc = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }

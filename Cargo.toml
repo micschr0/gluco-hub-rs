@@ -59,6 +59,12 @@ subtle = "2"
 # Test helpers (dev-dependencies in member crates)
 wiremock = "0.6"
 
+# MQTT v5 client (rustls only — `use-rustls` transitively pulls
+# `use-rustls-no-provider` in 0.25.x, no OpenSSL anywhere).
+rumqttc = { version = "0.25", default-features = false, features = ["use-rustls"] }
+bytes = "1"
+tokio-util = { version = "0.7", features = ["rt"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
