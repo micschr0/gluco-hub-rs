@@ -30,7 +30,7 @@ V1 ships one Source impl (LibreLinkUp) and one Sink impl (Nightscout v3). Trait-
 - Run: `cargo run -- run`
 - Run with config: `cargo run -- run -c config.toml`
 - Audit: `cargo deny check`
-- Container build: `docker build -t gluco-hub:dev -f Containerfile .`
+- Container build: `docker build -t gluco-hub:dev .`
 
 ## Conventions
 
@@ -42,7 +42,7 @@ V1 ships one Source impl (LibreLinkUp) and one Sink impl (Nightscout v3). Trait-
 
 **Logs**: `tracing` only — no `println!` outside `main`. JSON output in production with structured fields like `error_code`. Never log secrets, tokens, or PII.
 
-**Secrets**: Wrap in `SecretString` from `secrecy` crate. TOML references ENV variable names (e.g. `password_env = "LLU_PASSWORD"`), never the secret itself.
+**Secrets**: Wrap in `SecretString` from `secrecy` crate. Secrets are injected via `GLUCO_HUB__<SECTION>__<KEY>` env vars (e.g. `GLUCO_HUB__SOURCE__LLU__PASSWORD=secret`) or via `password_file`. Never embed secret values in TOML.
 
 **Config ENV overrides**: Any TOML key can be overridden at runtime with `GLUCO_HUB__<SECTION>__<KEY>` (double-underscore delimited), e.g. `GLUCO_HUB__HTTP__BIND=0.0.0.0:9090`. Useful in containers where mounting a config file is inconvenient.
 

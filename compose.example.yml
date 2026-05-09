@@ -4,11 +4,11 @@
 #   docker compose up -d
 #
 # The service reads its config from a bind-mounted config.toml. Secrets are
-# passed via environment variables — never written into the config file.
+# passed via GLUCO_HUB__* environment variables and never written into TOML.
 # See config.example.toml for all available options.
 #
 # Build the image first:
-#   docker build -t gluco-hub:latest -f Containerfile \
+#   docker build -t gluco-hub:latest \
 #     --build-arg GLUCO_HUB_GIT_SHA=$(git rev-parse HEAD) \
 #     --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
 
@@ -18,7 +18,6 @@ services:
     # Uncomment to build locally instead of using a pre-built image:
     # build:
     #   context: .
-    #   dockerfile: Containerfile
     #   args:
     #     GLUCO_HUB_GIT_SHA: "${GLUCO_HUB_GIT_SHA:-unknown}"
     #     BUILD_DATE: "${BUILD_DATE:-}"
@@ -29,36 +28,30 @@ services:
       - ./config.toml:/etc/gluco-hub/config.toml:ro
     command: ["run", "-c", "/etc/gluco-hub/config.toml"]
     environment:
-      # ── LibreLink Up credentials ───────────────────────────────────────
-      # These names must match the `password_env` value in config.toml.
-      LLU_PASSWORD: "${LLU_PASSWORD}"
+      # ── LibreLink Up password ──────────────────────────────────────────
+      GLUCO_HUB__SOURCE__LLU__PASSWORD: "${GLUCO_HUB__SOURCE__LLU__PASSWORD}"
 
-      # ── Nightscout (optional) ──────────────────────────────────────────
+      # ── Nightscout API secret (optional) ──────────────────────────────
       # Uncomment if [sink.nightscout] is enabled in config.toml.
-      # NIGHTSCOUT_API_SECRET: "${NIGHTSCOUT_API_SECRET}"
+      # GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET: "${GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET}"
 
-      # ── MQTT (optional) ────────────────────────────────────────────────
-      # Uncomment if [sink.mqtt] is enabled in config.toml.
-      # MQTT_PASSWORD: "${MQTT_PASSWORD}"
+      # ── MQTT password (optional) ───────────────────────────────────────
+      # Uncomment if [sink.mqtt] is enabled and your broker requires auth.
+      # GLUCO_HUB__SINK__MQTT__PASSWORD: "${GLUCO_HUB__SINK__MQTT__PASSWORD}"
 
       # ── HTTP Bearer token (optional) ───────────────────────────────────
-      # Uncomment if `bearer_token_env` is set in config.toml.
-      # GLUCO_HUB_BEARER_TOKEN: "${GLUCO_HUB_BEARER_TOKEN}"
+      # Uncomment to protect /glucose/* with Bearer authentication.
+      # GLUCO_HUB__HTTP__BEARER_TOKEN: "${GLUCO_HUB__HTTP__BEARER_TOKEN}"
 
       # ── Logging ────────────────────────────────────────────────────────
       RUST_LOG: "gluco_hub=info"
       # GLUCO_HUB_LOG_PRETTY: "1"  # human-readable logs instead of JSON
 
-    # Kubernetes-style health probes work with Docker Compose v2.1+.
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+    # Health monitoring: the runtime image is distroless (no shell, no wget).
+    # Use external probes against GET /healthz (port 8080) instead — e.g.
+    # Prometheus blackbox_exporter, Uptime Kuma, or a Kubernetes readinessProbe.
 
     # The distroless runtime image runs as uid 65532 (nonroot).
-    # No privilege escalation needed.
     security_opt:
       - no-new-privileges:true
     read_only: true

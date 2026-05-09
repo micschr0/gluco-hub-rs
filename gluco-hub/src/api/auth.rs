@@ -3,7 +3,7 @@
 //! Bearer-token middleware for `/glucose/*`.
 //!
 //! - Disabled (passthrough) when `AppState::bearer_token` is `None` —
-//!   the operator opts in by setting `[http] bearer_token_env`.
+//!   the operator opts in by setting `GLUCO_HUB__HTTP__BEARER_TOKEN`.
 //! - Enabled: requires `Authorization: Bearer <token>` and compares the
 //!   provided token against the resolved secret with `subtle::ConstantTimeEq`
 //!   to keep the response timing flat across right/wrong tokens.

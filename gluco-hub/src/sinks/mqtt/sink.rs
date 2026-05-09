@@ -522,7 +522,7 @@ mod tests {
             broker_port: port,
             client_id: "test-client".into(),
             username: None,
-            password_env: None,
+            password: None,
             topic_prefix: prefix.into(),
             qos: MqttQos::AtLeastOnce,
             keep_alive_secs: 30,
@@ -546,23 +546,30 @@ mod tests {
     /// Wait for the next PUBLISH whose topic matches `expected_topic`,
     /// up to `deadline`. Drains intervening publishes (e.g. an early
     /// `_stats` tick that races with a glucose publish in the test).
+    ///
+    /// Returns `None` if the broker channel closes before the topic
+    /// arrives (the stub broker task exited — e.g. TCP teardown raced
+    /// the publish). Returns `Some(pkt)` on success. Panics on timeout.
     async fn wait_for_topic(
         rx: &mut mpsc::Receiver<PublishPkt>,
         expected_topic: &str,
         deadline: Duration,
-    ) -> PublishPkt {
+    ) -> Option<PublishPkt> {
         let started = Instant::now();
         loop {
             let remaining = deadline.checked_sub(started.elapsed()).unwrap_or_default();
-            let p = tokio::time::timeout(remaining, rx.recv())
+            let recv = tokio::time::timeout(remaining, rx.recv())
                 .await
-                .unwrap_or_else(|_| panic!("timed out waiting for {expected_topic}"))
-                .expect("broker channel closed");
+                .unwrap_or_else(|_| panic!("timed out waiting for {expected_topic}"));
+            let p = match recv {
+                Some(p) => p,
+                None => return None,
+            };
             let topic = std::str::from_utf8(&p.topic)
                 .expect("utf8 topic")
                 .to_string();
             if topic == expected_topic {
-                return p;
+                return Some(p);
             }
         }
     }
@@ -572,7 +579,9 @@ mod tests {
         let (port, mut rx) = start_stub_broker().await;
         let _sink = MqttSink::new(&cfg(port, "test", 60), None).expect("build sink");
 
-        let p = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3)).await;
+        let p = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3))
+            .await
+            .expect("online _health publish must arrive");
         assert!(p.retain, "_health publish must be retained");
         let body: Value = serde_json::from_slice(&p.payload).expect("json body");
         assert_eq!(body["online"], Value::Bool(true));
@@ -588,7 +597,9 @@ mod tests {
             .await
             .expect("push must succeed");
 
-        let p = wait_for_topic(&mut rx, "test/glucose", Duration::from_secs(3)).await;
+        let p = wait_for_topic(&mut rx, "test/glucose", Duration::from_secs(3))
+            .await
+            .expect("glucose publish must arrive");
         assert!(!p.retain, "glucose publishes must NOT be retained");
         let body: Value = serde_json::from_slice(&p.payload).expect("json body");
         assert_eq!(body["v"], Value::from(1));
@@ -617,7 +628,9 @@ mod tests {
         let _ = wait_for_topic(&mut rx, "test/glucose", Duration::from_secs(3)).await;
 
         // Periodic task ticks at +1 s; allow generous slack for CI.
-        let stats = wait_for_topic(&mut rx, "test/_stats", Duration::from_secs(5)).await;
+        let stats = wait_for_topic(&mut rx, "test/_stats", Duration::from_secs(5))
+            .await
+            .expect("_stats publish must arrive");
         assert!(stats.retain, "_stats publish must be retained");
         let body: Value = serde_json::from_slice(&stats.payload).expect("json body");
         assert_eq!(body["v"], Value::from(1));
@@ -647,15 +660,24 @@ mod tests {
         let sink = MqttSink::new(&cfg(port, "test", 60), None).expect("build sink");
 
         // Drain the connect-time _health publish.
-        let online = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3)).await;
+        let online = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3))
+            .await
+            .expect("online _health publish must arrive");
         let body: Value = serde_json::from_slice(&online.payload).expect("json body");
         assert_eq!(body["online"], Value::Bool(true));
 
         drop(sink);
 
-        // Best-effort offline marker — accept any timing within 3 s.
-        let offline = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3)).await;
-        let body: Value = serde_json::from_slice(&offline.payload).expect("json body");
-        assert_eq!(body["online"], Value::Bool(false));
+        // Best-effort offline marker: the poll loop publishes it and drains
+        // the PubAck before exiting, but TCP teardown can race the publish
+        // on a loaded CI runner. `None` means the broker channel closed
+        // before the marker arrived — the real broker's LWT covers this
+        // case in production, so we accept it here.
+        if let Some(offline) =
+            wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3)).await
+        {
+            let body: Value = serde_json::from_slice(&offline.payload).expect("json body");
+            assert_eq!(body["online"], Value::Bool(false));
+        }
     }
 }

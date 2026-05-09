@@ -24,7 +24,7 @@ CONFIG="${REPO_ROOT}/config.example.toml"
 # Don't try to launch a real LLU source: ensure no [source.llu] block
 # slipped in via env overrides from a prior shell.
 unset GLUCO_HUB__SOURCE__LLU__EMAIL || true
-unset GLUCO_HUB__SOURCE__LLU__PASSWORD_ENV || true
+unset GLUCO_HUB__SOURCE__LLU__PASSWORD || true
 unset GLUCO_HUB__SOURCE__LLU__REGION || true
 
 export GLUCO_HUB__HTTP__BIND="${BIND}"
