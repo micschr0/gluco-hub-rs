@@ -7,6 +7,8 @@ This project does not yet follow Semantic Versioning — see [SCOPE.md](./SCOPE.
 
 ## [Unreleased]
 
+> **Beta / WIP** — config schema, HTTP API, and MQTT wire format are not yet stable and may change without notice.
+
 ## [0.1.0] - 2026-05-09
 
 Initial open-source release.
