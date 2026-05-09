@@ -669,8 +669,7 @@ mod tests {
         // on a loaded CI runner. `None` means the broker channel closed
         // before the marker arrived — the real broker's LWT covers this
         // case in production, so we accept it here.
-        if let Some(offline) =
-            wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3)).await
+        if let Some(offline) = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3)).await
         {
             let body: Value = serde_json::from_slice(&offline.payload).expect("json body");
             assert_eq!(body["online"], Value::Bool(false));
