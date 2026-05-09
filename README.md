@@ -181,16 +181,21 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 
 ## Container
 
-```bash
-docker build -t gluco-hub:dev \
-    --build-arg GLUCO_HUB_GIT_SHA=$(git rev-parse HEAD) \
-    --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
+Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR on every release tag and on every push to `main`:
 
+| Tag                   | Source                                           |
+| --------------------- | ------------------------------------------------ |
+| `:latest`             | latest semver release                            |
+| `:1.2.3` / `:1.2`     | pinned semver release                            |
+| `:edge`               | latest commit on `main` (unstable)               |
+| `:sha-<short>`        | exact commit                                     |
+
+```bash
 docker run --rm -p 8080:8080 \
     -v "$PWD/config.toml:/etc/gluco-hub/config.toml:ro" \
     -e GLUCO_HUB__SOURCE__LLU__PASSWORD='…' \
     -e GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET='…' \
-    gluco-hub:dev run -c /etc/gluco-hub/config.toml
+    ghcr.io/micschr0/gluco-hub:latest run -c /etc/gluco-hub/config.toml
 ```
 
 For a persistent setup, use the provided Compose file:
@@ -199,6 +204,22 @@ For a persistent setup, use the provided Compose file:
 cp compose.example.yml compose.yml   # edit environment variables
 cp config.example.toml config.toml   # edit [source.llu] and [sink.*]
 docker compose up -d
+```
+
+### Verifying the image
+
+Each published image is keyless-signed with [Sigstore cosign](https://docs.sigstore.dev/) and ships a SLSA build-provenance attestation. Verify either:
+
+```bash
+gh attestation verify oci://ghcr.io/micschr0/gluco-hub:latest --owner micschr0
+```
+
+### Building locally
+
+```bash
+docker build -t gluco-hub:dev \
+    --build-arg GLUCO_HUB_GIT_SHA=$(git rev-parse HEAD) \
+    --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
 ```
 
 > [!TIP]

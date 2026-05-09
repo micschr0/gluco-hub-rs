@@ -88,6 +88,8 @@ ARG GLUCO_HUB_GIT_SHA=unknown
 ARG BUILD_DATE
 LABEL org.opencontainers.image.title="gluco-hub" \
       org.opencontainers.image.description="LibreLink Up → HTTP / Nightscout bridge" \
+      org.opencontainers.image.source="https://github.com/micschr0/gluco-hub-rs" \
+      org.opencontainers.image.url="https://github.com/micschr0/gluco-hub-rs" \
       org.opencontainers.image.revision="${GLUCO_HUB_GIT_SHA}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.licenses="AGPL-3.0-or-later"

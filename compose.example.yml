@@ -7,15 +7,12 @@
 # passed via GLUCO_HUB__* environment variables and never written into TOML.
 # See config.example.toml for all available options.
 #
-# Build the image first:
-#   docker build -t gluco-hub:latest \
-#     --build-arg GLUCO_HUB_GIT_SHA=$(git rev-parse HEAD) \
-#     --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
+# The default image is pulled from GHCR. To build locally instead, comment
+# out `image:` and uncomment the `build:` block below.
 
 services:
   gluco-hub:
-    image: gluco-hub:latest
-    # Uncomment to build locally instead of using a pre-built image:
+    image: ghcr.io/micschr0/gluco-hub:latest
     # build:
     #   context: .
     #   args:
