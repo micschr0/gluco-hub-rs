@@ -1,0 +1,30 @@
+name: cargo-deny
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Re-run weekly so new advisories against unchanged dep trees still
+    # surface — the runtime tree won't change but the advisory database
+    # will.
+    - cron: "0 6 * * 1"
+
+# Prevent redundant runs on rapid pushes to the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # Matches `[graph] all-features = true` in deny.toml so every
+          # feature combination is policy-checked.
+          command: check
+          arguments: --all-features

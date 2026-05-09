@@ -1,0 +1,12 @@
+target/
+**/target/
+.git/
+.github/
+docs/
+scripts/
+*.md
+config.toml
+*.log
+Taskfile.yml
+renovate.json
+deny.toml
