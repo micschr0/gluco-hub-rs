@@ -522,7 +522,7 @@ mod tests {
             broker_port: port,
             client_id: "test-client".into(),
             username: None,
-            password_env: None,
+            password: None,
             topic_prefix: prefix.into(),
             qos: MqttQos::AtLeastOnce,
             keep_alive_secs: 30,

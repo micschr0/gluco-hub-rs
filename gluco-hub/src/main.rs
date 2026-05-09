@@ -185,7 +185,7 @@ async fn serve(cfg: config::Config) -> Result<()> {
 
     let metrics_handle = metrics::init_recorder().context("init metrics recorder")?;
     let cache = ReadingCache::new();
-    let bearer_token = resolve_bearer_token(&cfg)?;
+    let bearer_token = resolve_bearer_token(&cfg);
     info!(auth_enabled = bearer_token.is_some(), "http auth state");
     let state = api::AppState {
         cache: cache.clone(),
@@ -221,18 +221,8 @@ async fn serve(cfg: config::Config) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the optional Bearer token from the env var named in
-/// `[http] bearer_token_env`. Returns `Ok(None)` when the operator has
-/// not opted in to auth. Errors when the env var is referenced but
-/// unset/empty (already pre-checked by `verify_secrets`, but
-/// kept defensive in case of a race where the var is unset between
-/// startup and here).
-fn resolve_bearer_token(cfg: &config::Config) -> Result<Option<secrecy::SecretString>> {
-    let Some(name) = cfg.http.bearer_token_env.as_deref() else {
-        return Ok(None);
-    };
-    let value = config::resolve_secret_env(name).map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(Some(secrecy::SecretString::from(value)))
+fn resolve_bearer_token(cfg: &config::Config) -> Option<secrecy::SecretString> {
+    cfg.http.bearer_token.clone()
 }
 
 /// Build the source to drive the poller. Priority order:
@@ -283,16 +273,13 @@ fn build_llu_client_and_creds(
     use sources::llu::headers::DEFAULT_LLU_VERSION;
 
     let region = Region::parse(&llu.region).context("parse LLU region")?;
-    let password = match (llu.password_env.as_deref(), llu.password_file.as_deref()) {
-        (Some(env), None) => config::resolve_secret_env(env),
-        (None, Some(path)) => config::resolve_secret_file(path),
-        // Validator guarantees exactly one branch; surface anything else
-        // as a clear config error rather than panicking.
-        _ => Err(config::ConfigError::MissingSecret {
-            var: "[source.llu] password_env|password_file".to_string(),
-        }),
-    }
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let password: SecretString = match (llu.password.as_ref(), llu.password_file.as_deref()) {
+        (Some(secret), None) => secret.clone(),
+        (None, Some(path)) => {
+            SecretString::from(config::resolve_secret_file(path).map_err(|e| anyhow::anyhow!("{e}"))?)
+        }
+        _ => anyhow::bail!("[CFG002] exactly one of password or password_file must be set"),
+    };
     let resolved_version = llu
         .version
         .as_deref()
@@ -303,7 +290,7 @@ fn build_llu_client_and_creds(
         .with_version(&resolved_version);
     let creds = LluCredentials {
         email: llu.email.clone(),
-        password: SecretString::from(password),
+        password,
         region,
     };
     Ok((client, creds, resolved_version))
@@ -362,7 +349,7 @@ async fn dryrun(cfg: &config::Config) -> Result<()> {
 
     let llu = cfg.source.llu.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
-            "[CFG004] dryrun requires [source.llu] config or \
+            "[CFG005] dryrun requires [source.llu] config or \
             GLUCO_HUB__SOURCE__LLU__* env overrides"
         )
     })?;
@@ -423,18 +410,15 @@ async fn dryrun(cfg: &config::Config) -> Result<()> {
 /// stdout. Never writes — by design.
 #[cfg(feature = "sink-nightscout")]
 async fn nsdryrun(cfg: &config::Config) -> Result<()> {
-    use secrecy::SecretString;
     use sinks::nightscout::NightscoutClient;
 
     let ns = cfg.sink.nightscout.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
-            "[CFG004] ns-dryrun requires [sink.nightscout] config or \
+            "[CFG005] ns-dryrun requires [sink.nightscout] config or \
             GLUCO_HUB__SINK__NIGHTSCOUT__* env overrides"
         )
     })?;
-    let secret =
-        config::resolve_secret_env(&ns.api_secret_env).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let client = NightscoutClient::new(ns.base_url.clone(), SecretString::from(secret))
+    let client = NightscoutClient::new(ns.base_url.clone(), ns.api_secret.clone())
         .context("build nightscout client")?;
 
     info!(base_url = %ns.base_url, "ns dryrun: probing /api/v3/entries");
@@ -633,16 +617,9 @@ fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<dyn Sink>>> {
 
 #[cfg(feature = "sink-mqtt")]
 fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
-    use secrecy::SecretString;
     use sinks::mqtt::MqttSink;
 
-    let password = cfg
-        .password_env
-        .as_deref()
-        .map(config::resolve_secret_env)
-        .transpose()
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .map(SecretString::from);
+    let password = cfg.password.clone();
 
     info!(
         broker = %cfg.broker_host,
@@ -659,17 +636,14 @@ fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
 
 #[cfg(feature = "sink-nightscout")]
 fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Sink>> {
-    use secrecy::SecretString;
     use sinks::nightscout::{NightscoutClient, NightscoutSink};
 
     const DEFAULT_DEVICE: &str = "gluco-hub";
     const DEFAULT_APP: &str = "gluco-hub";
 
-    let secret =
-        config::resolve_secret_env(&ns.api_secret_env).map_err(|e| anyhow::anyhow!("{e}"))?;
     let device = ns.device.as_deref().unwrap_or(DEFAULT_DEVICE);
     let app = ns.app.as_deref().unwrap_or(DEFAULT_APP);
-    let client = NightscoutClient::new(ns.base_url.clone(), SecretString::from(secret))
+    let client = NightscoutClient::new(ns.base_url.clone(), ns.api_secret.clone())
         .context("build Nightscout client")?
         .with_device(device)
         .with_app(app);

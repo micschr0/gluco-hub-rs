@@ -1,21 +1,21 @@
 # gluco-hub configuration.
 #
-# Secrets are NEVER embedded here. Each secret-bearing field carries a
-# *reference* to where the secret lives — typically an env-var name
-# (`*_env = "MY_VAR"`). The LLU password additionally supports
-# `password_file = "/path/to/file"` for use with Docker/Podman secrets,
+# Secrets are NEVER embedded here. Supply them via environment variables
+# using the `GLUCO_HUB__SECTION__KEY` pattern (double-underscore delimiters),
+# e.g. `GLUCO_HUB__SOURCE__LLU__PASSWORD=secret`. The LLU password additionally
+# supports `password_file = "/path/to/file"` for Docker/Podman secrets,
 # systemd `LoadCredential=`, and Kubernetes secret volumes.
 #
-# Any value can also be overridden by an environment variable using the
-# `GLUCO_HUB__SECTION__KEY` convention, e.g. `GLUCO_HUB__HTTP__BIND`.
+# Any non-secret value can also be overridden by an environment variable using
+# the same `GLUCO_HUB__SECTION__KEY` convention, e.g. `GLUCO_HUB__HTTP__BIND`.
 
 [http]
 # Address the HTTP API listens on.
 bind = "0.0.0.0:8080"
 # Optional: when set, /glucose/* requires `Authorization: Bearer <token>`
-# where the token equals the value of the named environment variable.
+# where the token equals the value of GLUCO_HUB__HTTP__BEARER_TOKEN.
 # /healthz and /metrics stay public.
-# bearer_token_env = "GLUCO_HUB_BEARER_TOKEN"
+# (set GLUCO_HUB__HTTP__BEARER_TOKEN=<secret> in the environment to enable)
 
 [poller]
 # How often the LibreLink Up source is polled, in seconds. LLU updates
@@ -24,14 +24,13 @@ interval_secs = 60
 
 # Optional: real LibreLink Up source. Requires the `source-llu` Cargo
 # feature on the binary. Uncomment and fill in to drive the poller from
-# a real Libre account. The password itself is NEVER stored here — only
-# a *reference* to where it lives.
+# a real Libre account.
 #
 # [source.llu]
 # email = "you@example.com"
-# # Pick exactly one of the two:
-# password_env  = "LLU_PASSWORD"
-# # password_file = "/run/secrets/llu_password"  # 0600, owned by service user
+# # Pick exactly one of the two for the password:
+# password_file = "/run/secrets/llu_password"  # 0600, owned by service user
+# # (or set GLUCO_HUB__SOURCE__LLU__PASSWORD=<secret> in the environment)
 # # Region: AE, AP, AU, CA, DE, EU, EU2, FR, JP, US, LA, RU, CN.
 # region = "EU"
 # # Optional: pick a specific patient when the account has more than
@@ -51,10 +50,11 @@ interval_secs = 60
 # Optional: Nightscout sink. Requires the `sink-nightscout` Cargo
 # feature on the binary. Uncomment and fill in to push every batch of
 # readings to a self-hosted Nightscout instance.
+# Supply the API secret via the environment:
+#   GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET=<secret>
 #
 # [sink.nightscout]
 # base_url = "https://nightscout.example.com"
-# api_secret_env = "NIGHTSCOUT_API_SECRET"
 
 # Optional: MQTT v5 sink (V2). Requires the `sink-mqtt` Cargo feature
 # on the binary. Publishes:
@@ -65,13 +65,14 @@ interval_secs = 60
 #   * a retained `<topic_prefix>/_stats` snapshot refreshed every
 #     `stats_interval_secs` (uptime, publishes_total, errors,
 #     connects_total).
+# If your broker requires a password, set:
+#   GLUCO_HUB__SINK__MQTT__PASSWORD=<secret>
 #
 # [sink.mqtt]
 # broker_host = "mqtt.example.com"
 # broker_port = 8883          # 1883 = plain MQTT, 8883 = MQTT-over-TLS
 # client_id   = "gluco-hub-1"
 # username    = "cgmbridge"   # optional
-# password_env = "MQTT_PASSWORD"
 # topic_prefix = "gluco-hub/gluco-hub-1"
 # qos = 1                     # 0 | 1 | 2
 # keep_alive_secs = 30        # 5..=300

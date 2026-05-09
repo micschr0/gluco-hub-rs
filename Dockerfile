@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# Multi-stage container build for gluco-hub.
+# Multi-stage build for gluco-hub.
 #
 # Stage 1 ("chef")    installs cargo-chef on the Rust toolchain image.
 # Stage 2 ("planner") computes the dependency recipe from the workspace manifests.
@@ -9,19 +9,19 @@
 #                     no package manager) running as the bundled non-root user.
 #
 # Build:
-#   docker build -t gluco-hub:dev -f Containerfile \
+#   docker build -t gluco-hub:dev \
 #     --build-arg GLUCO_HUB_GIT_SHA=$(git rev-parse HEAD) \
 #     --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
-# Run (bind config + secrets):
+#
+# Run (bind config; pass secrets via GLUCO_HUB__* env vars):
 #   docker run --rm -p 8080:8080 \
 #     -v "$PWD/config.toml:/etc/gluco-hub/config.toml:ro" \
-#     -e LLU_PASSWORD=… \
-#     -e NIGHTSCOUT_API_SECRET=… \
+#     -e GLUCO_HUB__SOURCE__LLU__PASSWORD=… \
+#     -e GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET=… \
 #     gluco-hub:dev run -c /etc/gluco-hub/config.toml
 #
-# The image carries no shell — `docker exec` is intentionally
-# limited. Health is observable via Kubernetes-style probes against
-# /healthz on port 8080.
+# The image carries no shell — `docker exec` is intentionally limited.
+# Health is observable via GET /healthz on port 8080.
 
 # ── Stage 1: chef ─────────────────────────────────────────────────────────────
 # renovate: datasource=docker depName=docker.io/library/rust

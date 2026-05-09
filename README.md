@@ -87,7 +87,10 @@ bash scripts/ns-dryrun.sh
 ```bash
 cargo build --release --features "source-llu sink-nightscout"
 cp config.example.toml config.toml   # edit [source.llu] and [sink.nightscout] — email & region live here
-export LLU_PASSWORD='…' NIGHTSCOUT_API_SECRET='…'   # only secrets go in env vars
+
+# Secrets go in env vars, never in the TOML file:
+export GLUCO_HUB__SOURCE__LLU__PASSWORD='…'
+export GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET='…'
 
 ./target/release/gluco-hub -c config.toml check-config   # validate and exit
 ./target/release/gluco-hub -c config.toml run
@@ -103,41 +106,42 @@ cargo build --release --features "source-llu sink-nightscout sink-mqtt"
 
 ## Configuration
 
-Copy `config.example.toml`, uncomment the sections you need, and set the referenced environment variables. Secrets are never stored in the file — only the name of the environment variable that holds them.
+Copy `config.example.toml`, uncomment the sections you need, and pass secrets via `GLUCO_HUB__*` environment variables. Secrets are never stored in the TOML file.
 
 ```toml
 [http]
-bind = "0.0.0.0:8080"                          # default
-# bearer_token_env = "GLUCO_HUB_BEARER_TOKEN"  # protects /glucose/* with Bearer auth
+bind = "0.0.0.0:8080"
+# Bearer auth for /glucose/*: set GLUCO_HUB__HTTP__BEARER_TOKEN=<token>
 
 [poller]
-interval_secs = 60                             # min 30, max 600; LLU updates every ~60 s
+interval_secs = 60              # min 30, max 600; LLU updates every ~60 s
 
 [source.llu]
 email = "you@example.com"
-password_env = "LLU_PASSWORD"                  # env-var name, not the password itself
-region = "EU"                                  # AE AP AU CA CN DE EU EU2 FR JP LA RU US
+region = "EU"                   # AE AP AU CA CN DE EU EU2 FR JP LA RU US
+# Password via env:  export GLUCO_HUB__SOURCE__LLU__PASSWORD=…
+# Password via file: password_file = "/run/secrets/llu_password"
 
 [sink.nightscout]
 base_url = "https://nightscout.example.com"
-api_secret_env = "NIGHTSCOUT_API_SECRET"
+# Secret via env: export GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET=…
 
 [sink.mqtt]
 broker_host    = "mqtt.example.com"
 broker_port    = 8883
 client_id      = "gluco-hub-1"
 topic_prefix   = "gluco-hub/gluco-hub-1"
-password_env   = "MQTT_PASSWORD"
+# Password via env: export GLUCO_HUB__SINK__MQTT__PASSWORD=…
 ```
 
-Any TOML key can be overridden at runtime via the `GLUCO_HUB__SECTION__KEY` environment variable (double-underscore as separator), useful in containers where mounting a config file is inconvenient:
+Any TOML key can also be overridden at runtime via `GLUCO_HUB__SECTION__KEY` (double-underscore as separator):
 
 ```bash
 GLUCO_HUB__HTTP__BIND=0.0.0.0:9090 GLUCO_HUB__POLLER__INTERVAL_SECS=30 ./gluco-hub run
 ```
 
 > [!NOTE]
-> Run `./gluco-hub -c config.toml check-config` after editing the config — it validates every field and resolves all secret references before the service tries to start.
+> Run `./gluco-hub -c config.toml check-config` after editing the config — it validates every field before the service tries to start.
 
 ## HTTP API
 
@@ -147,7 +151,7 @@ GLUCO_HUB__HTTP__BIND=0.0.0.0:9090 GLUCO_HUB__POLLER__INTERVAL_SECS=30 ./gluco-h
 | `GET /metrics`        | public          | Prometheus text exposition (v0.0.4)        |
 | `GET /glucose/latest` | optional Bearer | Latest cached reading, or `503` + `API001` |
 
-`/glucose/*` becomes Bearer-protected only when `bearer_token_env` is configured. Every response also carries the header `X-Disclaimer: not-for-medical-use`. Example reading response:
+`/glucose/*` becomes Bearer-protected only when `GLUCO_HUB__HTTP__BEARER_TOKEN` is set. Every response also carries the header `X-Disclaimer: not-for-medical-use`. Example reading response:
 
 ```json
 {
@@ -175,14 +179,14 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 ## Container
 
 ```bash
-docker build -t gluco-hub:dev -f Containerfile \
+docker build -t gluco-hub:dev \
     --build-arg GLUCO_HUB_GIT_SHA=$(git rev-parse HEAD) \
     --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
 
 docker run --rm -p 8080:8080 \
     -v "$PWD/config.toml:/etc/gluco-hub/config.toml:ro" \
-    -e LLU_PASSWORD='…' \
-    -e NIGHTSCOUT_API_SECRET='…' \
+    -e GLUCO_HUB__SOURCE__LLU__PASSWORD='…' \
+    -e GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET='…' \
     gluco-hub:dev run -c /etc/gluco-hub/config.toml
 ```
 
