@@ -4,13 +4,16 @@
 
 ![MSRV](https://img.shields.io/badge/MSRV-1.95-orange)
 ![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
-![Status](https://img.shields.io/badge/status-V3%20%C2%B7%20MQTT-brightgreen)
+![Status](https://img.shields.io/badge/status-beta-yellow)
 
 **CGM glucose readings —> HTTP API -> Nightscout -> MQTT -> ...**
 
 [Features](#features) • [Quick start](#quick-start) • [Configuration](#configuration) • [HTTP API](#http-api) • [MQTT](#mqtt) • [Container](#container) • [Documentation](#documentation) • [Troubleshooting](#troubleshooting--feedback)
 
 </div>
+
+> [!WARNING]
+> **Beta / WIP** — APIs, config schema, and MQTT wire format may change between releases without notice. Not recommended for production use yet.
 
 ---
 
