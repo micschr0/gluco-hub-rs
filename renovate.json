@@ -1,13 +1,20 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "configMigration": true,
+  "extends": ["config:best-practices"],
 
   "timezone": "Europe/Berlin",
   "schedule": ["after 8am and before 6pm on Monday"],
 
   "cargo": {
     "rangeStrategy": "update-lockfile"
+  },
+
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "minimumReleaseAge": "0 days",
+    "schedule": ["at any time"],
+    "automerge": false
   },
 
   "lockFileMaintenance": {
@@ -20,35 +27,36 @@
     {
       "description": "Group the tokio ecosystem into a single PR",
       "matchManagers": ["cargo"],
-      "matchPackagePatterns": ["^tokio"],
+      "matchPackageNames": ["tokio*"],
       "groupName": "tokio ecosystem",
       "automerge": true
     },
     {
       "description": "Group the serde ecosystem into a single PR",
       "matchManagers": ["cargo"],
-      "matchPackagePatterns": ["^serde"],
+      "matchPackageNames": ["serde*"],
       "groupName": "serde ecosystem",
       "automerge": true
     },
     {
       "description": "Group the axum / tower ecosystem into a single PR",
       "matchManagers": ["cargo"],
-      "matchPackagePatterns": ["^axum", "^tower"],
+      "matchPackageNames": ["axum*", "tower*"],
       "groupName": "axum + tower ecosystem",
       "automerge": true
     },
     {
       "description": "Group the tracing ecosystem into a single PR",
       "matchManagers": ["cargo"],
-      "matchPackagePatterns": ["^tracing"],
+      "matchPackageNames": ["tracing*"],
       "groupName": "tracing ecosystem",
       "automerge": true
     },
     {
-      "description": "Automerge non-major Cargo updates (CI is the gate)",
+      "description": "Automerge non-major Cargo updates after 7d soak (CI is the gate)",
       "matchManagers": ["cargo"],
       "matchUpdateTypes": ["patch", "minor"],
+      "minimumReleaseAge": "7 days",
       "automerge": true
     },
     {
