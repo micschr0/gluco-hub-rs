@@ -8,6 +8,8 @@ Rust stable, edition 2024. Tokio + axum. reqwest with rustls (no OpenSSL). thise
 
 Always latest minor versions via Renovate. No exact pins outside `Cargo.lock`.
 
+MSRV pinned to Rust 1.95 (see `Cargo.toml` workspace `rust-version`). Optional `mock-source` feature swaps LLU for an in-memory fixture for offline testing.
+
 ## Architecture
 
 Workspace, two crates:
@@ -17,9 +19,11 @@ Workspace, two crates:
 
 Flow: LibreLink Up → Source poller → in-memory reading cache → fan-out to Nightscout sink and HTTP API.
 
-V1 ships one Source impl (LibreLinkUp) and one Sink impl (Nightscout v3). Trait-based design — adding sources or sinks is a new file plus a Cargo feature, not a refactor. MQTT sink lands in V2.
+Trait-based design — adding sources or sinks is a new file plus a Cargo feature, not a refactor. V1 shipped LLU source + Nightscout sink; V2 added MQTT v5. See Roadmap below for what's next.
 
 ## Commands
+
+Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task build-all`, `task lint`, `task test-all`, `task check`). Raw cargo commands below for reference:
 
 - Build: `cargo build` / `cargo build --release`
 - Build with all sinks: `cargo build --features "source-llu sink-nightscout sink-mqtt"`
@@ -60,6 +64,8 @@ V1 ships one Source impl (LibreLinkUp) and one Sink impl (Nightscout v3). Trait-
 - `gluco-hub/src/e2e_tests.rs` — integration tests (wiremock)
 - `config.example.toml` — config schema reference
 - `docs/ARCHITECTURE.md` — Mermaid data-flow and sequence diagrams
+- `docs/EXTENDING.md` — how to add a new Source or Sink (read before scaffolding)
+- `docs/OPERATIONS.md` — runbook for deployment, backup, monitoring
 
 ## Don'ts
 
