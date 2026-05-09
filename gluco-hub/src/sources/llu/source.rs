@@ -1,0 +1,592 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! `LluSource` — composes `LluAuthClient` calls into the `Source` trait.
+//!
+//! Token-cache + 401-retry policy:
+//! - Tokens live in `Arc<tokio::sync::Mutex<Option<LluTokens>>>`.
+//! - The mutex is held for the duration of an (optional) login so
+//!   concurrent fetchers share a single re-login round-trip; it is
+//!   released before any data HTTP call so subsequent fetchers can
+//!   proceed in parallel.
+//! - Each data call (connections, graph) is retried at most once on a
+//!   401: cached tokens are dropped, a fresh login is performed, and
+//!   the data call is reissued. A second 401 propagates as
+//!   `CoreError::Source`.
+
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+use async_trait::async_trait;
+use chrono_tz::Tz;
+use gluco_hub_core::{CoreError, PatientId, Reading, Source, SourceId};
+use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
+
+use super::auth::{LluAuthClient, LluCredentials, LluTokens};
+use super::error::LluError;
+use super::mapping::reading_from_measurement;
+use super::wire::Connection;
+
+/// How the source picks a connection from the `/llu/connections` list.
+/// `First` matches single-patient accounts; `ByPatientId` is used when an
+/// account has multiple patients linked.
+#[derive(Debug, Clone)]
+pub enum ConnectionSelection {
+    First,
+    ByPatientId(PatientId),
+}
+
+impl ConnectionSelection {
+    fn describe(&self) -> String {
+        match self {
+            ConnectionSelection::First => "first".to_string(),
+            ConnectionSelection::ByPatientId(id) => format!("patient_id={}", id.as_str()),
+        }
+    }
+}
+
+/// Default tolerance for treating an `LluTokens` as expired before its
+/// stated `expires_at`. Trades one extra login per ~hour against the risk
+/// of a wasted poll on the boundary.
+pub const DEFAULT_EXPIRY_SKEW_SECS: u64 = 60;
+
+pub struct LluSource {
+    id: SourceId,
+    client: LluAuthClient,
+    creds: LluCredentials,
+    selection: ConnectionSelection,
+    /// Patient's local IANA timezone. LLU `Timestamp` values are
+    /// wall-clock-in-this-zone; `mapping::reading_from_measurement` uses
+    /// it to convert each reading to UTC before it leaves the source.
+    source_tz: Tz,
+    tokens: Arc<Mutex<Option<LluTokens>>>,
+    expiry_skew: Duration,
+}
+
+impl LluSource {
+    pub fn new(
+        id: SourceId,
+        client: LluAuthClient,
+        creds: LluCredentials,
+        selection: ConnectionSelection,
+        source_tz: Tz,
+    ) -> Self {
+        Self {
+            id,
+            client,
+            creds,
+            selection,
+            source_tz,
+            tokens: Arc::new(Mutex::new(None)),
+            expiry_skew: Duration::from_secs(DEFAULT_EXPIRY_SKEW_SECS),
+        }
+    }
+
+    /// Returns valid tokens, logging in if none are cached or the cached
+    /// pair is past its skew-adjusted expiry. The mutex is held for the
+    /// duration of the login so concurrent callers share the round-trip.
+    async fn ensure_tokens(&self) -> Result<LluTokens, LluError> {
+        let mut guard = self.tokens.lock().await;
+        let now = SystemTime::now();
+        if let Some(t) = guard.as_ref() {
+            if !t.is_expired(now, self.expiry_skew) {
+                return Ok(t.clone());
+            }
+            debug!("llu cached tokens expired, re-logging in");
+        }
+        let fresh = self.client.login(&self.creds).await?;
+        info!(
+            account_id_prefix = &fresh.account_id_hash[..8.min(fresh.account_id_hash.len())],
+            "llu login succeeded"
+        );
+        let cloned = fresh.clone();
+        *guard = Some(fresh);
+        Ok(cloned)
+    }
+
+    /// Drop the cached tokens so the next `ensure_tokens` re-logs in.
+    async fn invalidate_tokens(&self) {
+        let mut guard = self.tokens.lock().await;
+        *guard = None;
+    }
+
+    fn select_connection<'a>(
+        &self,
+        connections: &'a [Connection],
+    ) -> Result<&'a Connection, LluError> {
+        let chosen = match &self.selection {
+            ConnectionSelection::First => {
+                if connections.len() > 1 {
+                    // Mirrors the reference port's
+                    // `nightscout-librelink-up` warn — multiple
+                    // patient links visible to the same account
+                    // means whoever set up `[source.llu]` probably
+                    // wants `patient_id = "..."` to disambiguate.
+                    warn!(
+                        candidates = connections.len(),
+                        "multiple LLU connections visible; selecting the first \
+                        — set [source.llu] patient_id to pin a specific patient"
+                    );
+                }
+                connections.first()
+            }
+            ConnectionSelection::ByPatientId(id) => {
+                connections.iter().find(|c| c.patient_id == id.as_str())
+            }
+        };
+        chosen.ok_or_else(|| LluError::NoConnection {
+            selection: self.selection.describe(),
+        })
+    }
+
+    async fn fetch_connections(&self) -> Result<Vec<Connection>, LluError> {
+        let tokens = self.ensure_tokens().await?;
+        match self.client.connections(&tokens, self.creds.region).await {
+            Ok(v) => Ok(v),
+            Err(LluError::Unauthorized { .. }) => {
+                warn!("llu connections rejected token, re-logging in");
+                self.invalidate_tokens().await;
+                let tokens = self.ensure_tokens().await?;
+                self.client.connections(&tokens, self.creds.region).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn fetch_graph(
+        &self,
+        patient_id: &PatientId,
+    ) -> Result<crate::sources::llu::wire::GraphResponse, LluError> {
+        let tokens = self.ensure_tokens().await?;
+        match self
+            .client
+            .graph(&tokens, self.creds.region, patient_id)
+            .await
+        {
+            Ok(v) => Ok(v),
+            Err(LluError::Unauthorized { .. }) => {
+                warn!("llu graph rejected token, re-logging in");
+                self.invalidate_tokens().await;
+                let tokens = self.ensure_tokens().await?;
+                self.client
+                    .graph(&tokens, self.creds.region, patient_id)
+                    .await
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+#[async_trait]
+impl Source for LluSource {
+    fn id(&self) -> &SourceId {
+        &self.id
+    }
+
+    async fn fetch_latest(&self) -> Result<Vec<Reading>, CoreError> {
+        let connections = self.fetch_connections().await.map_err(into_core)?;
+        let connection = self.select_connection(&connections).map_err(into_core)?;
+        let patient_id =
+            PatientId::new(connection.patient_id.clone()).map_err(|e| CoreError::Source {
+                message: format!("[LLU004] invalid patient id: {e}"),
+            })?;
+        // Snapshot the live measurement before we move on — the borrow
+        // ends with `connections` going out of scope at the end of this
+        // function but the readings vec we build below outlives it.
+        let live_measurement = connection.glucose_measurement.clone();
+
+        let graph = self.fetch_graph(&patient_id).await.map_err(into_core)?;
+
+        let mut readings: Vec<Reading> = graph
+            .data
+            .graph_data
+            .iter()
+            .map(|m| reading_from_measurement(m, &patient_id, &self.id, self.source_tz))
+            .collect::<Result<_, _>>()
+            .map_err(into_core)?;
+
+        // Merge the connection's live `glucoseMeasurement` (1-min-fresh)
+        // on top of `graphData` (5-min raster) so the cache reflects the
+        // same value the LinkUp app shows. A bad live timestamp is
+        // logged-and-skipped rather than failing the whole batch — the
+        // historical readings stay useful. Only appended when STRICTLY
+        // newer than the freshest graphData entry, so collisions on the
+        // rare 5-min boundary do not surface as duplicate-timestamp
+        // readings to sinks.
+        if let Some(live) = live_measurement {
+            match reading_from_measurement(&live, &patient_id, &self.id, self.source_tz) {
+                Ok(live_reading) => {
+                    let newer_than_graph = readings
+                        .iter()
+                        .map(|r| r.timestamp)
+                        .max()
+                        .is_none_or(|t| live_reading.timestamp > t);
+                    if newer_than_graph {
+                        readings.push(live_reading);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        error_code = e.error_code(),
+                        error = %e,
+                        "llu connection.glucoseMeasurement skipped"
+                    );
+                }
+            }
+        }
+
+        // graph_data is typically chronological already, but LLU is
+        // unofficial — sort defensively so downstream sinks can rely on
+        // monotonic timestamps.
+        readings.sort_by_key(|r| r.timestamp);
+        Ok(readings)
+    }
+}
+
+fn into_core(e: LluError) -> CoreError {
+    // `LluError::Display` already starts with `[LLUxxx]` — re-using it
+    // keeps the message single-prefixed so `extract_error_code` in the
+    // poll-loop fan-out can parse the inner code without seeing
+    // `[LLU003] [LLU003] ...` duplicates.
+    CoreError::Source {
+        message: e.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sources::llu::Region;
+    use secrecy::SecretString;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn creds() -> LluCredentials {
+        LluCredentials {
+            email: "patient@example.com".to_string(),
+            password: SecretString::from("hunter2"),
+            region: Region::Eu,
+        }
+    }
+
+    fn login_body() -> serde_json::Value {
+        // expires far in the future so tokens stay valid across test sub-calls.
+        serde_json::json!({
+            "status": 0,
+            "data": {
+                "authTicket": {
+                    "token": "tok",
+                    "expires": 9_999_999_999u64,
+                    "duration": 3600u64
+                },
+                "user": { "id": "user-1" }
+            }
+        })
+    }
+
+    fn connections_body() -> serde_json::Value {
+        serde_json::json!({
+            "status": 0,
+            "data": [
+                {
+                    "id": "conn-1",
+                    "patientId": "patient-1",
+                    "glucoseMeasurement": {
+                        "Timestamp": "3/26/2024 4:38:38 PM",
+                        "ValueInMgPerDl": 142.0,
+                        "TrendArrow": 3
+                    }
+                }
+            ]
+        })
+    }
+
+    fn graph_body() -> serde_json::Value {
+        // Two readings, returned out of order to exercise the defensive
+        // sort.
+        serde_json::json!({
+            "status": 0,
+            "data": {
+                "connection": { "id": "conn-1", "patientId": "patient-1" },
+                "activeSensors": [],
+                "graphData": [
+                    {
+                        "Timestamp": "3/26/2024 4:38:38 PM",
+                        "ValueInMgPerDl": 142.0,
+                        "TrendArrow": 3
+                    },
+                    {
+                        "Timestamp": "3/26/2024 4:33:38 PM",
+                        "ValueInMgPerDl": 138.0,
+                        "TrendArrow": 3
+                    }
+                ]
+            }
+        })
+    }
+
+    async fn mount_happy_path(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/llu/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(login_body()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(connections_body()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections/patient-1/graph"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(graph_body()))
+            .mount(server)
+            .await;
+    }
+
+    fn build_source(server: &MockServer) -> LluSource {
+        let client = LluAuthClient::new()
+            .expect("client")
+            .with_base_url(server.uri());
+        LluSource::new(
+            SourceId::new("llu").unwrap(),
+            client,
+            creds(),
+            ConnectionSelection::First,
+            Tz::UTC,
+        )
+    }
+
+    #[tokio::test]
+    async fn fetch_latest_returns_readings_oldest_first() {
+        let server = MockServer::start().await;
+        mount_happy_path(&server).await;
+
+        let source = build_source(&server);
+        let readings = source.fetch_latest().await.expect("fetch");
+        // mount_happy_path's `glucoseMeasurement` ties the newest
+        // graphData timestamp, so the live measurement is NOT appended
+        // (`> max`, not `>= max`). 2 readings total — preserves the
+        // pre-merge contract.
+        assert_eq!(readings.len(), 2);
+        assert!(readings[0].timestamp < readings[1].timestamp);
+        assert_eq!(readings[1].glucose.get(), 142.0);
+        assert_eq!(readings[1].patient_id.as_str(), "patient-1");
+    }
+
+    /// Real-world bug regression: the LinkUp app shows a 1-min-fresh
+    /// reading from `connections[].glucoseMeasurement` that is newer
+    /// than anything in the 5-min-raster `graphData`. Before the merge
+    /// landed, `fetch_latest` only saw `graphData` and gluco-hub
+    /// reported a stale value while the app showed the current one.
+    #[tokio::test]
+    async fn fetch_latest_appends_live_measurement_when_strictly_newer() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/llu/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(login_body()))
+            .mount(&server)
+            .await;
+        // graphData newest is 4:38:38 PM @ 142 mg/dL.
+        // Live measurement is 4:42:10 PM @ 103 mg/dL — newer, different.
+        Mock::given(method("GET"))
+            .and(path("/llu/connections"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 0,
+                "data": [{
+                    "id": "conn-1",
+                    "patientId": "patient-1",
+                    "glucoseMeasurement": {
+                        "Timestamp": "3/26/2024 4:42:10 PM",
+                        "ValueInMgPerDl": 103.0,
+                        "TrendArrow": 3
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections/patient-1/graph"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(graph_body()))
+            .mount(&server)
+            .await;
+
+        let source = build_source(&server);
+        let readings = source.fetch_latest().await.expect("fetch");
+        assert_eq!(readings.len(), 3, "live measurement should be appended");
+        let last = readings.last().expect("at least one reading");
+        assert_eq!(last.glucose.get(), 103.0, "newest is the live value");
+        assert_eq!(last.timestamp.to_rfc3339(), "2024-03-26T16:42:10+00:00");
+    }
+
+    /// Regression guard: a broken `glucoseMeasurement.Timestamp` on the
+    /// connection must not fail the whole `fetch_latest` call. The historical
+    /// graphData readings should still be returned; only the bad live entry
+    /// is dropped (with a `warn` log).
+    #[tokio::test]
+    async fn bad_live_measurement_timestamp_is_skipped_batch_survives() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/llu/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(login_body()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 0,
+                "data": [{
+                    "id": "conn-1",
+                    "patientId": "patient-1",
+                    "glucoseMeasurement": {
+                        "Timestamp": "not-a-date",
+                        "ValueInMgPerDl": 103.0,
+                        "TrendArrow": 3
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections/patient-1/graph"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(graph_body()))
+            .mount(&server)
+            .await;
+
+        let source = build_source(&server);
+        let readings = source
+            .fetch_latest()
+            .await
+            .expect("fetch should succeed despite bad live timestamp");
+        assert_eq!(
+            readings.len(),
+            2,
+            "bad live measurement dropped; graph readings intact"
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_tokens_reused_across_calls() {
+        let server = MockServer::start().await;
+        mount_happy_path(&server).await;
+
+        let source = build_source(&server);
+        source.fetch_latest().await.expect("first fetch");
+        source.fetch_latest().await.expect("second fetch");
+
+        // Exactly one /auth/login hit means the cache held.
+        let logins = server
+            .received_requests()
+            .await
+            .expect("requests")
+            .into_iter()
+            .filter(|r| r.url.path() == "/llu/auth/login")
+            .count();
+        assert_eq!(logins, 1, "expected exactly one login");
+    }
+
+    #[tokio::test]
+    async fn re_logs_in_after_401_on_connections() {
+        let server = MockServer::start().await;
+        // /auth/login is hit twice (initial + post-401).
+        Mock::given(method("POST"))
+            .and(path("/llu/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(login_body()))
+            .mount(&server)
+            .await;
+        // First connections call → 401, then 200.
+        Mock::given(method("GET"))
+            .and(path("/llu/connections"))
+            .respond_with(ResponseTemplate::new(401))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(connections_body()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections/patient-1/graph"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(graph_body()))
+            .mount(&server)
+            .await;
+
+        let source = build_source(&server);
+        let readings = source.fetch_latest().await.expect("fetch with retry");
+        assert_eq!(readings.len(), 2);
+
+        let logins = server
+            .received_requests()
+            .await
+            .expect("requests")
+            .into_iter()
+            .filter(|r| r.url.path() == "/llu/auth/login")
+            .count();
+        assert_eq!(logins, 2, "expected re-login after 401");
+    }
+
+    #[tokio::test]
+    async fn empty_connections_yields_no_connection_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/llu/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(login_body()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 0,
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+
+        let source = build_source(&server);
+        let err = source.fetch_latest().await.unwrap_err();
+        let CoreError::Source { message } = err else {
+            panic!("expected Source error");
+        };
+        assert!(message.contains("LLU009"), "got: {message}");
+        assert!(message.contains("first"));
+    }
+
+    #[tokio::test]
+    async fn by_patient_id_picks_correct_connection() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/llu/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(login_body()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 0,
+                "data": [
+                    { "id": "c-a", "patientId": "patient-a" },
+                    { "id": "c-b", "patientId": "patient-b" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections/patient-b/graph"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(graph_body()))
+            .mount(&server)
+            .await;
+
+        let client = LluAuthClient::new()
+            .expect("client")
+            .with_base_url(server.uri());
+        let source = LluSource::new(
+            SourceId::new("llu").unwrap(),
+            client,
+            creds(),
+            ConnectionSelection::ByPatientId(PatientId::new("patient-b").unwrap()),
+            Tz::UTC,
+        );
+        let readings = source.fetch_latest().await.expect("fetch");
+        assert_eq!(readings.len(), 2);
+    }
+}

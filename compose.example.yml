@@ -1,0 +1,72 @@
+# gluco-hub — Docker Compose example
+#
+# Copy this file to compose.yml, edit the environment variables, and run:
+#   docker compose up -d
+#
+# The service reads its config from a bind-mounted config.toml. Secrets are
+# passed via environment variables — never written into the config file.
+# See config.example.toml for all available options.
+#
+# Build the image first:
+#   docker build -t gluco-hub:latest -f Containerfile \
+#     --build-arg GLUCO_HUB_GIT_SHA=$(git rev-parse HEAD) \
+#     --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
+
+services:
+  gluco-hub:
+    image: gluco-hub:latest
+    # Uncomment to build locally instead of using a pre-built image:
+    # build:
+    #   context: .
+    #   dockerfile: Containerfile
+    #   args:
+    #     GLUCO_HUB_GIT_SHA: "${GLUCO_HUB_GIT_SHA:-unknown}"
+    #     BUILD_DATE: "${BUILD_DATE:-}"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"   # expose only on loopback; put a reverse proxy in front
+    volumes:
+      - ./config.toml:/etc/gluco-hub/config.toml:ro
+    command: ["run", "-c", "/etc/gluco-hub/config.toml"]
+    environment:
+      # ── LibreLink Up credentials ───────────────────────────────────────
+      # These names must match the `password_env` value in config.toml.
+      LLU_PASSWORD: "${LLU_PASSWORD}"
+
+      # ── Nightscout (optional) ──────────────────────────────────────────
+      # Uncomment if [sink.nightscout] is enabled in config.toml.
+      # NIGHTSCOUT_API_SECRET: "${NIGHTSCOUT_API_SECRET}"
+
+      # ── MQTT (optional) ────────────────────────────────────────────────
+      # Uncomment if [sink.mqtt] is enabled in config.toml.
+      # MQTT_PASSWORD: "${MQTT_PASSWORD}"
+
+      # ── HTTP Bearer token (optional) ───────────────────────────────────
+      # Uncomment if `bearer_token_env` is set in config.toml.
+      # GLUCO_HUB_BEARER_TOKEN: "${GLUCO_HUB_BEARER_TOKEN}"
+
+      # ── Logging ────────────────────────────────────────────────────────
+      RUST_LOG: "gluco_hub=info"
+      # GLUCO_HUB_LOG_PRETTY: "1"  # human-readable logs instead of JSON
+
+    # Kubernetes-style health probes work with Docker Compose v2.1+.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # The distroless runtime image runs as uid 65532 (nonroot).
+    # No privilege escalation needed.
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+
+    # Resource limits — adjust to taste. A Raspberry Pi 4 handles the
+    # default 60 s poll interval comfortably within these bounds.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
