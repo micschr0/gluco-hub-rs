@@ -79,6 +79,7 @@ pub struct SinkConfig {
 
 /// `[sink.nightscout]` block. Supply the API secret via the environment
 /// variable `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET`; do not embed it in TOML.
+#[cfg_attr(not(feature = "sink-nightscout"), allow(dead_code))]
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct NightscoutSinkConfig {
     #[validate(length(min = 5, max = 512), custom(function = "validate_http_url"))]
@@ -406,7 +407,6 @@ pub fn load(override_path: Option<&Path>) -> Result<Config, ConfigError> {
     cfg.validate()?;
     Ok(cfg)
 }
-
 
 /// Read a secret from a file. Strips a single trailing CR/LF — many tools
 /// (`echo`, editors) append a newline that is not part of the secret.

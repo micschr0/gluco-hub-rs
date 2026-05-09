@@ -275,9 +275,9 @@ fn build_llu_client_and_creds(
     let region = Region::parse(&llu.region).context("parse LLU region")?;
     let password: SecretString = match (llu.password.as_ref(), llu.password_file.as_deref()) {
         (Some(secret), None) => secret.clone(),
-        (None, Some(path)) => {
-            SecretString::from(config::resolve_secret_file(path).map_err(|e| anyhow::anyhow!("{e}"))?)
-        }
+        (None, Some(path)) => SecretString::from(
+            config::resolve_secret_file(path).map_err(|e| anyhow::anyhow!("{e}"))?,
+        ),
         _ => anyhow::bail!("[CFG002] exactly one of password or password_file must be set"),
     };
     let resolved_version = llu
