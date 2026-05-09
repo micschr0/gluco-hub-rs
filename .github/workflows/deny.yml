@@ -6,10 +6,10 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Re-run weekly so new advisories against unchanged dep trees still
+    # Re-run daily so new advisories against unchanged dep trees still
     # surface — the runtime tree won't change but the advisory database
     # will.
-    - cron: "0 6 * * 1"
+    - cron: "0 6 * * *"
 
 # Prevent redundant runs on rapid pushes to the same branch.
 concurrency:
