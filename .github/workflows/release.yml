@@ -183,7 +183,7 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v4.1.2
 
       # Sign the manifest-list digest. One signature covers every tag
       # pointing at the same digest — re-tagging doesn't invalidate it.
