@@ -15,7 +15,7 @@
 #                         it never appears in shell history. Wins over
 #                         NS_API_SECRET if both are set.
 #
-# Exit codes (matches src/main.rs::classify_nsdryrun_exit):
+# Exit codes (matches src/main.rs::NSDRYRUN_EXIT_TABLE):
 #   0  ok
 #   1  unclassified failure
 #   2  config / env / invalid base URL
@@ -40,14 +40,13 @@ if [[ -z "${NS_API_SECRET:-}" ]]; then
     echo "ERROR: NS_API_SECRET (or NS_API_SECRET_FILE) must be set" >&2
     exit 2
 fi
-export NS_API_SECRET
 
 # shellcheck source=scripts/_dryrun-common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_dryrun-common.sh"
 
-# Translate operator-friendly env vars into the names the binary's
-# config crate already understands.
+# Translate operator-friendly env vars into the GLUCO_HUB__* names the
+# config crate understands (double-underscore = section separator).
 export GLUCO_HUB__SINK__NIGHTSCOUT__BASE_URL="${NS_BASE_URL}"
-export GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET_ENV="NS_API_SECRET"
+export GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET="${NS_API_SECRET}"
 
 cargo run --quiet --features sink-nightscout -- ns-dryrun

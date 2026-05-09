@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use ::config::{Config as ConfigBuilder, Environment, File, FileFormat};
+use secrecy::SecretString;
 use serde::Deserialize;
 use thiserror::Error;
 use validator::{Validate, ValidationError};
@@ -11,8 +12,9 @@ use validator::{Validate, ValidationError};
 /// Top-level application configuration.
 ///
 /// Loaded from a TOML file (default `./config.toml`) and overridden by
-/// `GLUCO_HUB_*` environment variables. Secrets are never embedded — TOML
-/// references env-var names (e.g. `password_env = "LLU_PASSWORD"`).
+/// `GLUCO_HUB__<SECTION>__<KEY>` environment variables. Secrets should be
+/// supplied via environment variables (e.g. `GLUCO_HUB__SOURCE__LLU__PASSWORD`)
+/// or via `password_file`. Never embed secrets directly in the TOML file.
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct Config {
     #[validate(nested)]
@@ -34,22 +36,11 @@ pub struct Config {
 pub struct HttpConfig {
     pub bind: SocketAddr,
 
-    /// Optional: name of the env var holding a Bearer token. When set,
-    /// `/glucose/*` requires `Authorization: Bearer <token>`. `/healthz`
-    /// and `/metrics` always stay public.
+    /// Optional Bearer token. When set, `/glucose/*` requires
+    /// `Authorization: Bearer <token>`. Supply via
+    /// `GLUCO_HUB__HTTP__BEARER_TOKEN`. `/healthz` and `/metrics` stay public.
     #[serde(default)]
-    #[validate(
-        length(min = 1, max = 256),
-        custom(function = "validate_ascii_env_name")
-    )]
-    pub bearer_token_env: Option<String>,
-}
-
-fn validate_ascii_env_name(value: &str) -> Result<(), ValidationError> {
-    if value.is_empty() || !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(ValidationError::new("env_var_name"));
-    }
-    Ok(())
+    pub bearer_token: Option<SecretString>,
 }
 
 #[derive(Debug, Clone, Deserialize, Validate)]
@@ -86,20 +77,17 @@ pub struct SinkConfig {
     pub mqtt: Option<MqttSinkConfig>,
 }
 
-/// `[sink.nightscout]` block. The API secret lives in an environment
-/// variable referenced by `api_secret_env`; the TOML never holds it.
+/// `[sink.nightscout]` block. Supply the API secret via the environment
+/// variable `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET`; do not embed it in TOML.
+#[cfg_attr(not(feature = "sink-nightscout"), allow(dead_code))]
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct NightscoutSinkConfig {
     #[validate(length(min = 5, max = 512), custom(function = "validate_http_url"))]
     pub base_url: String,
 
-    /// Name of the environment variable holding the Nightscout API
-    /// secret (raw, NOT pre-hashed).
-    #[validate(
-        length(min = 1, max = 256),
-        custom(function = "validate_ascii_env_name")
-    )]
-    pub api_secret_env: String,
+    /// Nightscout API secret (raw, NOT pre-hashed). Supply via
+    /// `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET`.
+    pub api_secret: SecretString,
 
     /// Identifies this service in the NS UI's source column. Defaults
     /// to `"gluco-hub"`.
@@ -145,8 +133,8 @@ impl TryFrom<u8> for MqttQos {
     }
 }
 
-/// `[sink.mqtt]` block. The password lives in an env var referenced
-/// by `password_env`; TOML never holds the secret itself.
+/// `[sink.mqtt]` block. Supply the password via
+/// `GLUCO_HUB__SINK__MQTT__PASSWORD`; do not embed it in TOML.
 #[derive(Debug, Clone, Deserialize, Validate)]
 #[cfg_attr(not(feature = "sink-mqtt"), allow(dead_code))]
 pub struct MqttSinkConfig {
@@ -171,13 +159,9 @@ pub struct MqttSinkConfig {
     #[validate(length(min = 1, max = 256))]
     pub username: Option<String>,
 
-    /// Name of the env var holding the MQTT password (never the value).
+    /// Optional MQTT password. Supply via `GLUCO_HUB__SINK__MQTT__PASSWORD`.
     #[serde(default)]
-    #[validate(
-        length(min = 1, max = 256),
-        custom(function = "validate_ascii_env_name")
-    )]
-    pub password_env: Option<String>,
+    pub password: Option<SecretString>,
 
     /// Topic prefix. Readings publish to `<prefix>/glucose`, health to
     /// `<prefix>/_health`. Typically `gluco-hub/<client_id>`.
@@ -252,30 +236,26 @@ fn validate_topic_prefix(value: &str) -> Result<(), ValidationError> {
 }
 
 /// `[source.llu]` block. The password is sourced from one of:
-///   * `password_env` — name of an environment variable holding the secret.
+///   * `password` — supplied via `GLUCO_HUB__SOURCE__LLU__PASSWORD` (never in TOML).
 ///   * `password_file` — path to a 0600 file whose contents are the secret
 ///     (a single trailing CR/LF is stripped). Suits Docker/Podman secrets,
 ///     systemd `LoadCredential=`, and Kubernetes secret volumes.
 ///
-/// Exactly one of the two MUST be set; the TOML never holds the secret.
+/// Exactly one of the two MUST be set.
 #[derive(Debug, Clone, Deserialize, Validate)]
 #[validate(schema(function = "validate_llu_secret_source"))]
 pub struct LluSourceConfig {
     #[validate(email)]
     pub email: String,
 
-    /// Name of the environment variable holding the LLU password. Mutually
-    /// exclusive with `password_file`.
+    /// LLU password. Supply via `GLUCO_HUB__SOURCE__LLU__PASSWORD`.
+    /// Mutually exclusive with `password_file`.
     #[serde(default)]
-    #[validate(
-        length(min = 1, max = 256),
-        custom(function = "validate_ascii_env_name")
-    )]
-    pub password_env: Option<String>,
+    pub password: Option<SecretString>,
 
     /// Path to a file whose contents are the LLU password. Mutually
-    /// exclusive with `password_env`. The file's content is read at
-    /// startup and stripped of a single trailing `\n` or `\r\n`.
+    /// exclusive with `password`. The file's content is read at startup
+    /// and stripped of a single trailing `\n` or `\r\n`.
     #[serde(default)]
     pub password_file: Option<PathBuf>,
 
@@ -310,16 +290,16 @@ pub struct LluSourceConfig {
     pub timezone: Option<String>,
 }
 
-/// Struct-level validator: exactly one of `password_env` / `password_file`
+/// Struct-level validator: exactly one of `password` / `password_file`
 /// must be set. Returning a `ValidationError` here surfaces under the
 /// existing `[CFG002]` config-validation error path.
 fn validate_llu_secret_source(cfg: &LluSourceConfig) -> Result<(), ValidationError> {
-    match (cfg.password_env.as_deref(), cfg.password_file.as_deref()) {
+    match (cfg.password.as_ref(), cfg.password_file.as_deref()) {
         (Some(_), None) | (None, Some(_)) => Ok(()),
         (Some(_), Some(_)) => Err(ValidationError::new("secret_source")
-            .with_message("set exactly one of password_env / password_file, not both".into())),
+            .with_message("set exactly one of password / password_file, not both".into())),
         (None, None) => Err(ValidationError::new("secret_source")
-            .with_message("either password_env or password_file is required".into())),
+            .with_message("either password (via env) or password_file is required".into())),
     }
 }
 
@@ -385,19 +365,16 @@ pub enum ConfigError {
     #[error("[CFG002] config validation failed: {0}")]
     Validate(#[from] validator::ValidationErrors),
 
-    #[error("[CFG003] required secret env var not set: {var}")]
-    MissingSecret { var: String },
-
     // Display intentionally omits the io::Error — `{:#}` chain-walking
     // (in main.rs and `anyhow::Error::source()`) appends it exactly once.
-    #[error("[CFG004] failed to read secret file {}", path.display())]
+    #[error("[CFG003] failed to read secret file {}", path.display())]
     SecretFileRead {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("[CFG005] secret file is empty: {}", path.display())]
+    #[error("[CFG004] secret file is empty: {}", path.display())]
     SecretFileEmpty { path: PathBuf },
 }
 
@@ -430,28 +407,6 @@ pub fn load(override_path: Option<&Path>) -> Result<Config, ConfigError> {
     Ok(cfg)
 }
 
-/// Verify that every `*_env` reference resolves to a non-empty environment
-/// variable. Called by `check-config` so misconfiguration fails fast — no
-/// network round-trips required to learn that `LLU_PASSWORD` was forgotten.
-///
-/// The env-var *value* is never logged, returned, or stored; only its
-/// presence is checked.
-/// Resolve a single secret env var by name. Returns the raw value on
-/// success; surfaces missing or empty values as `MissingSecret` so the
-/// `[CFG003]` prefix is the same regardless of caller. The value
-/// itself is NEVER logged or attached to the error.
-pub fn resolve_secret_env(var_name: &str) -> Result<String, ConfigError> {
-    let value = std::env::var(var_name).map_err(|_| ConfigError::MissingSecret {
-        var: var_name.to_string(),
-    })?;
-    if value.is_empty() {
-        return Err(ConfigError::MissingSecret {
-            var: var_name.to_string(),
-        });
-    }
-    Ok(value)
-}
-
 /// Read a secret from a file. Strips a single trailing CR/LF — many tools
 /// (`echo`, editors) append a newline that is not part of the secret.
 /// Returns `SecretFileEmpty` for an empty or all-whitespace-newline file.
@@ -470,37 +425,14 @@ pub fn resolve_secret_file(path: &Path) -> Result<String, ConfigError> {
     Ok(value)
 }
 
-/// Verify that every referenced secret (env var or file) is reachable.
-/// Called by `check-config` and at startup so misconfiguration fails fast —
-/// no network round-trips required to learn that `LLU_PASSWORD` was forgotten
-/// or that the password file path is wrong.
-///
-/// Secret values are never logged, returned, or stored; only their presence
-/// is checked.
+/// Verify that file-based secrets are readable. ENV-injected secrets are
+/// validated at `load()` time by the `config` crate. Called by `check-config`
+/// and at startup so misconfiguration fails fast.
 pub fn verify_secrets(cfg: &Config) -> Result<(), ConfigError> {
-    if let Some(llu) = cfg.source.llu.as_ref() {
-        match (llu.password_env.as_deref(), llu.password_file.as_deref()) {
-            (Some(env), None) => {
-                resolve_secret_env(env)?;
-            }
-            (None, Some(path)) => {
-                resolve_secret_file(path)?;
-            }
-            // Validator enforces exactly one is set; both other cases
-            // are rejected at config load.
-            _ => {}
-        }
-    }
-    if let Some(ns) = cfg.sink.nightscout.as_ref() {
-        resolve_secret_env(&ns.api_secret_env)?;
-    }
-    if let Some(mqtt) = cfg.sink.mqtt.as_ref()
-        && let Some(env_name) = mqtt.password_env.as_deref()
+    if let Some(llu) = cfg.source.llu.as_ref()
+        && let (None, Some(path)) = (llu.password.as_ref(), llu.password_file.as_deref())
     {
-        resolve_secret_env(env_name)?;
-    }
-    if let Some(name) = cfg.http.bearer_token_env.as_deref() {
-        resolve_secret_env(name)?;
+        resolve_secret_file(path)?;
     }
     Ok(())
 }
@@ -553,7 +485,7 @@ interval_secs = 60
 
 [source.llu]
 email = "patient@example.com"
-password_env = "TEST_LLU_PASSWORD"
+password = "test_secret"
 region = "{region}"{extra}
 "#
             ),
@@ -603,7 +535,7 @@ interval_secs = 60
 
 [source.llu]
 email = "not-an-email"
-password_env = "X"
+password = "test_secret"
 region = "EU"
 "#,
         )
@@ -613,21 +545,16 @@ region = "EU"
     }
 
     #[test]
-    fn verify_secrets_detects_missing_env() {
+    fn verify_secrets_detects_unreadable_password_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_with_llu(dir.path(), "EU", None);
         let cfg = load(Some(&path)).expect("load");
-        // Use a guaranteed-unset variable; do not touch process env.
         let mut cfg = cfg;
-        cfg.source.llu.as_mut().unwrap().password_env =
-            Some("GLUCO_HUB_TEST_DEFINITELY_UNSET_VAR".to_string());
-        let err = verify_secrets(&cfg).expect_err("missing");
-        match err {
-            ConfigError::MissingSecret { var } => {
-                assert_eq!(var, "GLUCO_HUB_TEST_DEFINITELY_UNSET_VAR")
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
+        cfg.source.llu.as_mut().unwrap().password = None;
+        cfg.source.llu.as_mut().unwrap().password_file =
+            Some(std::path::PathBuf::from("/nonexistent/dir/secret-file"));
+        let err = verify_secrets(&cfg).expect_err("missing file");
+        assert!(matches!(err, ConfigError::SecretFileRead { .. }));
     }
 
     #[test]
@@ -674,7 +601,7 @@ region = "EU"
     }
 
     #[test]
-    fn validation_rejects_both_password_env_and_file() {
+    fn validation_rejects_both_password_and_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -688,7 +615,7 @@ interval_secs = 60
 
 [source.llu]
 email = "patient@example.com"
-password_env = "TEST_LLU_PASSWORD"
+password = "test_secret"
 password_file = "/tmp/whatever"
 region = "EU"
 "#,
@@ -699,7 +626,7 @@ region = "EU"
     }
 
     #[test]
-    fn validation_rejects_neither_password_env_nor_file() {
+    fn validation_rejects_neither_password_nor_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -748,7 +675,7 @@ region = "EU"
         .unwrap();
         let cfg = load(Some(&cfg_path)).expect("load");
         let llu = cfg.source.llu.as_ref().expect("llu present");
-        assert!(llu.password_env.is_none());
+        assert!(llu.password.is_none());
         assert_eq!(llu.password_file.as_deref(), Some(pw_path.as_path()));
         verify_secrets(&cfg).expect("secret resolves");
     }

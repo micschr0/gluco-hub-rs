@@ -104,7 +104,7 @@ flowchart TB
 ```
 
 `/glucose/*` runs through `axum::middleware::from_fn_with_state` only
-when `[http] bearer_token_env` is configured. `/healthz` and
+when `GLUCO_HUB__HTTP__BEARER_TOKEN` is set. `/healthz` and
 `/metrics` always stay public.
 
 ## Error-code namespaces
@@ -123,10 +123,11 @@ exit-code contracts are also keyed off these prefixes via
 | CORE002 | `gluco-hub-core/src/error.rs`       | invalid identifier (`PatientId`/`SourceId`) |
 | CORE003 | `gluco-hub-core/src/error.rs`       | source error (wrapper) |
 | CORE004 | `gluco-hub-core/src/error.rs`       | sink error (wrapper) |
-| CFG001  | `gluco-hub/src/config.rs`           | failed to read config file |
-| CFG002  | `gluco-hub/src/config.rs`           | config validation failed |
-| CFG003  | `gluco-hub/src/config.rs`           | required secret env var missing or empty |
-| CFG004  | `gluco-hub/src/main.rs`             | dryrun called without required `[…]` block |
+| CFG001  | `gluco-hub/src/config.rs`           | failed to read or deserialize config (missing required field, bad value) |
+| CFG002  | `gluco-hub/src/config.rs`           | config validation failed (validator) |
+| CFG003  | `gluco-hub/src/config.rs`           | failed to read secret file (`password_file`) |
+| CFG004  | `gluco-hub/src/config.rs`           | secret file is empty |
+| CFG005  | `gluco-hub/src/main.rs`             | dryrun called without required `[…]` config block |
 | API001  | `gluco-hub/src/api/glucose.rs`      | `/glucose/latest` cache empty (503) |
 | AUTH001 | `gluco-hub/src/api/auth.rs`         | missing or invalid bearer token (401) |
 | LLU001  | `gluco-hub/src/sources/llu/error.rs`| HTTP transport error |
@@ -169,29 +170,29 @@ nothing — useful for compiled-in-but-disabled smoke checks.
 
 All keys live in TOML; any value can be overridden at runtime via
 `GLUCO_HUB__SECTION__KEY=…` (double underscore as separator).
-Secrets are NEVER stored in TOML — secret-bearing fields name an
-environment variable, never the value.
+Secrets must be supplied via environment variables — never embedded in TOML.
 
 | TOML path                           | Type     | Required | Validation | Notes |
 | ----------------------------------- | -------- | -------- | ---------- | ----- |
 | `[http] bind`                       | SocketAddr | yes (default `127.0.0.1:8080`) | parsed | |
-| `[http] bearer_token_env`           | string   | no       | ASCII env-var name, 1..=256 chars | when set, /glucose/* requires `Authorization: Bearer <env-var-value>` |
+| `[http] bearer_token`               | SecretString | no | — | supply via `GLUCO_HUB__HTTP__BEARER_TOKEN`; when set, /glucose/* requires `Authorization: Bearer <token>` |
 | `[poller] interval_secs`            | u64      | yes (default `60`) | range 30..=600 | LLU updates every ~60 s |
 | `[source.llu] email`                | string   | yes (LLU only) | email format | |
-| `[source.llu] password_env`         | string   | yes (LLU only) | non-empty | name of env var holding LLU password |
+| `[source.llu] password`             | SecretString | one of `password`/`password_file` required | — | supply via `GLUCO_HUB__SOURCE__LLU__PASSWORD` |
+| `[source.llu] password_file`        | path     | one of `password`/`password_file` required | readable file | 0600 file for Docker/K8s secrets; single trailing newline stripped |
 | `[source.llu] region`               | string   | yes (LLU only) | matches the canonical region table | |
 | `[source.llu] patient_id`           | string   | no       | 1..=128 chars | pin specific patient when account has multiple |
-| `[source.llu] version`              | string   | no       | 1..=32 ASCII graphic | LLU app version header (default `4.17.0`) |
+| `[source.llu] version`              | string   | no       | 1..=32 ASCII graphic | LLU app version header; override without recompile via `GLUCO_HUB__SOURCE__LLU__VERSION` |
 | `[source.llu] timezone`             | string   | no       | valid IANA name      | patient's local timezone for `Timestamp` conversion (default `UTC`) |
 | `[sink.nightscout] base_url`        | string   | yes (NS only) | starts with `http://` or `https://`, 5..=512 chars | |
-| `[sink.nightscout] api_secret_env`  | string   | yes (NS only) | ASCII env-var name | name of env var holding raw NS api secret |
+| `[sink.nightscout] api_secret`      | SecretString | yes (NS only) | — | supply via `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET`; raw secret, NOT pre-hashed |
 | `[sink.nightscout] device`          | string   | no       | 1..=128 chars | shows in NS UI source column (default `gluco-hub`) |
 | `[sink.nightscout] app`             | string   | no       | 1..=128 chars | NS app field (default `gluco-hub`) |
 | `[sink.mqtt] broker_host`           | string   | yes (MQTT only) | 1..=253 chars | hostname or IP, no scheme |
 | `[sink.mqtt] broker_port`           | u16      | yes (MQTT only) | 1..=65535 | 1883 plain, 8883 TLS by IANA |
 | `[sink.mqtt] client_id`             | string   | yes (MQTT only) | 1..=23 chars, `[A-Za-z0-9_-]` | conservative MQTT 5 limit |
 | `[sink.mqtt] username`              | string   | no       | 1..=256 chars | optional |
-| `[sink.mqtt] password_env`          | string   | no       | ASCII env-var name | name of env var holding MQTT password |
+| `[sink.mqtt] password`              | SecretString | no | — | supply via `GLUCO_HUB__SINK__MQTT__PASSWORD` |
 | `[sink.mqtt] topic_prefix`          | string   | yes (MQTT only) | 1..=200 chars, no `+`/`#`, no leading/trailing `/` | publishes to `<prefix>/{glucose,_health,_stats}` |
 | `[sink.mqtt] qos`                   | int      | no (default `1`) | 0\|1\|2 | glucose publish QoS |
 | `[sink.mqtt] keep_alive_secs`       | u64      | no (default `30`) | 5..=300 | |
@@ -215,7 +216,7 @@ gluco-hub-core/src/
 gluco-hub/src/
 ├── main.rs                 CLI (run / check-config / dryrun / ns-dryrun),
 │                           poll loop + fan-out, source/sink builders
-├── config.rs               Config + validators + resolve_secret_env
+├── config.rs               Config + validators + resolve_secret_file
 ├── metrics.rs              Prometheus recorder + counter/gauge names
 ├── api/
 │   ├── mod.rs              router + AppState

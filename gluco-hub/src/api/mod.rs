@@ -29,8 +29,8 @@ pub(crate) const READING_DISCLAIMER: &str = "Not for medical use. Research only.
 
 /// Shared application state passed to handlers via `State<AppState>`.
 ///
-/// `bearer_token` is `Some` only when `[http] bearer_token_env` resolved
-/// to a non-empty value at startup. The auth middleware checks this on
+/// `bearer_token` is `Some` only when `GLUCO_HUB__HTTP__BEARER_TOKEN` was
+/// set at startup. The auth middleware checks this on
 /// every request and short-circuits to `401` on mismatch.
 #[derive(Clone)]
 pub struct AppState {

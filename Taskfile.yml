@@ -63,4 +63,4 @@ tasks:
 
   docker:
     desc: Build container image (gluco-hub:dev)
-    cmd: docker build -t gluco-hub:dev -f Containerfile .
+    cmd: docker build -t gluco-hub:dev .

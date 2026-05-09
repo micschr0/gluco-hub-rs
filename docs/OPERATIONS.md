@@ -13,7 +13,7 @@ gluco-hub [-c <config>] <subcommand>
 | Subcommand     | Feature gate      | Purpose                                                   |
 | -------------- | ----------------- | --------------------------------------------------------- |
 | `run`          | —                 | Start the poll loop and HTTP API.                         |
-| `check-config` | —                 | Validate config and exit (non-zero + `CFG003` on error).  |
+| `check-config` | —                 | Validate config and exit (non-zero + `CFG0xx` on error).  |
 | `dryrun`       | `source-llu`      | One-shot LLU probe; prints JSON summary, no server.       |
 | `ns-dryrun`    | `sink-nightscout` | One-shot Nightscout read-only probe; never POSTs.         |
 
@@ -30,7 +30,7 @@ for use without a compiled binary.
 | `/metrics`        | GET    | public          | Prometheus text exposition (v0.0.4) — includes `patient_id` label on `cgm_glucose_mgdl`; protect at network/proxy layer if exposure is a concern |
 | `/glucose/latest` | GET    | optional Bearer | latest cached reading or `503` + `API001`    |
 
-`/glucose/*` becomes Bearer-protected when `[http] bearer_token_env` is set; `/healthz` and `/metrics` always stay public.
+`/glucose/*` becomes Bearer-protected when `GLUCO_HUB__HTTP__BEARER_TOKEN` is set; `/healthz` and `/metrics` always stay public.
 
 ---
 
@@ -80,14 +80,16 @@ Stable error-code prefixes (`CORE0xx`, `CFG0xx`, `API0xx`, `LLU0xx`, `NS0xx`, `A
 Config overrides: any TOML key can be overridden at runtime with `GLUCO_HUB__SECTION__KEY=…`
 (double-underscore delimited), e.g. `GLUCO_HUB__HTTP__BIND=0.0.0.0:9090`.
 
-Secrets referenced in TOML:
+Secrets are injected the same way — never embedded in TOML:
 
-| TOML field                         | Env var (example)         | Holds                  |
-| ---------------------------------- | ------------------------- | ---------------------- |
-| `[source.llu] password_env`        | `LLU_PASSWORD`            | LibreLink Up password  |
-| `[sink.nightscout] api_secret_env` | `NIGHTSCOUT_API_SECRET`   | Nightscout API secret  |
-| `[http] bearer_token_env`          | `GLUCO_HUB_BEARER_TOKEN` | API Bearer token       |
-| `[sink.mqtt] password_env`         | `MQTT_PASSWORD`           | MQTT broker password   |
+| Secret              | Environment variable                        | Holds                  |
+| ------------------- | ------------------------------------------- | ---------------------- |
+| LLU password        | `GLUCO_HUB__SOURCE__LLU__PASSWORD`          | LibreLink Up password  |
+| Nightscout secret   | `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET`   | Nightscout API secret  |
+| HTTP Bearer token   | `GLUCO_HUB__HTTP__BEARER_TOKEN`             | API Bearer token       |
+| MQTT password       | `GLUCO_HUB__SINK__MQTT__PASSWORD`           | MQTT broker password   |
+
+The LLU password can alternatively be supplied via `password_file = "/run/secrets/…"` in `[source.llu]` — useful for Docker secrets and Kubernetes secret volumes.
 
 Secrets never appear in TOML, logs, or `Debug` output.
 
@@ -115,7 +117,7 @@ readinessProbe:
 
 ```mermaid
 graph TB
-    subgraph "Containerfile — 4-stage cargo-chef build"
+    subgraph "Dockerfile — 4-stage cargo-chef build"
         S1["Stage 1 · chef\nrust:1.87.0-bookworm\ncmake · cargo-chef"]
         S2["Stage 2 · planner\nmanifests + stubs\n→ recipe.json"]
         S3["Stage 3 · build\ncargo chef cook (deps)\n→ cargo build --release"]
@@ -134,10 +136,11 @@ The dep-cook layer is cached until `Cargo.lock` / `Cargo.toml` changes. Source e
 
 | Symptom | Likely cause | Fix |
 | ------- | ------------ | --- |
-| `[CFG003]` on startup | Referenced env var not exported | Run `check-config`; the error names the missing variable. |
+| `[CFG001]` on startup | Missing required config field (e.g. `api_secret`) | Ensure the corresponding `GLUCO_HUB__*` env var is exported before starting. |
+| `[CFG003]` on startup | `password_file` path not readable | Check the file path and permissions; the error message includes the path. |
 | `[LLU002]` / `[LLU004]` | Wrong region or app version rejected | Check `region` in config; bump `version` via `GLUCO_HUB__SOURCE__LLU__VERSION=4.17.0`. |
 | `[LLU003]` | Invalid credentials | Re-check email / password in the LibreLinkUp mobile app. |
-| `[NS002]` | Wrong Nightscout api-secret | `NS_API_SECRET` must be the plain-text secret, not the SHA-1 hash. |
+| `[NS002]` | Wrong Nightscout api-secret | `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET` must be the plain-text secret, not the SHA-1 hash. |
 | `503` on `/glucose/latest` | Cache empty before first poll | Normal at startup; wait one poll interval (default 60 s). |
 | App version rejected by LibreView | LibreView raised minimum version | Set `GLUCO_HUB__SOURCE__LLU__VERSION=4.17.0` (or latest) and restart. |
 

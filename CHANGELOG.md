@@ -21,7 +21,7 @@ Initial open-source release.
 - **Config validation** — `check-config` subcommand validates every field and resolves all secret references before service start
 - **Dry-run modes** — `dryrun` and `ns-dryrun` subcommands for credential validation without starting the server
 - **Prometheus metrics** — poll counts, sink push counts, dedup skips, cache hits, and build identity gauge
-- **Container build** — 4-stage cargo-chef Containerfile; runtime on `distroless/cc-debian12:nonroot`
+- **Container build** — 4-stage cargo-chef Dockerfile; runtime on `distroless/cc-debian12:nonroot`
 - **Docker Compose template** — `compose.example.yml` for persistent setups
 - **ENV overrides** — any TOML key can be overridden via `GLUCO_HUB__SECTION__KEY`
 - **Graceful shutdown** — `SIGINT` and `SIGTERM` both drain in-flight work cleanly
