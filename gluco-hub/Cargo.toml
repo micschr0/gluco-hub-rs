@@ -81,13 +81,9 @@ http-body-util = "0.1"
 # SemVer including pre-release suffixes (e.g. `0.1.0-rc.1`).
 [package.metadata.release]
 pre-release-hook = ["sh", "-c", "cd \"$(git rev-parse --show-toplevel)\" && task check"]
+# Inline tables MUST be on one line per TOML 1.0 (cargo-chef parses strictly,
+# cargo itself is lenient). Keep each replacement on a single line.
 pre-release-replacements = [
-    { file = "../CHANGELOG.md",
-      search = "## \\[Unreleased\\]",
-      replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}",
-      exactly = 1 },
-    { file = "../CHANGELOG.md",
-      search = "\\[Unreleased\\]: https://github\\.com/micschr0/gluco-hub-rs/compare/v[\\w.-]+\\.\\.\\.HEAD",
-      replace = "[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v{{version}}...HEAD\n[{{version}}]: https://github.com/micschr0/gluco-hub-rs/compare/v{{prev_version}}...v{{version}}",
-      exactly = 1 },
+    { file = "../CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1 },
+    { file = "../CHANGELOG.md", search = "\\[Unreleased\\]: https://github\\.com/micschr0/gluco-hub-rs/compare/v[\\w.-]+\\.\\.\\.HEAD", replace = "[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v{{version}}...HEAD\n[{{version}}]: https://github.com/micschr0/gluco-hub-rs/compare/v{{prev_version}}...v{{version}}", exactly = 1 },
 ]
