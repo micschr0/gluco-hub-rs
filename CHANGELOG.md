@@ -7,8 +7,6 @@ This project does not yet follow Semantic Versioning — see [SCOPE.md](./SCOPE.
 
 ## [Unreleased]
 
-> **Beta / WIP** — config schema, HTTP API, and MQTT wire format are not yet stable and may change without notice.
-
 ### Changed
 
 - **Default Cargo features** now include `sink-nightscout` alongside `source-llu`, so `cargo run` and `cargo build` produce a binary that actually pushes data instead of silently dropping every reading.
