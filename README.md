@@ -13,7 +13,7 @@
 </div>
 
 > [!WARNING]
-> **Beta / WIP** — APIs, config schema, and MQTT wire format may change between releases without notice. Not recommended for production use yet.
+> **Beta / WIP** — pre-1.0; APIs, config schema, and MQTT wire format may break between releases without notice.
 
 ---
 
@@ -22,6 +22,7 @@ gluco-hub-rs is a small self-hosted relay between your CGM like LibreLink Up and
 > [!NOTE]
 > **For:** technical LibreLink Up users moving CGM data between systems.
 > **Not for:** therapy, dosing, diagnosis, or replacing approved tools — see [DISCLAIMER.md](./DISCLAIMER.md).
+> **Vibe:** picking up the Rust ecosystem and agentic coding side by side — the project is the practice ground for both.
 
 ```text
   SOURCES              CORE             SINKS              CONSUMERS
@@ -42,7 +43,7 @@ gluco-hub-rs is a small self-hosted relay between your CGM like LibreLink Up and
 
 ## Requirements
 
-- A LibreLink Up account with at least one linked sensor — use the same email/password as the LibreLinkUp mobile app
+- A **FreeStyle Libre** sensor (Libre 2 / 3) linked to a **LibreLink Up** account — same email/password as the LibreLinkUp mobile app. No other CGMs supported today.
 - One of:
   - **Container** — Docker or Podman; no Rust toolchain needed (see [Container](#container))
   - **Native** — Rust ≥ 1.95 to build from source
