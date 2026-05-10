@@ -92,6 +92,38 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 - New `Source` or `Sink`: own module plus Cargo feature, register in binary wiring.
 - Verify external-API claims with the latest official docs — APIs (LibreLink Up, Nightscout v3) evolve.
 
+## Releasing & Branching
+
+**Branching**: trunk-based. `main` is the only long-lived branch and is always
+deployable. Feature work happens on short-lived branches with Conventional-
+Commits prefixes — `feat/<topic>`, `fix/<topic>`, `chore/<topic>`,
+`docs/<topic>` — and lands via PR + squash-merge.
+
+**CHANGELOG**: every PR that changes user-visible behaviour adds a line under
+`## [Unreleased]` in `CHANGELOG.md` (`### Added` / `### Changed` / `### Fixed` /
+`### Removed`). `cargo release` promotes the block to a dated header on tag.
+
+**Releasing**: managed by `cargo release` (config in `release.toml`). Never bump
+`Cargo.toml` version manually — that drifts from the tag and the CHANGELOG.
+
+```bash
+cargo install cargo-release            # one-time per workstation
+cargo release minor                    # dry-run, shows the diff
+cargo release minor --execute          # bump + commit + tag + push
+```
+
+The push of the `vX.Y.Z` tag triggers `release.yml`, which publishes the
+multi-arch container to GHCR. `task release:dry` and `task release:minor`
+wrap the canonical commands.
+
+**Versioning**: `minor` for normal releases, `patch` for bugfix-only,
+`X.Y.Z-rc.N` only when a release needs pre-validation. No `-alpha`/`-beta` —
+project Beta status lives in `SCOPE.md`. `1.0.0` will mark the first API-
+stability commitment.
+
+**Image channels** are documented in `README.md#container`. Default dev tag
+is `:main`; `:latest` follows highest final release.
+
 # Skills
 
 ## Claude Code setup

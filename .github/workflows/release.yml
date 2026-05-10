@@ -3,7 +3,7 @@ name: Release
 # Builds and publishes a multi-arch container image to GHCR.
 #
 # Triggers:
-#   - push to main         → ghcr.io/<owner>/gluco-hub:edge + :sha-<short>
+#   - push to main         → ghcr.io/<owner>/gluco-hub:main + :sha-<short>
 #   - push of a v* tag     → :X.Y.Z, :X.Y, :X, :latest, :sha-<short>
 #   - pull_request         → build-only verification on both arches (no push)
 #   - workflow_dispatch    → manual republish
@@ -156,7 +156,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=edge,branch=main
+            type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}

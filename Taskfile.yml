@@ -64,3 +64,11 @@ tasks:
   docker:
     desc: Build container image (gluco-hub:dev)
     cmd: docker build -t gluco-hub:dev .
+
+  release:dry:
+    desc: Preview the next minor release without making changes
+    cmd: cargo release minor
+
+  release:minor:
+    desc: Cut a minor release (commits, tags, pushes)
+    cmd: cargo release minor --execute

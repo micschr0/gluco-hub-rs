@@ -181,14 +181,21 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 
 ## Container
 
-Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR on every release tag and on every push to `main`:
+Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR on every release tag and on every push to `main`. Stability is layered: SemVer 0.x.y signals pre-stable per convention; `1.0.0` will mark the first API-stability commitment.
 
-| Tag                   | Source                                           |
-| --------------------- | ------------------------------------------------ |
-| `:latest`             | latest semver release                            |
-| `:1.2.3` / `:1.2`     | pinned semver release                            |
-| `:edge`               | latest commit on `main` (unstable)               |
-| `:sha-<short>`        | exact commit                                     |
+| Tag                   | Mover                  | Stability                                      | Use case                       |
+| --------------------- | ---------------------- | ---------------------------------------------- | ------------------------------ |
+| `:main`               | every push to `main`   | unstable, may break                            | dev tracking, brave testers    |
+| `:sha-<short>`        | immutable              | snapshot of one commit                         | reproducible pinning           |
+| `:X.Y.Z-rc.N`         | immutable              | release candidate, pre-validation only         | pre-release tests              |
+| `:X.Y.Z` (X = 0)      | immutable              | pre-stable; minor versions may break (per 0.x) | pre-1.0 production pin         |
+| `:X.Y.Z` (X ≥ 1)      | immutable              | stable, SemVer compatibility guarantee         | production pin (post-1.0)      |
+| `:X.Y`                | rolls forward to latest patch | follows the X.Y track                   | production with auto-patch     |
+| `:X`                  | rolls forward to latest minor | follows the X track                     | production with auto-minor     |
+| `:latest`             | rolls forward          | highest final release (excludes `-rc`)         | "always current" convenience   |
+
+> [!WARNING]
+> While the project is `0.x.y` (today: `0.1.0`), every release is pre-stable per SemVer convention — minor bumps may introduce breaking changes. For predictable upgrades, pin to `:X.Y.Z`. For auto-patch within a minor, pin to `:X.Y`.
 
 ```bash
 docker run --rm -p 8080:8080 \

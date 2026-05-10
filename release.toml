@@ -1,0 +1,39 @@
+# cargo-release configuration.
+# Docs: https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+#
+# Workflow:
+#   cargo release minor                    # dry-run (no --execute)
+#   cargo release minor --execute          # bump, commit, tag, push -> release.yml
+#
+# Versions are managed exclusively through cargo-release. Manual bumps to
+# Cargo.toml version risk drift between code, tag, and CHANGELOG.
+
+# Single workspace version. Members inherit via `version.workspace = true`.
+shared-version = true
+
+# Binary workspace, no crates.io publish.
+publish = false
+
+# Match release.yml trigger `tags: ['v*']`. Override the workspace default
+# `<crate>-vX.Y.Z` to plain `vX.Y.Z`.
+tag-name = "v{{version}}"
+tag-message = "Release {{version}}"
+
+# Conventional-commits style.
+pre-release-commit-message = "chore: release v{{version}}"
+
+# Push commit + tag to origin -> triggers release.yml.
+push = true
+push-remote = "origin"
+
+# No post-release dev bump.
+consolidate-commits = true
+
+# Local verification gate before tagging. Aborts before any commit on failure.
+pre-release-hook = ["task", "check"]
+
+# CHANGELOG rewrites are scoped to the binary crate (gluco-hub) via
+# [package.metadata.release] in gluco-hub/Cargo.toml. The single workspace
+# CHANGELOG.md lives at the repo root; the binary crate references it via
+# `file = "../CHANGELOG.md"`. The library crate (gluco-hub-core) defines no
+# replacements, so cargo-release does not try to rewrite a sibling CHANGELOG.

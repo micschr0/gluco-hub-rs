@@ -66,3 +66,23 @@ tokio-util = { workspace = true, optional = true }
 [dev-dependencies]
 wiremock = { workspace = true }
 http-body-util = "0.1"
+
+# `cargo release` rewrites the workspace CHANGELOG.md from this crate
+# (the binary). The library crate inherits no replacements, so the
+# rewrite runs once. `file = "../CHANGELOG.md"` resolves to the repo
+# root from the binary's manifest dir.
+[package.metadata.release]
+pre-release-replacements = [
+    { file = "../CHANGELOG.md",
+      search = "## \\[Unreleased\\]",
+      replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}",
+      exactly = 1 },
+    { file = "../CHANGELOG.md",
+      search = "compare/v{{prev_version}}\\.\\.\\.HEAD",
+      replace = "compare/v{{version}}...HEAD",
+      exactly = 1 },
+    { file = "../CHANGELOG.md",
+      search = "\\[{{prev_version}}\\]: https://github\\.com/micschr0/gluco-hub-rs",
+      replace = "[{{version}}]: https://github.com/micschr0/gluco-hub-rs/compare/v{{prev_version}}...v{{version}}\n[{{prev_version}}]: https://github.com/micschr0/gluco-hub-rs",
+      exactly = 1 },
+]
