@@ -9,6 +9,18 @@ This project does not yet follow Semantic Versioning — see [SCOPE.md](./SCOPE.
 
 > **Beta / WIP** — config schema, HTTP API, and MQTT wire format are not yet stable and may change without notice.
 
+### Changed
+
+- **Default Cargo features** now include `sink-nightscout` alongside `source-llu`, so `cargo run` and `cargo build` produce a binary that actually pushes data instead of silently dropping every reading.
+- **Container image** now bundles `sink-mqtt` in addition to `source-llu` and `sink-nightscout`, matching the V2 roadmap. Operators with `[sink.mqtt]` in their config no longer need a custom rebuild.
+- **`enabled_features()`** in `gluco_hub_build_info{features=…}` now reports `sink-mqtt` (previously omitted, even when active).
+
+### Added
+
+- **`[CFG006]`** — `verify_features` rejects configs that reference a Source/Sink whose Cargo feature is not compiled in. Replaces the previous silent-ignore behaviour.
+- **`[CFG007]`** — `verify_secrets` rejects empty secret strings (an unset `GLUCO_HUB__…` env var deserialises into `SecretString("")`, which the `config` crate cannot reject by length). Covers `[source.llu] password`, `[http] bearer_token`, `[sink.nightscout] api_secret`, `[sink.mqtt] password`.
+- **Startup warning** when no sink is configured, mirroring the existing "no source configured" warning so misconfiguration is visible in the logs instead of inferable only from `sink_count=0`.
+
 ## [0.1.0] - 2026-05-09
 
 Initial open-source release.

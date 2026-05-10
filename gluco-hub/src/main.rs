@@ -144,6 +144,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 
     match cli.command {
         Command::CheckConfig => {
+            config::verify_features(&cfg).context("verify enabled features match config")?;
             config::verify_secrets(&cfg).context("verify configured secrets")?;
             info!(
                 http_addr = %cfg.http.bind,
@@ -178,6 +179,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 async fn serve(cfg: config::Config) -> Result<()> {
+    // Fail fast if a TOML block references a Sink/Source whose Cargo
+    // feature is not compiled in — otherwise the operator gets silent
+    // data loss instead of a clear startup error.
+    config::verify_features(&cfg).context("verify enabled features match config")?;
     // Fail fast if any referenced secret env var is missing — better to
     // crash on startup than to start serving 401s after the bearer token
     // ended up empty.
@@ -195,6 +200,12 @@ async fn serve(cfg: config::Config) -> Result<()> {
 
     let sinks = build_sinks(&cfg)?;
     info!(sink_count = sinks.len(), "sinks configured");
+    if sinks.is_empty() {
+        warn!(
+            "no sink configured; readings will populate the in-memory cache and \
+             HTTP API only — nothing is pushed downstream"
+        );
+    }
 
     if let Some(source) = build_default_source(&cfg)? {
         let interval = Duration::from_secs(cfg.poller.interval_secs);

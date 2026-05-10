@@ -101,7 +101,7 @@ export GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET='…'
 
 ## Cargo features
 
-`source-llu` (default), `mock-source`, `sink-nightscout`, `sink-mqtt` — see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md#cargo-features) for details.
+`source-llu`, `sink-nightscout` (default), plus optional `mock-source` and `sink-mqtt` — see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md#cargo-features) for details. Published GHCR images bundle every stable Source/Sink (`source-llu sink-nightscout sink-mqtt`); only choose a narrower feature set when building locally.
 
 ```bash
 cargo build --release --features "source-llu sink-nightscout sink-mqtt"

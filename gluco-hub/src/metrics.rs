@@ -32,6 +32,8 @@ pub fn enabled_features() -> String {
     v.push("source-llu");
     #[cfg(feature = "sink-nightscout")]
     v.push("sink-nightscout");
+    #[cfg(feature = "sink-mqtt")]
+    v.push("sink-mqtt");
     if v.is_empty() {
         "none".to_string()
     } else {

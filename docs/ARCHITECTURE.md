@@ -128,6 +128,8 @@ exit-code contracts are also keyed off these prefixes via
 | CFG003  | `gluco-hub/src/config.rs`           | failed to read secret file (`password_file`) |
 | CFG004  | `gluco-hub/src/config.rs`           | secret file is empty |
 | CFG005  | `gluco-hub/src/main.rs`             | dryrun called without required `[…]` config block |
+| CFG006  | `gluco-hub/src/config.rs`           | TOML references a Source/Sink whose Cargo feature is not compiled in |
+| CFG007  | `gluco-hub/src/config.rs`           | a referenced secret env var resolved to an empty string |
 | API001  | `gluco-hub/src/api/glucose.rs`      | `/glucose/latest` cache empty (503) |
 | AUTH001 | `gluco-hub/src/api/auth.rs`         | missing or invalid bearer token (401) |
 | LLU001  | `gluco-hub/src/sources/llu/error.rs`| HTTP transport error |
@@ -156,15 +158,44 @@ exit-code contracts are also keyed off these prefixes via
 
 | Feature           | Crate(s)             | Effect |
 | ----------------- | -------------------- | ------ |
-| `mock-source`     | `gluco-hub`, `gluco-hub-core` | Default. Wires an in-memory canned source so the API runs out of the box. |
-| `source-llu`      | `gluco-hub`         | Real LibreLink Up source. Honours `[source.llu]`; takes precedence over `mock-source`. Activates `dep:sha2`. |
-| `sink-nightscout` | `gluco-hub`         | Nightscout v3 sink. Honours `[sink.nightscout]`; fans out from the poller. Activates `dep:sha1`. |
-| `sink-mqtt`       | `gluco-hub`         | V2 MQTT v5 sink (rumqttc 0.25, rustls only). Honours `[sink.mqtt]`; LWT-driven `_health` topic, schema `v: 1` glucose payload, exponential reconnect backoff. Activates `dep:rumqttc`, `dep:bytes`, `dep:tokio-util`. |
+| `source-llu`      | `gluco-hub`         | **Default.** Real LibreLink Up source. Honours `[source.llu]`; takes precedence over `mock-source`. Activates `dep:sha2`. |
+| `sink-nightscout` | `gluco-hub`         | **Default.** Nightscout v3 sink. Honours `[sink.nightscout]`; fans out from the poller. Activates `dep:sha1`. |
+| `sink-mqtt`       | `gluco-hub`         | V2 MQTT v5 sink (rumqttc 0.25, rustls only). Honours `[sink.mqtt]`; LWT-driven `_health` topic, schema `v: 1` glucose payload, exponential reconnect backoff. Activates `dep:rumqttc`, `dep:bytes`, `dep:tokio-util`. Bundled in published GHCR images. |
+| `mock-source`     | `gluco-hub`, `gluco-hub-core` | In-memory canned source for offline tests; opt-in only. |
 
 `build_default_source(&Config)` and `build_sinks(&Config)` in
-`main.rs` apply the feature gates at runtime. A binary built with
-`--no-default-features` parses every config block but registers
-nothing — useful for compiled-in-but-disabled smoke checks.
+`main.rs` apply the feature gates at runtime. `verify_features(&Config)`
+runs at startup (and on `check-config`) and rejects with `[CFG006]` if
+the TOML references a Source/Sink whose feature is not compiled in —
+silent data loss is a worse failure mode than a clear startup error.
+
+### Two layers, one decision per Source/Sink
+
+Source/Sink activation is the product of two independent gates:
+
+1. **Compile-time (Cargo feature).** Decides whether the code (and its
+   dependency tree — `rumqttc`, `bytes`, `tokio-util` for MQTT, `sha1`
+   for Nightscout, …) is in the binary at all. Optimises image size
+   and `cargo deny` audit surface.
+2. **Runtime (TOML block presence).** Decides whether a compiled-in
+   sink actually runs in this deployment. `build_sinks` only pushes a
+   sink onto the fan-out vector when the corresponding `[sink.…]`
+   block is present in the loaded config.
+
+Truth table for a single Sink (Source is symmetric):
+
+| Cargo feature | TOML block | Result |
+| ------------- | ---------- | ------ |
+| on            | present    | sink runs |
+| on            | absent     | sink silently skipped (intentional — operator opted out of this deployment) |
+| off           | absent     | sink not in binary; no-op |
+| off           | present    | `[CFG006]` at startup — operator intent vs. build reality mismatch |
+
+The published GHCR image has every stable feature on, so for most
+operators only the runtime layer matters: drop a `[sink.…]` block from
+`config.toml` to disable that sink. The compile-time layer exists for
+folks who build their own image and want a smaller binary or a
+tighter audit surface.
 
 ## Configuration reference
 

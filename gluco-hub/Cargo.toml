@@ -12,7 +12,7 @@ description = "gluco-hub-rs binary: polls LibreLink Up, exposes glucose via HTTP
 publish = false
 
 [features]
-default = ["source-llu"]
+default = ["source-llu", "sink-nightscout"]
 source-llu = ["dep:sha2"]
 sink-nightscout = ["dep:sha1"]
 # V2: real MQTT v5 sink backed by rumqttc + rustls. Pulls in the
