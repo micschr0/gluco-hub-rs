@@ -2,9 +2,12 @@ name: Release
 
 # Builds and publishes a multi-arch container image to GHCR.
 #
-# Triggers:
-#   - push to main         → ghcr.io/<owner>/gluco-hub:main + :sha-<short>
-#   - push of a v* tag     → :X.Y.Z, :X.Y, :X, :latest, :sha-<short>
+# Triggers and resulting tags (CalVer-on-SemVer scheme, YYYY.0M0D.PATCH):
+#   - push to main         → :main, :sha-<short>
+#   - pre-release tag      → :X.Y.Z-rc.N, :testing, :sha-<short>
+#       (e.g. v2026.510.0-rc.1; :latest and floating-version tags stay
+#        on the prior final release)
+#   - final tag (v* w/o -) → :X.Y.Z, :X.Y, :X, :latest, :stable, :sha-<short>
 #   - pull_request         → build-only verification on both arches (no push)
 #   - workflow_dispatch    → manual republish
 #
@@ -150,16 +153,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Three-tier channel model:
+      #   :main                      — every main push (dev/nightly)
+      #   :testing                   — pre-release tags (v*-rc/alpha/beta)
+      #   :latest, :stable, floating — final tags only (v2026.510.0, no suffix)
+      # `latest=false` disables auto-latest so :latest is set exclusively by
+      # the explicit suffix-filtered raw rule below — no RC ever moves
+      # :latest, :stable, :2026, or :2026.510.
       - name: Compute image metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
           tags: |
-            type=ref,event=branch
+            type=raw,value=main,enable={{is_default_branch}}
+            type=raw,value=testing,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref, '-') }}
+            type=semver,pattern={{major}},enable=${{ !contains(github.ref, '-') }}
             type=sha,format=short
 
       - name: Create manifest list & push

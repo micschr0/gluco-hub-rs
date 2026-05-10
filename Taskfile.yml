@@ -65,16 +65,32 @@ tasks:
     desc: Build container image (gluco-hub:dev)
     cmd: docker build -t gluco-hub:dev .
 
-  release:dry:
-    desc: Preview the next minor release without making changes
-    preconditions:
-      - sh: command -v cargo-release >/dev/null 2>&1
-        msg: "cargo-release not installed. Run: cargo install cargo-release"
-    cmd: cargo release minor
+  # CalVer release workflow (YYYY.0M0D.PATCH, e.g. 2026.510.0 = 2026-05-10).
+  # Version is derived from UTC date; PATCH bumps cover same-day re-releases.
 
-  release:minor:
-    desc: Cut a minor release (commits, tags, pushes)
+  release:dry:
+    desc: "Preview today's CalVer release (dry-run, no tag/push)"
+    vars:
+      VERSION:
+        sh: date -u +%Y.%-m%d.0
     preconditions:
       - sh: command -v cargo-release >/dev/null 2>&1
         msg: "cargo-release not installed. Run: cargo install cargo-release"
-    cmd: cargo release minor --execute
+    cmd: cargo release "{{.VERSION}}"
+
+  release:
+    desc: "Cut today's CalVer release (UTC date → YYYY.0M0D.0, commits + tags + pushes)"
+    vars:
+      VERSION:
+        sh: date -u +%Y.%-m%d.0
+    preconditions:
+      - sh: command -v cargo-release >/dev/null 2>&1
+        msg: "cargo-release not installed. Run: cargo install cargo-release"
+    cmd: cargo release "{{.VERSION}}" --execute
+
+  release:patch:
+    desc: "Same-day hotfix (bumps PATCH, e.g. 2026.510.0 → 2026.510.1)"
+    preconditions:
+      - sh: command -v cargo-release >/dev/null 2>&1
+        msg: "cargo-release not installed. Run: cargo install cargo-release"
+    cmd: cargo release patch --execute

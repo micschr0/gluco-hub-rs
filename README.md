@@ -182,21 +182,22 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 
 ## Container
 
-Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR on every release tag and on every push to `main`. Stability is layered: SemVer 0.x.y signals pre-stable per convention; `1.0.0` will mark the first API-stability commitment.
+Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR on every release tag and on every push to `main`. Versions use [CalVer-on-SemVer](./CHANGELOG.md) (`YYYY.MMDD.PATCH`, e.g. `2026.510.0`). Tags split into three stability channels:
 
-| Tag                   | Mover                  | Stability                                      | Use case                       |
-| --------------------- | ---------------------- | ---------------------------------------------- | ------------------------------ |
-| `:main`               | every push to `main`   | unstable, may break                            | dev tracking, brave testers    |
-| `:sha-<short>`        | immutable              | snapshot of one commit                         | reproducible pinning           |
-| `:X.Y.Z-rc.N`         | immutable              | release candidate, pre-validation only         | pre-release tests              |
-| `:X.Y.Z` (X = 0)      | immutable              | pre-stable; minor versions may break (per 0.x) | pre-1.0 production pin         |
-| `:X.Y.Z` (X ≥ 1)      | immutable              | stable, SemVer compatibility guarantee         | production pin (post-1.0)      |
-| `:X.Y`                | rolls forward to latest patch | follows the X.Y track                   | production with auto-patch     |
-| `:X`                  | rolls forward to latest minor | follows the X track                     | production with auto-minor     |
-| `:latest`             | rolls forward          | highest final release (excludes `-rc`)         | "always current" convenience   |
+| Tag                   | Mover                                  | Stability                                | Use case                       |
+| --------------------- | -------------------------------------- | ---------------------------------------- | ------------------------------ |
+| `:main`               | every push to `main`                   | unstable, may break                      | dev tracking, brave testers    |
+| `:testing`            | latest pre-release tag                 | RC / beta / alpha — pre-validation only  | beta channel                   |
+| `:sha-<short>`        | immutable                              | snapshot of one commit                   | reproducible pinning           |
+| `:YYYY.MMDD.PATCH-rc.N` | immutable                            | release candidate                        | pre-release tests              |
+| `:YYYY.MMDD.PATCH`    | immutable                              | a specific final release                 | production pin                 |
+| `:YYYY.MMDD`          | rolls forward to latest `PATCH` of that day | day-level rolling                   | auto-patch within a day        |
+| `:YYYY`               | rolls forward to latest release in year     | year-level rolling                  | "current year" tracking        |
+| `:latest`             | rolls forward, finals only             | highest final release (excludes `-rc`)   | "always current" convenience   |
+| `:stable`             | rolls forward, finals only             | semantic alias of `:latest`              | "always stable" convenience    |
 
 > [!WARNING]
-> While the project is `0.x.y` (today: `0.1.0`), every release is pre-stable per SemVer convention — minor bumps may introduce breaking changes. For predictable upgrades, pin to `:X.Y.Z`. For auto-patch within a minor, pin to `:X.Y`.
+> This project is in **beta**. Every release is a dated snapshot — breaking changes can land on any release while config schema, HTTP API, and MQTT wire format stabilise. For predictable upgrades, pin to an immutable tag (`:YYYY.MMDD.PATCH` or `:sha-<short>`). `:latest` / `:stable` track the most recent final release but their underlying digests move.
 
 ```bash
 docker run --rm -p 8080:8080 \
