@@ -138,6 +138,8 @@ The dep-cook layer is cached until `Cargo.lock` / `Cargo.toml` changes. Source e
 | ------- | ------------ | --- |
 | `[CFG001]` on startup | Missing required config field (e.g. `api_secret`) | Ensure the corresponding `GLUCO_HUB__*` env var is exported before starting. |
 | `[CFG003]` on startup | `password_file` path not readable | Check the file path and permissions; the error message includes the path. |
+| `[CFG006]` on startup | TOML configures a Source/Sink whose Cargo feature is not compiled in | Use a build that includes the feature (the published GHCR image bundles `source-llu sink-nightscout sink-mqtt`), or remove the unused `[…]` block from the config. |
+| `[CFG007]` on startup | A referenced secret env var resolved to empty | Export the env var before starting (e.g. `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET`). The error message names the offending field. |
 | `[LLU002]` / `[LLU004]` | Wrong region or app version rejected | Check `region` in config; bump `version` via `GLUCO_HUB__SOURCE__LLU__VERSION=4.17.0`. |
 | `[LLU003]` | Invalid credentials | Re-check email / password in the LibreLinkUp mobile app. |
 | `[NS002]` | Wrong Nightscout api-secret | `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET` must be the plain-text secret, not the SHA-1 hash. |

@@ -12,7 +12,7 @@ description = "gluco-hub-rs binary: polls LibreLink Up, exposes glucose via HTTP
 publish = false
 
 [features]
-default = ["source-llu"]
+default = ["source-llu", "sink-nightscout"]
 source-llu = ["dep:sha2"]
 sink-nightscout = ["dep:sha1"]
 # V2: real MQTT v5 sink backed by rumqttc + rustls. Pulls in the
@@ -66,3 +66,24 @@ tokio-util = { workspace = true, optional = true }
 [dev-dependencies]
 wiremock = { workspace = true }
 http-body-util = "0.1"
+
+# `cargo release` rewrites the workspace CHANGELOG.md from this crate
+# (the binary). The library crate inherits no replacements, so the
+# rewrite runs once. `file = "../CHANGELOG.md"` resolves to the repo
+# root from the binary's manifest dir.
+#
+# The pre-release-hook also lives here (scoped to one crate so the gate
+# runs once). `task check` requires the workspace-root Taskfile.yml,
+# hence the `cd` via `git rev-parse --show-toplevel`.
+#
+# Note: `{{prev_version}}` and `{{version}}` are substituted only in
+# `replace`, not in `search`. The version regex `v[\w.-]+` matches any
+# SemVer including pre-release suffixes (e.g. `0.1.0-rc.1`).
+[package.metadata.release]
+pre-release-hook = ["sh", "-c", "cd \"$(git rev-parse --show-toplevel)\" && task check"]
+# Inline tables MUST be on one line per TOML 1.0 (cargo-chef parses strictly,
+# cargo itself is lenient). Keep each replacement on a single line.
+pre-release-replacements = [
+    { file = "../CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1 },
+    { file = "../CHANGELOG.md", search = "\\[Unreleased\\]: https://github\\.com/micschr0/gluco-hub-rs/compare/v[\\w.-]+\\.\\.\\.HEAD", replace = "[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v{{version}}...HEAD\n[{{version}}]: https://github.com/micschr0/gluco-hub-rs/compare/v{{prev_version}}...v{{version}}", exactly = 1 },
+]

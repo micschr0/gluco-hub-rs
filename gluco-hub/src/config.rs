@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use ::config::{Config as ConfigBuilder, Environment, File, FileFormat};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use thiserror::Error;
 use validator::{Validate, ValidationError};
@@ -376,6 +376,26 @@ pub enum ConfigError {
 
     #[error("[CFG004] secret file is empty: {}", path.display())]
     SecretFileEmpty { path: PathBuf },
+
+    /// Built only when at least one optional Source/Sink feature is OFF.
+    /// With `--all-features` the variant is never constructed; suppress
+    /// the resulting dead-code lint there.
+    #[cfg_attr(
+        all(
+            feature = "source-llu",
+            feature = "sink-nightscout",
+            feature = "sink-mqtt"
+        ),
+        allow(dead_code)
+    )]
+    #[error("[CFG006] {section} configured but binary built without `{feature}` feature")]
+    FeatureMismatch {
+        section: &'static str,
+        feature: &'static str,
+    },
+
+    #[error("[CFG007] {field} is empty (likely an unset env var)")]
+    EmptySecret { field: &'static str },
 }
 
 const DEFAULT_PATH: &str = "config.toml";
@@ -425,14 +445,82 @@ pub fn resolve_secret_file(path: &Path) -> Result<String, ConfigError> {
     Ok(value)
 }
 
-/// Verify that file-based secrets are readable. ENV-injected secrets are
-/// validated at `load()` time by the `config` crate. Called by `check-config`
-/// and at startup so misconfiguration fails fast.
+/// Verify that file-based secrets are readable AND that ENV-injected
+/// secrets are non-empty (an unset `GLUCO_HUB__…` var deserialises into
+/// `SecretString("")`, which the `config` crate cannot reject by length).
+/// Called by `check-config` and at startup so misconfiguration fails fast
+/// with a clear error code instead of a deep transport-layer 401.
 pub fn verify_secrets(cfg: &Config) -> Result<(), ConfigError> {
-    if let Some(llu) = cfg.source.llu.as_ref()
-        && let (None, Some(path)) = (llu.password.as_ref(), llu.password_file.as_deref())
+    if let Some(llu) = cfg.source.llu.as_ref() {
+        match (llu.password.as_ref(), llu.password_file.as_deref()) {
+            (None, Some(path)) => {
+                resolve_secret_file(path)?;
+            }
+            (Some(secret), None) if secret.expose_secret().is_empty() => {
+                return Err(ConfigError::EmptySecret {
+                    field: "[source.llu] password",
+                });
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(token) = cfg.http.bearer_token.as_ref()
+        && token.expose_secret().is_empty()
     {
-        resolve_secret_file(path)?;
+        return Err(ConfigError::EmptySecret {
+            field: "[http] bearer_token",
+        });
+    }
+
+    if let Some(ns) = cfg.sink.nightscout.as_ref()
+        && ns.api_secret.expose_secret().is_empty()
+    {
+        return Err(ConfigError::EmptySecret {
+            field: "[sink.nightscout] api_secret",
+        });
+    }
+
+    if let Some(mqtt) = cfg.sink.mqtt.as_ref()
+        && let Some(pw) = mqtt.password.as_ref()
+        && pw.expose_secret().is_empty()
+    {
+        return Err(ConfigError::EmptySecret {
+            field: "[sink.mqtt] password",
+        });
+    }
+
+    Ok(())
+}
+
+/// Reject TOML blocks that reference Sources/Sinks whose Cargo feature
+/// is not compiled into this binary. Without this check the operator
+/// gets silent data loss: `[sink.mqtt]` deserialises fine, validates
+/// fine, then is ignored at wiring time because `build_sinks` is
+/// `#[cfg(feature = "sink-mqtt")]`-gated. Fail loudly instead.
+pub fn verify_features(cfg: &Config) -> Result<(), ConfigError> {
+    let _ = cfg;
+
+    #[cfg(not(feature = "source-llu"))]
+    if cfg.source.llu.is_some() {
+        return Err(ConfigError::FeatureMismatch {
+            section: "[source.llu]",
+            feature: "source-llu",
+        });
+    }
+    #[cfg(not(feature = "sink-nightscout"))]
+    if cfg.sink.nightscout.is_some() {
+        return Err(ConfigError::FeatureMismatch {
+            section: "[sink.nightscout]",
+            feature: "sink-nightscout",
+        });
+    }
+    #[cfg(not(feature = "sink-mqtt"))]
+    if cfg.sink.mqtt.is_some() {
+        return Err(ConfigError::FeatureMismatch {
+            section: "[sink.mqtt]",
+            feature: "sink-mqtt",
+        });
     }
     Ok(())
 }
@@ -589,6 +677,84 @@ region = "EU"
             resolve_secret_file(&only_newline),
             Err(ConfigError::SecretFileEmpty { .. })
         ));
+    }
+
+    #[test]
+    fn verify_secrets_rejects_empty_llu_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_with_llu(dir.path(), "EU", None);
+        let mut cfg = load(Some(&path)).expect("load");
+        cfg.source.llu.as_mut().unwrap().password = Some(SecretString::from(String::new()));
+        let err = verify_secrets(&cfg).expect_err("must reject empty password");
+        assert!(
+            matches!(err, ConfigError::EmptySecret { field } if field.contains("password")),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[cfg(feature = "sink-nightscout")]
+    #[test]
+    fn verify_secrets_rejects_empty_ns_api_secret() {
+        let cfg = Config {
+            http: HttpConfig {
+                bind: "127.0.0.1:0".parse().unwrap(),
+                bearer_token: None,
+            },
+            poller: PollerConfig { interval_secs: 60 },
+            source: SourceConfig::default(),
+            sink: SinkConfig {
+                nightscout: Some(NightscoutSinkConfig {
+                    base_url: "https://ns.example".into(),
+                    api_secret: SecretString::from(String::new()),
+                    device: None,
+                    app: None,
+                }),
+                mqtt: None,
+            },
+        };
+        let err = verify_secrets(&cfg).expect_err("must reject empty api_secret");
+        assert!(
+            matches!(err, ConfigError::EmptySecret { field } if field.contains("api_secret")),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_secrets_rejects_empty_bearer_token() {
+        let cfg = Config {
+            http: HttpConfig {
+                bind: "127.0.0.1:0".parse().unwrap(),
+                bearer_token: Some(SecretString::from(String::new())),
+            },
+            poller: PollerConfig { interval_secs: 60 },
+            source: SourceConfig::default(),
+            sink: SinkConfig::default(),
+        };
+        let err = verify_secrets(&cfg).expect_err("must reject empty bearer_token");
+        assert!(
+            matches!(err, ConfigError::EmptySecret { field } if field.contains("bearer_token")),
+            "unexpected: {err:?}"
+        );
+    }
+
+    /// `verify_features` only triggers in builds that lack the feature
+    /// referenced by the TOML block. With `default = ["source-llu",
+    /// "sink-nightscout"]` and `--all-features` the function is a no-op,
+    /// so the meaningful assertion is "all-features build accepts every
+    /// configured block". Negative tests live in the `--no-default-features`
+    /// CI lane (see `.github/workflows/ci.yml`).
+    #[test]
+    fn verify_features_accepts_when_all_features_match() {
+        let cfg = Config {
+            http: HttpConfig {
+                bind: "127.0.0.1:0".parse().unwrap(),
+                bearer_token: None,
+            },
+            poller: PollerConfig { interval_secs: 60 },
+            source: SourceConfig::default(),
+            sink: SinkConfig::default(),
+        };
+        verify_features(&cfg).expect("empty config always accepted");
     }
 
     #[test]

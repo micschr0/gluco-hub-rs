@@ -61,7 +61,7 @@ ARG BUILDPLATFORM
 # Cargo.lock / Cargo.toml files change, not on source edits.
 COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --locked \
-    --features "source-llu sink-nightscout" \
+    --features "source-llu sink-nightscout sink-mqtt" \
     --recipe-path recipe.json
 
 # Copy real workspace sources and build the production binary.
@@ -74,7 +74,7 @@ COPY gluco-hub ./gluco-hub
 ARG GLUCO_HUB_GIT_SHA=unknown
 RUN GLUCO_HUB_GIT_SHA="${GLUCO_HUB_GIT_SHA}" \
     cargo build --release --locked \
-    --features "source-llu sink-nightscout" \
+    --features "source-llu sink-nightscout sink-mqtt" \
     --bin gluco-hub
 
 # ── Stage 4: runtime ───────────────────────────────────────────────────────────

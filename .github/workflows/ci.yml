@@ -102,4 +102,6 @@ jobs:
           cache: false
 
       - name: cargo check on MSRV
-        run: cargo check --all-features --locked
+        # `+1.95` overrides rust-toolchain.toml (which pins stable for
+        # local dev) so the MSRV signal stays real.
+        run: cargo +1.95 check --all-features --locked

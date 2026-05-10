@@ -64,3 +64,17 @@ tasks:
   docker:
     desc: Build container image (gluco-hub:dev)
     cmd: docker build -t gluco-hub:dev .
+
+  release:dry:
+    desc: Preview the next minor release without making changes
+    preconditions:
+      - sh: command -v cargo-release >/dev/null 2>&1
+        msg: "cargo-release not installed. Run: cargo install cargo-release"
+    cmd: cargo release minor
+
+  release:minor:
+    desc: Cut a minor release (commits, tags, pushes)
+    preconditions:
+      - sh: command -v cargo-release >/dev/null 2>&1
+        msg: "cargo-release not installed. Run: cargo install cargo-release"
+    cmd: cargo release minor --execute
