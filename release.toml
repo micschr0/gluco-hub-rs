@@ -29,11 +29,11 @@ push-remote = "origin"
 # No post-release dev bump.
 consolidate-commits = true
 
-# Local verification gate before tagging. Aborts before any commit on failure.
-pre-release-hook = ["task", "check"]
-
-# CHANGELOG rewrites are scoped to the binary crate (gluco-hub) via
-# [package.metadata.release] in gluco-hub/Cargo.toml. The single workspace
-# CHANGELOG.md lives at the repo root; the binary crate references it via
-# `file = "../CHANGELOG.md"`. The library crate (gluco-hub-core) defines no
-# replacements, so cargo-release does not try to rewrite a sibling CHANGELOG.
+# CHANGELOG rewrites and the pre-release-hook are scoped to the binary
+# crate (gluco-hub) via [package.metadata.release] in gluco-hub/Cargo.toml.
+# This avoids two issues with workspace-level config:
+#   1. cargo-release resolves replacement file paths relative to each
+#      package's manifest dir, so workspace-level replacements would try
+#      to rewrite a sibling CHANGELOG inside gluco-hub-core/.
+#   2. Hooks run once per package; scoping to one keeps the gate single-
+#      pass, and the hook can `cd` to the workspace root to find Taskfile.yml.
