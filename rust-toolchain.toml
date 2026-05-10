@@ -1,0 +1,8 @@
+# Pins the Rust toolchain for everyone working in this repo. rustup
+# auto-installs the channel and components on first `cargo` invocation.
+# Workspace MSRV is `rust-version = "1.95"` in Cargo.toml; the MSRV CI
+# job overrides via `cargo +1.95 check`.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
