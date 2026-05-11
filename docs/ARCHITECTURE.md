@@ -1,14 +1,14 @@
 # gluco-hub architecture
 
-A Rust workspace that polls LibreLink Up, caches the latest readings in
-memory, exposes them over HTTP, and pushes them to Nightscout. Two
-crates:
+This Rust workspace polls LibreLink Up, caches the latest readings in
+memory, exposes them over HTTP, and pushes them to Nightscout. It contains
+two crates:
 
 - **`gluco-hub-core`** — pure domain. `Reading`, newtype IDs
   (`PatientId`, `SourceId`, `GlucoseMgDl`), the `Source` and `Sink`
-  async traits, the `ReadingCache`, and the `CoreError` type. No
-  `reqwest`, no `axum`, no `tokio` runtime — just data + traits.
-- **`gluco-hub`** — the binary. Wires concrete `Source` /
+  async traits, the `ReadingCache`, and the `CoreError` type. Contains
+  only data and traits — no `reqwest`, `axum`, or `tokio` runtime.
+- **`gluco-hub`** — the binary; wires concrete `Source` /
   `Sink` impls, the axum HTTP server, the metrics exporter, the
   config loader, the poll loop, and every CLI subcommand.
 
@@ -79,10 +79,10 @@ sequenceDiagram
 gauge set to `1` on first scrape. Joining other metrics on this
 label-set lets dashboards group by build — useful for "which build
 is leaking?" post-mortems and for sanity-checking that a deployment
-actually rolled. `version` is `CARGO_PKG_VERSION`, `git_sha` is
+rolled. `version` is `CARGO_PKG_VERSION`, `git_sha` is
 `option_env!("GLUCO_HUB_GIT_SHA")` (set by CI:
 `GLUCO_HUB_GIT_SHA=$(git rev-parse HEAD) cargo build`; falls back
-to `"unknown"` for ad-hoc dev builds), `features` is the alphabetical
+to `"unknown"` for ad-hoc dev builds), `features` is the alphabetical,
 comma-joined list of enabled Cargo features.
 
 ## HTTP routing
@@ -167,7 +167,7 @@ exit-code contracts are also keyed off these prefixes via
 `main.rs` apply the feature gates at runtime. `verify_features(&Config)`
 runs at startup (and on `check-config`) and rejects with `[CFG006]` if
 the TOML references a Source/Sink whose feature is not compiled in —
-silent data loss is a worse failure mode than a clear startup error.
+a clear startup error beats silent data loss.
 
 ### Two layers, one decision per Source/Sink
 
@@ -191,17 +191,17 @@ Truth table for a single Sink (Source is symmetric):
 | off           | absent     | sink not in binary; no-op |
 | off           | present    | `[CFG006]` at startup — operator intent vs. build reality mismatch |
 
-The published GHCR image has every stable feature on, so for most
-operators only the runtime layer matters: drop a `[sink.…]` block from
-`config.toml` to disable that sink. The compile-time layer exists for
-folks who build their own image and want a smaller binary or a
+The published GHCR image enables every stable feature, so only the
+runtime layer matters for most operators: drop a `[sink.…]` block from
+`config.toml` to disable that sink. The compile-time layer serves
+operators who build their own image and want a smaller binary or
 tighter audit surface.
 
 ## Configuration reference
 
-All keys live in TOML; any value can be overridden at runtime via
-`GLUCO_HUB__SECTION__KEY=…` (double underscore as separator).
-Secrets must be supplied via environment variables — never embedded in TOML.
+All keys live in TOML; `GLUCO_HUB__SECTION__KEY=…` overrides any value at
+runtime (double underscore as separator). Supply secrets through
+environment variables — never embed them in TOML.
 
 | TOML path                           | Type     | Required | Validation | Notes |
 | ----------------------------------- | -------- | -------- | ---------- | ----- |

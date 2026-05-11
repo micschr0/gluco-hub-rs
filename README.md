@@ -13,16 +13,16 @@
 </div>
 
 > [!WARNING]
-> **Beta / WIP** — pre-1.0; APIs, config schema, and MQTT wire format may break between releases without notice.
+> **Beta / WIP** — pre-1.0; APIs, config schema, and MQTT wire format may break between releases at any time.
 
 ---
 
-gluco-hub-rs is a small self-hosted relay between your CGM like LibreLink Up and the rest of your stack: a local HTTP API by default, optional Nightscout and MQTT sinks, modular by design.
+gluco-hub-rs is a small, self-hosted relay between a CGM (currently LibreLink Up) and the rest of your stack. It exposes a local HTTP API by default and ships optional Nightscout and MQTT sinks.
 
 > [!NOTE]
 > **For:** technical LibreLink Up users moving CGM data between systems.
 > **Not for:** therapy, dosing, diagnosis, or replacing approved tools — see [DISCLAIMER.md](./DISCLAIMER.md).
-> **Vibe:** picking up the Rust ecosystem and agentic coding side by side — the project is the practice ground for both.
+> **Vibe:** a practice ground for the Rust ecosystem and agentic coding.
 
 ```text
   SOURCES              CORE             SINKS              CONSUMERS
@@ -37,7 +37,7 @@ gluco-hub-rs is a small self-hosted relay between your CGM like LibreLink Up and
 ## Features
 
 - **Multiple destinations** — Nightscout, MQTT for smart displays (smart pixel clocks, Home Assistant, …), HTTP API
-- **Lightweight** — self-contained Rust binary, small footprint. runs on Raspberry Pi, VPS, or home server
+- **Lightweight** — self-contained Rust binary with a small footprint; runs on Raspberry Pi, VPS, or home server
 - **Modular design** — add sources or sinks with a single file plus a feature flag ([how-to](./docs/EXTENDING.md))
 - **Operable** — Prometheus metrics, structured JSON logs, graceful shutdown on `SIGINT`/`SIGTERM`
 
@@ -57,7 +57,7 @@ A [`Taskfile.yml`](./Taskfile.yml) wraps all common commands — run `task` to l
 
 ### 1. Smoke test — no credentials needed
 
-Starts the service with an in-memory mock source to verify the API works before touching any credentials:
+Before you touch any credentials, this starts the service with an in-memory mock source to verify the API:
 
 ```bash
 bash scripts/smoke.sh
@@ -88,7 +88,7 @@ bash scripts/ns-dryrun.sh
 
 ### 4. Run for real
 
-Two flavours — pick whichever fits. Both produce the same running service.
+Two flavours produce the same running service — pick whichever fits.
 
 **Env-only (recommended, zero files):**
 
@@ -128,7 +128,7 @@ cargo build --release --features "source-llu sink-nightscout sink-mqtt"
 
 ## Configuration
 
-`config.toml` is **optional** — everything can be configured via `GLUCO_HUB__*` environment variables alone (useful for containers / Compose / Kubernetes). When a `config.toml` is present, env vars override its values key by key. Secrets are never stored in the TOML file regardless.
+`config.toml` is **optional** — `GLUCO_HUB__*` environment variables alone can configure everything (useful for containers / Compose / Kubernetes). When a `config.toml` is present, env vars override its values key by key. Keep secrets in env vars; the TOML file holds none.
 
 For a file-based setup, copy `config.example.toml` and uncomment the sections you need:
 
@@ -175,7 +175,7 @@ GLUCO_HUB__HTTP__BIND=0.0.0.0:9090 GLUCO_HUB__POLLER__INTERVAL_SECS=30 ./gluco-h
 | `GET /metrics`        | public          | Prometheus text exposition (v0.0.4)        |
 | `GET /glucose/latest` | optional Bearer | Latest cached reading, or `503` + `API001` |
 
-`/glucose/*` becomes Bearer-protected only when `GLUCO_HUB__HTTP__BEARER_TOKEN` is set. Every response also carries the header `X-Disclaimer: not-for-medical-use`. Example reading response:
+Setting `GLUCO_HUB__HTTP__BEARER_TOKEN` puts `/glucose/*` behind Bearer auth. Every response also carries the header `X-Disclaimer: not-for-medical-use`. Example reading response:
 
 ```json
 {
@@ -198,7 +198,7 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 | `<prefix>/_health` |   Yes    | `{"online":true,"v":1}` · LWT: `{"online":false,"v":1}`                                          |
 | `<prefix>/_stats`  |   Yes    | `{"v":1,"uptime_secs":…,"publishes_total":…,"connects_total":…, …}` — refreshed every `stats_interval_secs` |
 
-`<prefix>` is the `topic_prefix` value from `[sink.mqtt]`. The `patient` field is omitted when `include_patient_id = false` (privacy on shared brokers). The schema is versioned via the `v` field — see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full payload contracts. Home Assistant auto-discovery (MQTT) is planned for V3.
+`<prefix>` is the `topic_prefix` value from `[sink.mqtt]`. Set `include_patient_id = false` to drop the `patient` field on shared brokers. The schema is versioned via the `v` field — see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full payload contracts. Home Assistant auto-discovery (MQTT) is planned for V3.
 
 ## Container
 
@@ -217,7 +217,7 @@ Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR on every 
 | `:stable`             | rolls forward, finals only             | semantic alias of `:latest`              | "always stable" convenience    |
 
 > [!WARNING]
-> This project is in **beta**. Every release is a dated snapshot — breaking changes can land on any release while config schema, HTTP API, and MQTT wire format stabilise. For predictable upgrades, pin to an immutable tag (`:YYYY.MMDD.PATCH` or `:sha-<short>`). `:latest` / `:stable` track the most recent final release but their underlying digests move.
+> This project is in **beta**. Every release is a dated snapshot — breaking changes can land on any release while the config schema, HTTP API, and MQTT wire format stabilise. For predictable upgrades, pin to an immutable tag (`:YYYY.MMDD.PATCH` or `:sha-<short>`). `:latest` / `:stable` track the most recent final release but their underlying digests move.
 
 No config file required — everything via env vars:
 
@@ -243,7 +243,7 @@ docker compose up -d
 docker compose logs -f gluco-hub
 ```
 
-The Compose file reads `.env` automatically and never touches a `config.toml`. If you prefer a file-based config (e.g. a checked-in deployment repo), uncomment the `volumes:` / `command:` block at the bottom of `compose.example.yml` and bind-mount `config.toml` read-only.
+The Compose file reads `.env` automatically and ignores `config.toml`. If you prefer a file-based config (e.g. a checked-in deployment repo), uncomment the `volumes:` / `command:` block at the bottom of `compose.example.yml` and bind-mount `config.toml` read-only.
 
 ### Verifying the image
 
@@ -280,4 +280,4 @@ Found a bug or have a question? [Open an issue](https://github.com/micschr0/gluc
 
 ## Contributing
 
-Bug reports and feature requests are welcome via [GitHub issues](https://github.com/micschr0/gluco-hub-rs/issues). Before opening a PR, read [DISCLAIMER.md](./DISCLAIMER.md) to ensure the change fits the project's intent. For adding new sources or sinks, see [docs/EXTENDING.md](./docs/EXTENDING.md). For security-sensitive reports, see [SECURITY.md](./SECURITY.md).
+Please file bug reports and feature requests via [GitHub issues](https://github.com/micschr0/gluco-hub-rs/issues). Before opening a PR, read [DISCLAIMER.md](./DISCLAIMER.md) to ensure the change fits the project's intent. For adding new sources or sinks, see [docs/EXTENDING.md](./docs/EXTENDING.md). For security-sensitive reports, see [SECURITY.md](./SECURITY.md).
