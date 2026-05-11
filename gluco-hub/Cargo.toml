@@ -65,7 +65,7 @@ tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
-http-body-util = "0.1"
+http-body-util = "=0.1.3"
 
 # `cargo release` rewrites the workspace CHANGELOG.md from this crate
 # (the binary). The library crate inherits no replacements, so the

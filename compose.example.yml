@@ -12,7 +12,7 @@
 
 services:
   gluco-hub:
-    image: ghcr.io/micschr0/gluco-hub:latest
+    image: ghcr.io/micschr0/gluco-hub:latest@sha256:655a1573477107ac7b096bd80e54120a64a0ca21aff133a7c5dcb5f80763ab6b
     # build:
     #   context: .
     #   args:
