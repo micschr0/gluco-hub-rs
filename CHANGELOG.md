@@ -12,6 +12,8 @@ See [SCOPE.md](./SCOPE.md) for the scope roadmap.
 
 ## [Unreleased]
 
+## [2026.511.0] - 2026-05-11
+
 ### Changed
 
 - **Default Cargo features** now include `sink-nightscout` alongside `source-llu`, so `cargo run` and `cargo build` produce a binary that actually pushes data instead of silently dropping every reading.
@@ -56,5 +58,6 @@ Initial open-source release.
 
 - Source fetch and HTTP clients now carry explicit connect and read timeouts — previously a hung LLU API could block the poll loop indefinitely
 
-[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.511.0...HEAD
+[2026.511.0]: https://github.com/micschr0/gluco-hub-rs/compare/v0.1.0...v2026.511.0
 [0.1.0]: https://github.com/micschr0/gluco-hub-rs/releases/tag/v0.1.0
