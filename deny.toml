@@ -1,0 +1,91 @@
+# gluco-hub supply-chain policy.
+# CLAUDE.md mandates `cargo deny check` for every new dep — this file
+# encodes the policy so the gate is reproducible across machines and CI.
+
+[graph]
+# Lint every feature combination, not just the default-features build.
+all-features = true
+targets = []
+
+[advisories]
+version = 2
+yanked = "deny"
+# Add per-CVE waivers here, NEVER as broad `ignore = ["*"]`.
+#
+# All current waivers chain back to a single root: `rumqttc 0.25.1`
+# pins old transitive `tokio-rustls 0.26` → `rustls 0.23` →
+# `rustls-webpki 0.102.x` + `rustls-pemfile 2.x`. Both have been
+# superseded upstream (rustls-webpki 0.103.13, pemfile parsing moved
+# into rustls-pki-types ≥ 1.9), but rumqttc has not yet released a
+# bump. gluco-hub is an outbound MQTT v5 client connecting to a
+# single, operator-controlled broker; it never parses CRLs and never
+# uses URI-typed name constraints, so each of the four issues below
+# is unreachable in this deployment. Revisit on every rumqttc release.
+# TODO(rumqttc): close each waiver below after bumping rumqttc to a release
+# that pulls in rustls ≥ 0.24 / rustls-webpki ≥ 0.103. Run `cargo deny check`
+# to confirm before removing an entry.
+ignore = [
+    # rustls-pemfile is unmaintained but the code is identical to the
+    # PEM parser in rustls-pki-types. We only feed it platform-native
+    # CA bytes from `rustls-native-certs` — no operator-supplied PEM.
+    { id = "RUSTSEC-2025-0134", reason = "thin wrapper around live rustls-pki-types code; only platform-CA input" },
+    # CRL distributionPoint handling: only kicks in when a CRL is
+    # consulted. `TlsConfiguration::default()` (the only path we use)
+    # builds a rustls ClientConfig without revocation checking.
+    { id = "RUSTSEC-2026-0049", reason = "gluco-hub does not consult CRLs; unreachable" },
+    # URI-typed name constraints. Our broker certs use DNS names; the
+    # rustls API we touch does not expose URI-name assertions.
+    { id = "RUSTSEC-2026-0098", reason = "gluco-hub does not use URI name constraints; unreachable" },
+    # Wildcard handling inside DNS-name name-constraint subtrees.
+    # Reachable only after signature verification of a misissued cert;
+    # gluco-hub talks to one operator-pinned broker, so no path.
+    { id = "RUSTSEC-2026-0099", reason = "outbound MQTT, single operator-controlled broker; not reachable" },
+    # Panic in BorrowedCertRevocationList::from_der parsing — same
+    # root as 2026-0049, gated on CRL parsing we never invoke.
+    { id = "RUSTSEC-2026-0104", reason = "gluco-hub does not parse CRLs; unreachable" },
+]
+
+[licenses]
+version = 2
+# Conservative permissive set. Anything outside this list fails the
+# `licenses` check; an exception requires editing this file with a
+# comment + reviewer sign-off.
+allow = [
+    # Workspace own license — gluco-hub-rs is AGPL-3.0-or-later.
+    "AGPL-3.0-or-later",
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    # Used by `webpki-roots`, which ships Mozilla's CA trust list. The
+    # data itself is CDLA-Permissive-2.0; the Rust crate code is
+    # MIT/Apache-2.0. Mozilla considers this permissive-equivalent.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace path-deps (`{ path = "../foo" }`) have no version and look
+# like wildcards to cargo-deny — but they're internal, not pulled from
+# crates.io. This flag allows them while still rejecting external
+# wildcards.
+allow-wildcard-paths = true
+# Per CLAUDE.md: rustls only, no OpenSSL anywhere in the tree.
+# Adding any of these to a Cargo.toml fails this check loudly.
+deny = [
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "native-tls" },
+    { name = "git2" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

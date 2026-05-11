@@ -1,0 +1,54 @@
+# gluco-hub — Docker Compose example
+
+services:
+  gluco-hub:
+    container_name: gluco-hub
+    image: ghcr.io/micschr0/gluco-hub:latest
+    # build:
+    #   context: .
+    #   args:
+    #     GLUCO_HUB_GIT_SHA: "${GLUCO_HUB_GIT_SHA:-unknown}"
+    #     BUILD_DATE: "${BUILD_DATE:-}"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${HOST_PORT:-8080}:${CONTAINER_PORT:-8080}"
+    environment:
+      GLUCO_HUB__HTTP__BIND:            "${HTTP_BIND:-0.0.0.0:8080}"
+      GLUCO_HUB__POLLER__INTERVAL_SECS: "${POLLER_INTERVAL_SECS:-60}"
+
+      GLUCO_HUB__SOURCE__LLU__EMAIL:    "${LLU_EMAIL:?set LLU_EMAIL in .env}"
+      GLUCO_HUB__SOURCE__LLU__PASSWORD: "${LLU_PASSWORD:?set LLU_PASSWORD in .env}"
+      GLUCO_HUB__SOURCE__LLU__REGION:   "${LLU_REGION:-DE}"
+      # GLUCO_HUB__SOURCE__LLU__PATIENT_ID: "<uuid>"
+      # GLUCO_HUB__SOURCE__LLU__TIMEZONE:   "Europe/Berlin"
+      # GLUCO_HUB__SOURCE__LLU__VERSION:    "4.17.0"
+
+      # GLUCO_HUB__SINK__NIGHTSCOUT__BASE_URL:   "${NS_BASE_URL}"
+      # GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET: "${NS_API_SECRET}"
+      # GLUCO_HUB__SINK__NIGHTSCOUT__DEVICE:     "gluco-hub"
+
+      # GLUCO_HUB__SINK__MQTT__BROKER_HOST:  "${MQTT_HOST}"
+      # GLUCO_HUB__SINK__MQTT__BROKER_PORT:  "8883"
+      # GLUCO_HUB__SINK__MQTT__CLIENT_ID:    "gluco-hub-1"
+      # GLUCO_HUB__SINK__MQTT__TOPIC_PREFIX: "gluco-hub/gluco-hub-1"
+      # GLUCO_HUB__SINK__MQTT__USERNAME:     "${MQTT_USER}"
+      # GLUCO_HUB__SINK__MQTT__PASSWORD:     "${MQTT_PASSWORD}"
+      # GLUCO_HUB__SINK__MQTT__TLS:          "true"
+
+      # GLUCO_HUB__HTTP__BEARER_TOKEN: "${API_BEARER_TOKEN}"
+
+      RUST_LOG: "gluco_hub=info"
+      # GLUCO_HUB_LOG_PRETTY: "1"
+
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+
+    # volumes:
+    #   - ./config.toml:/etc/gluco-hub/config.toml:ro
+    # command: ["run", "-c", "/etc/gluco-hub/config.toml"]

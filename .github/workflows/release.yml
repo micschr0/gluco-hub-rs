@@ -1,0 +1,225 @@
+name: Release
+
+# Builds and publishes a multi-arch container image to GHCR.
+#
+# Triggers and resulting tags (CalVer-on-SemVer scheme, YYYY.0M0D.PATCH):
+#   - push to main         → :main, :sha-<short>
+#   - pre-release tag      → :X.Y.Z-rc.N, :testing, :sha-<short>
+#       (e.g. v2026.510.0-rc.1; :latest and floating-version tags stay
+#        on the prior final release)
+#   - final tag (v* w/o -) → :X.Y.Z, :X.Y, :X, :latest, :stable, :sha-<short>
+#   - pull_request         → build-only verification on both arches (no push)
+#   - workflow_dispatch    → manual republish
+#
+# Architecture: separate native-runner jobs per platform (amd64 on
+# ubuntu-latest, arm64 on ubuntu-24.04-arm) push by digest, then a
+# merge job assembles the multi-arch manifest, signs it keyless with
+# cosign, and attaches a SLSA build-provenance attestation. This is
+# materially faster than QEMU emulation for a Rust workload.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Don't cancel a release in flight if a newer commit lands — the
+# in-flight build might be the one a user is about to pull. PRs are
+# safe to cancel on rebase.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/gluco-hub
+
+jobs:
+  build:
+    name: build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write       # push image layers by digest (no-op on PRs)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Compute env
+        run: |
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          # platform "linux/arm64" → "linux-arm64", used as artifact suffix
+          echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+        env:
+          PLATFORM: ${{ matrix.platform }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only labels here — tags are computed in the merge job and applied
+      # via `buildx imagetools create -t <tag> ...`. Per-arch builds push
+      # by digest and have no human-readable tag of their own.
+      - name: Compute image labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+
+      - name: Build & push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GLUCO_HUB_GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+          # Per-platform cache scope so the two matrix jobs don't evict
+          # each other.
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+          # PRs build but don't push. Non-PR runs push by digest only —
+          # the merge job assembles the multi-arch manifest with proper
+          # tags. `name-canonical=true` ensures the digest is recorded
+          # against the canonical image name.
+          outputs: |
+            ${{ github.event_name == 'pull_request'
+              && 'type=cacheonly'
+              || format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY, env.IMAGE_NAME) }}
+          # Provenance default for public repos is mode=max since
+          # build-push-action v6 — leaving implicit. SBOM must be opted
+          # into explicitly.
+          sbom: true
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: merge & publish manifest
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write       # push manifest list to GHCR
+      id-token: write       # cosign keyless OIDC + attestation signing
+      attestations: write   # GitHub Artifact Attestations
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Three-tier channel model:
+      #   :main                      — every main push (dev/nightly)
+      #   :testing                   — pre-release tags (v*-rc/alpha/beta)
+      #   :latest, :stable, floating — final tags only (v2026.510.0, no suffix)
+      # `latest=false` disables auto-latest so :latest is set exclusively by
+      # the explicit suffix-filtered raw rule below — no RC ever moves
+      # :latest, :stable, :2026, or :2026.510.
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=main,enable={{is_default_branch}}
+            type=raw,value=testing,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref, '-') }}
+            type=semver,pattern={{major}},enable=${{ !contains(github.ref, '-') }}
+            type=sha,format=short
+
+      - name: Create manifest list & push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+
+      - name: Resolve manifest digest
+        id: manifest
+        run: |
+          digest=$(docker buildx imagetools inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      # Sign the manifest-list digest. One signature covers every tag
+      # pointing at the same digest — re-tagging doesn't invalidate it.
+      - name: Sign image (keyless)
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: |
+          cosign sign --yes \
+            -a "repo=${{ github.repository }}" \
+            -a "workflow=${{ github.workflow }}" \
+            -a "ref=${{ github.sha }}" \
+            "${IMAGE}@${DIGEST}"
+
+      # Pushes a Sigstore-signed SLSA provenance bundle to the registry,
+      # discoverable in the GitHub UI and verifiable via:
+      #   gh attestation verify oci://ghcr.io/<owner>/gluco-hub:<tag> \
+      #     --owner <owner>
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true

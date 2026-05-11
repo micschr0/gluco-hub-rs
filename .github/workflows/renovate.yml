@@ -1,0 +1,22 @@
+name: Renovate
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: renovatebot/github-action@v46.1.13
+        with:
+          configurationFile: renovate.json
+        env:
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          GIT_AUTHOR_NAME: micschro
+          GIT_AUTHOR_EMAIL: micschro@mailbox.org
+          GIT_COMMITTER_NAME: micschro
+          GIT_COMMITTER_EMAIL: micschro@mailbox.org

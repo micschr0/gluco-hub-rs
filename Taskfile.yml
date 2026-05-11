@@ -1,0 +1,96 @@
+version: "3"
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build (debug)
+    cmd: cargo build
+
+  build-release:
+    desc: Build (release)
+    cmd: cargo build --release
+
+  build-all:
+    desc: Build with all features (llu + nightscout + mqtt)
+    cmd: cargo build --features "source-llu sink-nightscout sink-mqtt"
+
+  test:
+    desc: Run tests
+    cmd: cargo test
+
+  test-all:
+    desc: Run tests with all features
+    cmd: cargo test --all-features
+
+  test-verbose:
+    desc: Run tests with output
+    cmd: cargo test --all-features -- --nocapture
+
+  lint:
+    desc: Run clippy (warnings as errors)
+    cmd: cargo clippy --all-targets -- -D warnings
+
+  fmt:
+    desc: Format code
+    cmd: cargo fmt --all
+
+  fmt-check:
+    desc: Check formatting without applying
+    cmd: cargo fmt --all -- --check
+
+  audit:
+    desc: Check dependencies (cargo-deny)
+    cmd: cargo deny check
+
+  check:
+    desc: fmt + lint + test
+    cmds:
+      - task: fmt
+      - task: lint
+      - task: test-all
+
+  run:
+    desc: Run with default config
+    cmd: cargo run -- run
+
+  run-config:
+    desc: Run with config.toml
+    cmd: cargo run -- run -c config.toml
+
+  docker:
+    desc: Build container image (gluco-hub:dev)
+    cmd: docker build -t gluco-hub:dev .
+
+  # CalVer release workflow (YYYY.0M0D.PATCH, e.g. 2026.510.0 = 2026-05-10).
+  # Version is derived from UTC date; PATCH bumps cover same-day re-releases.
+
+  release:dry:
+    desc: "Preview today's CalVer release (dry-run, no tag/push)"
+    vars:
+      VERSION:
+        sh: date -u +%Y.%-m%d.0
+    preconditions:
+      - sh: command -v cargo-release >/dev/null 2>&1
+        msg: "cargo-release not installed. Run: cargo install cargo-release"
+    cmd: cargo release "{{.VERSION}}"
+
+  release:
+    desc: "Cut today's CalVer release (UTC date → YYYY.0M0D.0, commits + tags + pushes)"
+    vars:
+      VERSION:
+        sh: date -u +%Y.%-m%d.0
+    preconditions:
+      - sh: command -v cargo-release >/dev/null 2>&1
+        msg: "cargo-release not installed. Run: cargo install cargo-release"
+    cmd: cargo release "{{.VERSION}}" --execute --no-confirm
+
+  release:patch:
+    desc: "Same-day hotfix (bumps PATCH, e.g. 2026.510.0 → 2026.510.1)"
+    preconditions:
+      - sh: command -v cargo-release >/dev/null 2>&1
+        msg: "cargo-release not installed. Run: cargo install cargo-release"
+    cmd: cargo release patch --execute --no-confirm
