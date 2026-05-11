@@ -4,11 +4,11 @@ Rust service: polls LibreLink Up, exposes glucose via HTTP, pushes to Nightscout
 
 ## Stack
 
-Rust stable, edition 2024. Tokio + axum. reqwest with rustls (no OpenSSL). thiserror in libs, anyhow at binary boundary. tracing + tracing-subscriber (JSON logs). config + serde (TOML + ENV overrides). secrecy for secret strings. validator for boundary checks. clap for CLI.
+Rust stable, edition 2024. Tokio + axum. reqwest with rustls (no OpenSSL). thiserror in libraries, anyhow at the binary boundary. tracing + tracing-subscriber (JSON logs). config + serde (TOML + ENV overrides). secrecy for secret strings. validator for boundary checks. clap for CLI.
 
 Always latest minor versions via Renovate. No exact pins outside `Cargo.lock`.
 
-MSRV pinned to Rust 1.95 (see `Cargo.toml` workspace `rust-version`). Optional `mock-source` feature swaps LLU for an in-memory fixture for offline testing.
+MSRV pinned to Rust 1.95 (see `Cargo.toml` workspace `rust-version`). Optional `mock-source` feature replaces LLU with an in-memory fixture for offline tests.
 
 ## Architecture
 
@@ -19,11 +19,11 @@ Workspace, two crates:
 
 Flow: LibreLink Up → Source poller → in-memory reading cache → fan-out to Nightscout sink and HTTP API.
 
-Trait-based design — adding sources or sinks is a new file plus a Cargo feature, not a refactor. V1 shipped LLU source + Nightscout sink; V2 added MQTT v5. See Roadmap below for what's next.
+Trait-based design — adding a source or sink means one new file and a Cargo feature. V1 shipped LLU source + Nightscout sink; V2 added MQTT v5. See Roadmap below for what's next.
 
 ## Commands
 
-Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task build-all`, `task lint`, `task test-all`, `task check`). Raw cargo commands below for reference:
+Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task build-all`, `task lint`, `task test-all`, `task check`). Raw cargo commands:
 
 - Build: `cargo build` / `cargo build --release`
 - Build with all sinks: `cargo build --features "source-llu sink-nightscout sink-mqtt"`
@@ -48,7 +48,7 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 
 **Secrets**: Wrap in `SecretString` from `secrecy` crate. Secrets are injected via `GLUCO_HUB__<SECTION>__<KEY>` env vars (e.g. `GLUCO_HUB__SOURCE__LLU__PASSWORD=secret`) or via `password_file`. Never embed secret values in TOML.
 
-**Config ENV overrides**: Any TOML key can be overridden at runtime with `GLUCO_HUB__<SECTION>__<KEY>` (double-underscore delimited), e.g. `GLUCO_HUB__HTTP__BIND=0.0.0.0:9090`. Useful in containers where mounting a config file is inconvenient.
+**Config ENV overrides**: Any TOML key can be overridden at runtime with `GLUCO_HUB__<SECTION>__<KEY>` (double-underscore delimited), e.g. `GLUCO_HUB__HTTP__BIND=0.0.0.0:9090`. Useful in containers without mounted config files.
 
 **Async**: `Arc<RwLock<...>>` for read-heavy state (cache), `Arc<Mutex<...>>` for write-heavy. No blocking calls inside async functions.
 
@@ -90,7 +90,7 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 - Test error paths explicitly, not just happy paths.
 - Run `cargo clippy --all-targets -- -D warnings` before finishing any task.
 - New `Source` or `Sink`: own module plus Cargo feature, register in binary wiring.
-- Verify external-API claims with the latest official docs — APIs (LibreLink Up, Nightscout v3) evolve.
+- Verify external-API claims with the latest official docs — LibreLink Up and Nightscout v3 change without notice.
 
 ## Releasing & Branching
 
@@ -99,9 +99,10 @@ deployable. Feature work happens on short-lived branches with Conventional-
 Commits prefixes — `feat/<topic>`, `fix/<topic>`, `chore/<topic>`,
 `docs/<topic>` — and lands via PR + squash-merge.
 
-**CHANGELOG**: every PR that changes user-visible behaviour adds a line under
-`## [Unreleased]` in `CHANGELOG.md` (`### Added` / `### Changed` / `### Fixed` /
-`### Removed`). `cargo release` promotes the block to a dated header on tag.
+**CHANGELOG**: every PR that changes user-visible behaviour MUST add a line
+under `## [Unreleased]` in `CHANGELOG.md` (`### Added` / `### Changed` /
+`### Fixed` / `### Removed`). `cargo release` promotes the block to a dated
+header on tag.
 
 **Releasing**: managed by `cargo release` (config in `release.toml`). Never bump
 `Cargo.toml` version manually — that drifts from the tag and the CHANGELOG.
@@ -112,14 +113,14 @@ cargo release minor                    # dry-run, shows the diff
 cargo release minor --execute          # bump + commit + tag + push
 ```
 
-The push of the `vX.Y.Z` tag triggers `release.yml`, which publishes the
+Pushing the `vX.Y.Z` tag triggers `release.yml`, which publishes the
 multi-arch container to GHCR. `task release:dry` and `task release:minor`
 wrap the canonical commands.
 
 **Versioning**: `minor` for normal releases, `patch` for bugfix-only,
-`X.Y.Z-rc.N` only when a release needs pre-validation. No `-alpha`/`-beta` —
-project Beta status lives in `SCOPE.md`. `1.0.0` will mark the first API-
-stability commitment.
+`X.Y.Z-rc.N` only for pre-validation releases. No `-alpha`/`-beta`; project
+Beta status lives in `SCOPE.md`. `1.0.0` will mark the first API-stability
+commitment.
 
 **Image channels** are documented in `README.md#container`. Default dev tag
 is `:main`; `:latest` follows highest final release.

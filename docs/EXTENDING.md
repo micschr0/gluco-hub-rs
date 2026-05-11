@@ -1,6 +1,6 @@
 # Extending gluco-hub
 
-Adding a new **source** (where readings come from) or **sink** (where readings go) is designed to be a single-file change plus a Cargo feature flag — never a refactor.
+Adding a new **source** (where readings come from) or **sink** (where readings go) takes one new file plus a Cargo feature flag — never a refactor.
 
 ## How it works
 
@@ -22,11 +22,11 @@ pub trait Sink: Send + Sync + 'static {
 }
 ```
 
-The poller fetches from one `Source`, caches the latest reading, and fans it out to every configured `Sink` in parallel. Failures in one sink never affect the others.
+The poller fetches from one `Source`, caches the latest reading, and fans it out to every configured `Sink` in parallel. Each sink fails independently; the others keep running.
 
 ## Adding a new sink
 
-A complete sink is roughly five steps. Example: a sink that POSTs readings to a custom webhook.
+Building a complete sink takes five steps. The example below adds a sink that POSTs readings to a custom webhook.
 
 ### 1. Create the module
 
@@ -92,11 +92,11 @@ if let Some(cfg) = cfg.sink.webhook.as_ref() {
 }
 ```
 
-Add the matching `[sink.webhook]` section to `Config` in `gluco-hub/src/config.rs` and you're done. Build with `--features sink-webhook` and configure it via TOML or `GLUCO_HUB__SINK__WEBHOOK__URL`.
+Add the matching `[sink.webhook]` section to `Config` in `gluco-hub/src/config.rs`. Build with `--features sink-webhook` and configure it via TOML or `GLUCO_HUB__SINK__WEBHOOK__URL`.
 
 ## Adding a new source
 
-Same pattern, mirrored. Example: a source that reads from a local CGM file.
+Sources follow the same pattern. The example below adds a source that reads from a local CGM file.
 
 ### 1. Implement the trait
 
@@ -140,11 +140,11 @@ pub mod file;
 
 ### 3. Wire it into the binary
 
-In `main.rs`, the source-selection code picks one source per run based on `[source.*]` config — add a branch for your new variant.
+Add a branch for your variant to the source-selection code in `main.rs`, which picks one source per run based on `[source.*]` config.
 
 ## Testing
 
-Use the in-memory `MockSource` in `gluco-hub-core::mock` to drive tests without external services. For sinks, use `wiremock` to mock the HTTP target. See `gluco-hub/src/e2e_tests.rs` for end-to-end examples.
+For sources, use the in-memory `MockSource` in `gluco-hub-core::mock` to drive tests without external services. For sinks, use `wiremock` to mock the HTTP target. See `gluco-hub/src/e2e_tests.rs` for end-to-end examples.
 
 ```rust
 #[tokio::test]
@@ -164,7 +164,7 @@ async fn webhook_sink_posts_readings() {
 
 - **Errors**: use `CoreError::Sink` / `CoreError::Source` with a stable error code prefix (`SNK*` / `SRC*`).
 - **Logs**: emit `tracing` events with structured fields — never log secrets.
-- **Idempotency**: `push()` may be retried; deduplicate on the receiving side or via local state.
+- **Idempotency**: the poller may retry `push()`; deduplicate on the receiving side or via local state.
 - **Validation**: validate config at startup via `validator`, not at push time.
 - **No new dependencies** without `cargo deny check` passing.
 

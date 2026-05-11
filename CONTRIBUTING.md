@@ -2,13 +2,13 @@
 
 ## Before you open a PR
 
-Read [DISCLAIMER.md](./DISCLAIMER.md) first. PRs that add clinical features, hosted services, or medical decision logic will be declined regardless of code quality — those uses are explicitly out of scope.
+Read [DISCLAIMER.md](./DISCLAIMER.md) first. We decline PRs that add clinical features, hosted services, or medical decision logic — those uses are out of scope.
 
-For security-sensitive reports (credential leaks, auth bypass), see [SECURITY.md](./SECURITY.md) instead of opening a public issue.
+For security-sensitive reports (credential leaks, auth bypass), use [SECURITY.md](./SECURITY.md); do not open a public issue.
 
 ## Development setup
 
-Rust ≥ 1.95 (edition 2024) and Cargo are the only hard requirements.
+You need only Rust ≥ 1.95 (edition 2024) and Cargo.
 
 ```bash
 git clone https://github.com/micschr0/gluco-hub-rs.git
@@ -16,7 +16,7 @@ cd gluco-hub-rs
 cargo build --all-features
 ```
 
-Optional: [go-task](https://taskfile.dev) — run `task` to list all shortcuts.
+Optional: [go-task](https://taskfile.dev) — run `task` to list the shortcuts.
 
 ## Smoke-test before submitting
 
@@ -26,7 +26,7 @@ No LibreLink Up credentials needed:
 bash scripts/smoke.sh
 ```
 
-This starts the binary with a mock source, hits all three endpoints, verifies the 503-on-empty-cache path, and checks graceful shutdown.
+It starts the binary with a mock source, hits all three endpoints, verifies the 503-on-empty-cache path, and confirms graceful shutdown.
 
 ## Pre-PR checklist
 
@@ -38,7 +38,7 @@ cargo deny check                                    # supply-chain gate
 bash scripts/smoke.sh                               # end-to-end binary test
 ```
 
-All five must pass. CI will run the same checks automatically once installed.
+All five must pass; CI runs the same checks on every PR.
 
 ## Commit style
 

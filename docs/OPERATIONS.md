@@ -17,7 +17,7 @@ gluco-hub [-c <config>] <subcommand>
 | `dryrun`       | `source-llu`      | One-shot LLU probe; prints JSON summary, no server.       |
 | `ns-dryrun`    | `sink-nightscout` | One-shot Nightscout read-only probe; never POSTs.         |
 
-`dryrun` and `ns-dryrun` are also exposed via `scripts/llu-dryrun.sh` and `scripts/ns-dryrun.sh`
+`scripts/llu-dryrun.sh` and `scripts/ns-dryrun.sh` wrap `dryrun` and `ns-dryrun`
 for use without a compiled binary.
 
 ---
@@ -27,10 +27,10 @@ for use without a compiled binary.
 | Path              | Method | Auth            | Response                                     |
 | ----------------- | ------ | --------------- | -------------------------------------------- |
 | `/healthz`        | GET    | public          | `{"status":"ok","version":"…"}`              |
-| `/metrics`        | GET    | public          | Prometheus text exposition (v0.0.4) — includes `patient_id` label on `cgm_glucose_mgdl`; protect at network/proxy layer if exposure is a concern |
+| `/metrics`        | GET    | public          | Prometheus text exposition (v0.0.4) — includes a `patient_id` label on `cgm_glucose_mgdl`; protect at the network or proxy layer when exposing externally |
 | `/glucose/latest` | GET    | optional Bearer | latest cached reading or `503` + `API001`    |
 
-`/glucose/*` becomes Bearer-protected when `GLUCO_HUB__HTTP__BEARER_TOKEN` is set; `/healthz` and `/metrics` always stay public.
+Setting `GLUCO_HUB__HTTP__BEARER_TOKEN` requires Bearer auth on `/glucose/*`; `/healthz` and `/metrics` remain public.
 
 ---
 
@@ -77,7 +77,7 @@ Stable error-code prefixes (`CORE0xx`, `CFG0xx`, `API0xx`, `LLU0xx`, `NS0xx`, `A
 | `GLUCO_HUB_LOG_PRETTY`| `1`                             | Human-readable logs instead of JSON (dev).   |
 | `RUST_LOG`             | `gluco_hub=debug,reqwest=info` | Standard `tracing` filter.                   |
 
-**`config.toml` is optional.** When it is absent (e.g. running `gluco-hub run` with no `-c` flag, or a container with no mounted file), the binary loads built-in defaults and reads every value from `GLUCO_HUB__*` env vars. When a TOML file *is* present, env vars override its values key by key.
+**`config.toml` is optional.** Without it (no `-c` flag, no mounted file), the binary loads built-in defaults and reads every value from `GLUCO_HUB__*` env vars. With it, env vars override TOML values key by key.
 
 Config overrides: any TOML key can be set or overridden at runtime with `GLUCO_HUB__SECTION__KEY=…`
 (double-underscore delimited), e.g. `GLUCO_HUB__HTTP__BIND=0.0.0.0:9090` or `GLUCO_HUB__SOURCE__LLU__EMAIL=you@example.com`.
@@ -99,8 +99,8 @@ Secrets never appear in TOML, logs, or `Debug` output.
 
 ## Graceful shutdown
 
-`SIGINT` and `SIGTERM` both trigger graceful shutdown. In Docker / Kubernetes use the exec-form
-`ENTRYPOINT` so PID 1 receives the signal directly without a shell wrapper.
+`SIGINT` and `SIGTERM` both trigger graceful shutdown. Under Docker or Kubernetes, use the exec-form
+`ENTRYPOINT` so the signal reaches PID 1 directly.
 
 Kubernetes liveness / readiness:
 
@@ -128,7 +128,7 @@ graph TB
     end
 ```
 
-The dep-cook layer is cached until `Cargo.lock` / `Cargo.toml` changes. Source edits only rebuild from the `cargo build` step.
+Docker caches the dep-cook layer until `Cargo.lock` or `Cargo.toml` changes. Source edits rebuild only from the `cargo build` step.
 
 `GLUCO_HUB_GIT_SHA` populates `gluco_hub_build_info{git_sha=…}`; `BUILD_DATE` sets `org.opencontainers.image.created`.
 
@@ -170,7 +170,7 @@ cargo deny check
 
 ## Continuous integration
 
-Two GitHub Actions workflows live under [`docs/ci/`](./ci/) and are not yet installed under `.github/workflows/` because the development token lacks the `workflow` scope. Install with a token that has `workflow`:
+Two GitHub Actions workflows still live under [`docs/ci/`](./ci/) pending a token with the `workflow` scope. Install them with such a token:
 
 ```bash
 mkdir -p .github/workflows
