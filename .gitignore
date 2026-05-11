@@ -1,0 +1,25 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Config & secrets
+.env
+.env.*
+!.env.example
+config.toml
+!config.example.toml
+compose.yml
+!compose.example.yml
+
+# IDE
+/.idea/
+/.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code (not committed)
+.claude
