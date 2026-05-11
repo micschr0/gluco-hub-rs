@@ -86,11 +86,11 @@ tasks:
     preconditions:
       - sh: command -v cargo-release >/dev/null 2>&1
         msg: "cargo-release not installed. Run: cargo install cargo-release"
-    cmd: cargo release "{{.VERSION}}" --execute
+    cmd: cargo release "{{.VERSION}}" --execute --no-confirm
 
   release:patch:
     desc: "Same-day hotfix (bumps PATCH, e.g. 2026.510.0 → 2026.510.1)"
     preconditions:
       - sh: command -v cargo-release >/dev/null 2>&1
         msg: "cargo-release not installed. Run: cargo install cargo-release"
-    cmd: cargo release patch --execute
+    cmd: cargo release patch --execute --no-confirm
