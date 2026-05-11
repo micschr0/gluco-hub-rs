@@ -1,0 +1,39 @@
+# cargo-release configuration.
+# Docs: https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+#
+# Workflow:
+#   cargo release minor                    # dry-run (no --execute)
+#   cargo release minor --execute          # bump, commit, tag, push -> release.yml
+#
+# Versions are managed exclusively through cargo-release. Manual bumps to
+# Cargo.toml version risk drift between code, tag, and CHANGELOG.
+
+# Single workspace version. Members inherit via `version.workspace = true`.
+shared-version = true
+
+# Binary workspace, no crates.io publish.
+publish = false
+
+# Match release.yml trigger `tags: ['v*']`. Override the workspace default
+# `<crate>-vX.Y.Z` to plain `vX.Y.Z`.
+tag-name = "v{{version}}"
+tag-message = "Release {{version}}"
+
+# Conventional-commits style.
+pre-release-commit-message = "chore: release v{{version}}"
+
+# Push commit + tag to origin -> triggers release.yml.
+push = true
+push-remote = "origin"
+
+# No post-release dev bump.
+consolidate-commits = true
+
+# CHANGELOG rewrites and the pre-release-hook are scoped to the binary
+# crate (gluco-hub) via [package.metadata.release] in gluco-hub/Cargo.toml.
+# This avoids two issues with workspace-level config:
+#   1. cargo-release resolves replacement file paths relative to each
+#      package's manifest dir, so workspace-level replacements would try
+#      to rewrite a sibling CHANGELOG inside gluco-hub-core/.
+#   2. Hooks run once per package; scoping to one keeps the gate single-
+#      pass, and the hook can `cd` to the workspace root to find Taskfile.yml.

@@ -1,0 +1,78 @@
+[workspace]
+resolver = "3"
+members = ["gluco-hub-core", "gluco-hub"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "AGPL-3.0-or-later"
+authors = []
+version = "2026.511.0"
+repository = "https://github.com/micschr0/gluco-hub-rs"
+description = "Self-hosted Rust pipeline for LibreLink Up CGM data — HTTP API, Nightscout, MQTT v5. Research and self-hosting tool. Not for medical use."
+
+# Canonical version reference. Member crates use `serde = { workspace = true }`.
+# Renovate keeps these on the latest minor — no exact pins.
+[workspace.dependencies]
+# Core
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# HTTP
+axum = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+
+# Config & secrets
+config = { version = "0.15", default-features = false, features = ["toml"] }
+secrecy = { version = "0.10", features = ["serde"] }
+validator = { version = "0.20", features = ["derive"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# State
+tempfile = "3"
+
+# Crypto: sha2 for LLU account-id, sha1 for Nightscout api-secret.
+sha2 = "0.11"
+sha1 = "0.11"
+
+# Constant-time byte comparison (Bearer auth token check)
+subtle = "2"
+
+# Test helpers (dev-dependencies in member crates)
+wiremock = "0.6"
+
+# MQTT v5 client (rustls only — `use-rustls` transitively pulls
+# `use-rustls-no-provider` in 0.25.x, no OpenSSL anywhere).
+rumqttc = { version = "0.25", default-features = false, features = ["use-rustls"] }
+bytes = "1"
+# `codec` enables `tokio_util::codec::Framed`, used by the in-process
+# MQTT v5 stub broker in `gluco-hub/src/sinks/mqtt/sink.rs#tests` to
+# round-trip CONNECT / CONNACK / PUBLISH against `MqttSink` without
+# pulling in `rumqttd`.
+tokio-util = { version = "0.7", features = ["rt", "codec"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

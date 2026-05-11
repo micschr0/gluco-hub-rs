@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same branch / PR — but never on main,
+# so every push to main completes and primes the shared cache.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+          # fmt does not need the build cache.
+          cache: false
+
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+          # The action defaults RUSTFLAGS to "-D warnings"; we override
+          # to empty here so the explicit `-- -D warnings` flag below
+          # controls clippy alone, not every cargo invocation.
+          rustflags: ""
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: clippy --all-features
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: clippy --no-default-features
+        run: cargo clippy --all-targets --no-default-features --locked -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: test --all-features
+        run: cargo test --all-features --locked
+
+      - name: test --no-default-features
+        run: cargo test --no-default-features --locked
+
+  build:
+    name: build release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo build --release
+        # `option_env!("GLUCO_HUB_GIT_SHA")` in metrics.rs reads this at
+        # compile time. Wiring it on the step env is the idiomatic path
+        # — no build.rs / vergen needed.
+        env:
+          GLUCO_HUB_GIT_SHA: ${{ github.sha }}
+        run: |
+          cargo build --release --locked \
+            --features "source-llu sink-nightscout" \
+            --bin gluco-hub
