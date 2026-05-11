@@ -2,15 +2,15 @@
 
 ⛔ **`gluco-hub-rs` is not for medical use.**
 
-This software is a research and self-hosting tool for technically experienced users (developers, self-hosters, researchers working on CGM data pipelines). It moves CGM sensor data between systems. It is not validated, certified, or intended for any clinical purpose.
+`gluco-hub-rs` is not a medical device and has no clinical validation. It is a research and self-hosting tool for developers, self-hosters, and researchers working on CGM data pipelines, and it moves CGM sensor data between systems.
 
 **Do not use this software for:** therapy decisions, insulin dosing, diagnosis or screening, or replacing approved tools (LibreLink, Dexcom CLARITY, etc.).
 
-**Out of scope:** medical decision support, alarm-based intervention, hosted services to end users, validation as a medical device under EU MDR (2017/745), FDA, MHRA, or any other regulatory framework.
+**Out of scope:** medical decision support, alarm-based intervention, hosted services to end users, certification under EU MDR (2017/745) or any equivalent FDA, MHRA, or other regulatory framework.
 
-**The authors and contributors** provide no warranty of any kind (see LICENSE), disclaim all liability for outcomes resulting from use, and are not medical professionals. Issues asking for medical advice will be closed. PRs adding clinical features will be rejected.
+**The authors and contributors** are not medical professionals, provide no warranty (see LICENSE), and disclaim all liability for outcomes resulting from use. We close issues that ask for medical advice and reject PRs that add clinical features.
 
-For medical decisions, use approved devices and software, and consult your healthcare provider.
+For medical decisions, use approved devices and consult your healthcare provider.
 
 ---
 
