@@ -82,10 +82,26 @@ impl MqttSink {
         let health_topic = format!("{}/_health", cfg.topic_prefix);
         let stats_topic = format!("{}/_stats", cfg.topic_prefix);
 
+        // Pre-serialise the HA discovery payload once at startup so the
+        // poll loop has cheap retained republishes on every reconnect.
+        let discovery = if cfg.discovery_enabled {
+            let payload = serde_json::to_vec(&super::discovery::build_discovery_payload(cfg))
+                .map_err(|e| MqttError::Payload {
+                    message: e.to_string(),
+                })?;
+            Some(DiscoveryPublish {
+                topic: super::discovery::discovery_topic(cfg),
+                payload: Bytes::from(payload),
+            })
+        } else {
+            None
+        };
+
         let poll_task = tokio::spawn(run_poll_loop(
             eventloop,
             client.clone(),
             health_topic,
+            discovery,
             cancel.clone(),
             Arc::clone(&stats),
         ));
@@ -265,6 +281,7 @@ async fn run_poll_loop(
     mut eventloop: EventLoop,
     client: AsyncClient,
     health_topic: String,
+    discovery: Option<DiscoveryPublish>,
     cancel: CancellationToken,
     stats: Arc<Mutex<MqttStatsState>>,
 ) {
@@ -313,6 +330,21 @@ async fn run_poll_loop(
                                     error = %e,
                                     "mqtt: failed to publish online health"
                                 );
+                            }
+                            // HA auto-discovery: retained, QoS 1, idempotent
+                            // across reconnects. A failed publish is logged
+                            // but does not break the connect path — the next
+                            // ConnAck retries.
+                            if let Some(d) = &discovery {
+                                if let Err(e) = publish_discovery(&client, d).await {
+                                    warn!(
+                                        error_code = e.code(),
+                                        error = %e,
+                                        "mqtt: failed to publish HA discovery config"
+                                    );
+                                } else {
+                                    debug!(topic = %d.topic, "mqtt: HA discovery published");
+                                }
                             }
                         }
                     }
@@ -414,6 +446,30 @@ async fn publish_health(client: &AsyncClient, topic: &str, online: bool) -> Resu
             QoS::AtLeastOnce,
             /* retain = */ true,
             Bytes::from(payload),
+        )
+        .await
+        .map_err(classify_client_error)
+}
+
+/// Pre-serialised HA discovery config + its destination topic. Held in
+/// the poll loop and republished retained on every ConnAck — HA picks
+/// the entity up on first encounter, subsequent retains are no-ops on
+/// HA's side because `unique_id` is stable across reconnects.
+struct DiscoveryPublish {
+    topic: String,
+    payload: Bytes,
+}
+
+async fn publish_discovery(
+    client: &AsyncClient,
+    discovery: &DiscoveryPublish,
+) -> Result<(), MqttError> {
+    client
+        .publish(
+            discovery.topic.clone(),
+            QoS::AtLeastOnce,
+            /* retain = */ true,
+            discovery.payload.clone(),
         )
         .await
         .map_err(classify_client_error)
@@ -526,6 +582,9 @@ mod tests {
             tls: false,
             include_patient_id: true,
             stats_interval_secs,
+            discovery_enabled: false,
+            discovery_prefix: "homeassistant".into(),
+            device_name: None,
         }
     }
 
@@ -674,5 +733,60 @@ mod tests {
             let body: Value = serde_json::from_slice(&offline.payload).expect("json body");
             assert_eq!(body["online"], Value::Bool(false));
         }
+    }
+
+    #[tokio::test]
+    async fn discovery_publish_when_enabled_after_connack() {
+        let (port, mut rx) = start_stub_broker().await;
+        let mut c = cfg(port, "test", 60);
+        c.discovery_enabled = true;
+        let _sink = MqttSink::new(&c, None).expect("build sink");
+
+        let expected_topic = "homeassistant/sensor/gluco_hub_test-client_glucose/config";
+        let p = wait_for_topic(&mut rx, expected_topic, Duration::from_secs(3))
+            .await
+            .expect("HA discovery publish must arrive");
+        assert!(p.retain, "discovery publish must be retained");
+
+        let body: Value = serde_json::from_slice(&p.payload).expect("json body");
+        assert_eq!(body["unique_id"], "gluco_hub_test-client_glucose");
+        assert_eq!(body["state_topic"], "test/glucose");
+        assert_eq!(body["availability_topic"], "test/_health");
+        assert_eq!(body["value_template"], "{{ value_json.mgdl }}");
+        assert_eq!(body["unit_of_measurement"], "mg/dL");
+        assert_eq!(body["device"]["manufacturer"], "gluco-hub-rs");
+    }
+
+    #[tokio::test]
+    async fn discovery_silent_when_disabled() {
+        // Default cfg() leaves discovery_enabled=false. Confirm no
+        // publish on the canonical discovery topic over the same window
+        // we'd otherwise wait for it.
+        let (port, mut rx) = start_stub_broker().await;
+        let _sink = MqttSink::new(&cfg(port, "test", 60), None).expect("build sink");
+
+        // Drain the expected _health publish first so we know the ConnAck
+        // round-trip is complete.
+        let _ = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3))
+            .await
+            .expect("online _health publish must arrive");
+
+        // Now poll briefly for any discovery-shaped topic; expect none.
+        let saw_discovery = tokio::time::timeout(Duration::from_millis(300), async {
+            while let Some(p) = rx.recv().await {
+                let topic = std::str::from_utf8(&p.topic).unwrap_or("");
+                if topic.starts_with("homeassistant/") {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+
+        assert!(
+            !saw_discovery,
+            "discovery topic must not be published when discovery_enabled = false"
+        );
     }
 }
