@@ -132,6 +132,33 @@ Docker caches the dep-cook layer until `Cargo.lock` or `Cargo.toml` changes. Sou
 
 `GLUCO_HUB_GIT_SHA` populates `gluco_hub_build_info{git_sha=…}`; `BUILD_DATE` sets `org.opencontainers.image.created`.
 
+### GHCR storage hygiene
+
+Every push to `main`, `develop`, or a `v*` tag publishes a multi-arch
+manifest list plus its underlying per-arch image manifests. GHCR shows
+the per-arch manifests as separate "package versions"; over time these
+accumulate as untagged digests even after the named tag has rolled
+forward.
+
+Two recommended cleanup mechanisms:
+
+1. **GHCR retention policy** (UI-only, one-time). Open the package
+   settings (`github.com/users/<owner>/packages/container/gluco-hub/settings`),
+   under "Manage retention" enable a rule like "delete untagged
+   versions older than 30 days". GitHub enforces it automatically.
+
+2. **Scheduled `actions/delete-package-versions` workflow** for
+   commit-snapshot tags (`:sha-<short>`). Old commit pins from merged
+   feature branches are rarely worth keeping forever — a monthly job
+   that prunes `sha-` tags older than 90 days keeps the registry trim
+   without breaking the immutable-pin promise for recent work.
+
+Manual cleanup (the rare nuclear option) needs the `delete:packages`
+scope on a personal access token plus careful selection to avoid
+deleting per-arch manifests still referenced by current tags — see
+`gh api -X DELETE /user/packages/container/gluco-hub/versions/<id>` in
+the GitHub Packages API docs.
+
 ---
 
 ## Troubleshooting
