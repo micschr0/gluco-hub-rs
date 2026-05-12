@@ -213,11 +213,12 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 
 ## Container
 
-Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR on every release tag and on every push to `main`. Versions use [CalVer-on-SemVer](./CHANGELOG.md) (`YYYY.MMDD.PATCH`, e.g. `2026.510.0`). Tags split into three stability channels:
+Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR on every release tag, every push to `main`, and every push to `develop` (active integration branch). Versions use [CalVer-on-SemVer](./CHANGELOG.md) (`YYYY.MMDD.PATCH`, e.g. `2026.510.0`). Tags split into four stability tiers:
 
 | Tag                   | Mover                                  | Stability                                | Use case                       |
 | --------------------- | -------------------------------------- | ---------------------------------------- | ------------------------------ |
-| `:main`               | every push to `main`                   | unstable, may break                      | dev tracking, brave testers    |
+| `:develop`            | every push to `develop`                | bleeding edge, often-broken              | preview unreleased V3 work     |
+| `:main`               | every push to `main`                   | stabilising — main is release-cut source | dev tracking after V3 lands    |
 | `:testing`            | latest pre-release tag                 | RC / beta / alpha — pre-validation only  | beta channel                   |
 | `:sha-<short>`        | immutable                              | snapshot of one commit                   | reproducible pinning           |
 | `:YYYY.MMDD.PATCH-rc.N` | immutable                            | release candidate                        | pre-release tests              |
