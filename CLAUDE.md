@@ -80,9 +80,10 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 
 - **V1** ✓: LLU source + Nightscout sink + HTTP API + optional Bearer
 - **V2** ✓: MQTT sink (v5, LWT, schema `v: 1`, topics `_health` and `_stats`)
-- **V3**: TUI, DLQ, backfill, HA discovery, webhook sink
+- **V3**: DLQ, backfill, HA discovery, webhook sink
 - **V4**: NS-Socket source, multi-source routing, NS v1 fallback
 - **V5**: tailscale-rs embedded, mTLS for MQTT, JWT-as-password
+- **Deferred**: TUI — postponed; revisit after V3 if a clear use case emerges
 
 ## Agent rules
 
