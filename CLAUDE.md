@@ -99,33 +99,44 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 
 ## Releasing & Branching
 
-**Branching**: trunk-based. `main` is the only long-lived branch and is always
-deployable. Feature work happens on short-lived branches with Conventional-
-Commits prefixes — `feat/<topic>`, `fix/<topic>`, `chore/<topic>`,
-`docs/<topic>` — and lands via PR + squash-merge.
+**Branching**: two long-lived branches.
+- `develop` — active integration branch; all feature work lands here.
+- `main` — stable; receives merges from `develop` when changes are ready
+  to ship plus the release-cut commits/tags from `cargo release`.
 
-**CHANGELOG**: every PR that changes user-visible behaviour MUST add a line
-under `## [Unreleased]` in `CHANGELOG.md` (`### Added` / `### Changed` /
-`### Fixed` / `### Removed`). `cargo release` promotes the block to a dated
-header on tag.
+Feature branches use Conventional-Commits prefixes — `feat/<topic>`,
+`fix/<topic>`, `chore/<topic>`, `docs/<topic>` — and merge into `develop`
+via PR + squash-merge. Releases: fast-forward `develop` → `main` (or PR),
+then `task release` from `main`.
 
-**Releasing**: managed by `cargo release` (config in `release.toml`). Never bump
-`Cargo.toml` version manually — that drifts from the tag and the CHANGELOG.
+**CHANGELOG**: every PR that changes user-visible behaviour MUST add a
+line under `## [Unreleased]` in `CHANGELOG.md` (`### Added` / `### Changed`
+/ `### Fixed` / `### Removed`). `cargo release` promotes the block to a
+dated header on tag.
+
+**Releasing**: managed by `cargo release` (config in `release.toml` plus
+`[package.metadata.release]` in `gluco-hub/Cargo.toml`). Versions use
+**CalVer-on-SemVer**: `YYYY.0M0D.PATCH` (e.g. `2026.511.0` for 2026-05-11).
+`MAJOR=year`, `MINOR=month*100+day`, `PATCH=same-day re-release`. Never
+bump `Cargo.toml` version manually — that drifts from the tag and the
+CHANGELOG.
 
 ```bash
-cargo install cargo-release            # one-time per workstation
-cargo release minor                    # dry-run, shows the diff
-cargo release minor --execute          # bump + commit + tag + push
+cargo install cargo-release   # one-time per workstation
+task release:dry              # preview today's CalVer cut (dry-run)
+task release                  # cut today's CalVer (commit + tag + push)
+task release:patch            # same-day hotfix (PATCH bump)
 ```
 
-Pushing the `vX.Y.Z` tag triggers `release.yml`, which publishes the
-multi-arch container to GHCR. `task release:dry` and `task release:minor`
-wrap the canonical commands.
+Push of the `vYYYY.0M0D.PATCH` tag triggers `release.yml`, which builds
+and publishes the multi-arch container to GHCR — see image-tag scheme in
+`README.md#container`.
 
-**Versioning**: `minor` for normal releases, `patch` for bugfix-only,
-`X.Y.Z-rc.N` only for pre-validation releases. No `-alpha`/`-beta`; project
-Beta status lives in `SCOPE.md`. `1.0.0` will mark the first API-stability
-commitment.
+**Versioning**: tag = `vYYYY.0M0D.PATCH`. Pre-releases use `-rc.N`,
+`-beta.N`, or `-alpha.N` suffixes (handled via `cargo release rc/beta/alpha
+--execute`). Project Beta status is documented in `README.md` (warning
+block). `1.0.0`-style markers are not used; CalVer year-roll signals time,
+not API stability.
 
 **Image channels** are documented in `README.md#container`. Default dev tag
 is `:main`; `:latest` follows highest final release.
