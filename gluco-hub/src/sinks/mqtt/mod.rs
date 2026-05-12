@@ -14,7 +14,12 @@
 //!
 //! Wire schema is `v: 1`. Bumping `v` is a breaking change for
 //! subscribers and must be accompanied by a doc update.
+//!
+//! V3 adds opt-in Home Assistant MQTT auto-discovery via `discovery.rs`
+//! — a retained config message on `<discovery_prefix>/sensor/.../config`
+//! published once per ConnAck so HA picks up the entity automatically.
 
+pub mod discovery;
 pub mod error;
 pub mod sink;
 pub mod stats;

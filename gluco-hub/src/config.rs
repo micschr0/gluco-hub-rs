@@ -200,6 +200,27 @@ pub struct MqttSinkConfig {
     #[serde(default = "default_mqtt_stats_interval")]
     #[validate(range(min = 5, max = 3600))]
     pub stats_interval_secs: u64,
+
+    /// Enable Home Assistant MQTT auto-discovery. When `true`, the sink
+    /// publishes a retained config message on
+    /// `<discovery_prefix>/sensor/<unique_id>/config` after each ConnAck
+    /// so HA picks the glucose sensor up automatically. Opt-in (default
+    /// `false`) to avoid surprising operators on shared brokers.
+    #[serde(default)]
+    pub discovery_enabled: bool,
+
+    /// Topic prefix that Home Assistant subscribes to for discovery.
+    /// HA's own default is `homeassistant`; only change this if the HA
+    /// instance has been reconfigured to a non-default prefix.
+    #[serde(default = "default_discovery_prefix")]
+    #[validate(length(min = 1, max = 200), custom(function = "validate_topic_prefix"))]
+    pub discovery_prefix: String,
+
+    /// Friendly device name shown in the HA UI. Defaults to
+    /// `Gluco Hub (<client_id>)` when absent.
+    #[serde(default)]
+    #[validate(length(min = 1, max = 128))]
+    pub device_name: Option<String>,
 }
 
 fn default_mqtt_keep_alive() -> u64 {
@@ -208,6 +229,10 @@ fn default_mqtt_keep_alive() -> u64 {
 
 fn default_mqtt_stats_interval() -> u64 {
     60
+}
+
+fn default_discovery_prefix() -> String {
+    "homeassistant".to_string()
 }
 
 fn default_true() -> bool {

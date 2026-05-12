@@ -207,7 +207,9 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 | `<prefix>/_health` |   Yes    | `{"online":true,"v":1}` · LWT: `{"online":false,"v":1}`                                          |
 | `<prefix>/_stats`  |   Yes    | `{"v":1,"uptime_secs":…,"publishes_total":…,"connects_total":…, …}` — refreshed every `stats_interval_secs` |
 
-`<prefix>` is the `topic_prefix` value from `[sink.mqtt]`. Set `include_patient_id = false` to drop the `patient` field on shared brokers. The schema is versioned via the `v` field — see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full payload contracts. Home Assistant auto-discovery (MQTT) is planned for V3.
+`<prefix>` is the `topic_prefix` value from `[sink.mqtt]`. Set `include_patient_id = false` to drop the `patient` field on shared brokers. The schema is versioned via the `v` field — see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full payload contracts.
+
+**Home Assistant auto-discovery.** Set `discovery_enabled = true` in `[sink.mqtt]`. The sink then publishes a retained config message on `<discovery_prefix>/sensor/gluco_hub_<client_id>_glucose/config` (default `discovery_prefix = "homeassistant"`) after each MQTT ConnAck. Home Assistant picks the entity up automatically — state reads `mgdl` from `<prefix>/glucose`, availability tracks `<prefix>/_health` via the `online` flag, and the full JSON body is exposed as entity attributes (trend, source, patient, ts).
 
 ## Container
 
