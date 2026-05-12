@@ -273,7 +273,8 @@ async fn full_pipeline_survives_nightscout_502_and_keeps_cache_fresh() {
     cache.update(&batch);
     assert_eq!(cache.latest().unwrap().glucose.get(), 142.0);
 
-    crate::fan_out_to_sinks(&[sink], &batch, Duration::from_secs(2)).await;
+    let router = std::sync::Arc::new(crate::sink_router::SinkRouter::new(sink));
+    crate::fan_out_to_sinks(&[router], &batch, Duration::from_secs(2)).await;
 
     // Cache state must be unchanged after the failed sink push — the
     // poll loop does NOT roll back on sink errors.
