@@ -231,6 +231,29 @@ environment variables — never embed them in TOML.
 | `[sink.mqtt] tls`                   | bool     | no (default `true`) | bool | flip to `false` only for local plaintext brokers |
 | `[sink.mqtt] include_patient_id`    | bool     | no (default `true`) | bool | omit `patient` field from glucose payload when `false` |
 | `[sink.mqtt] stats_interval_secs`   | u64      | no (default `60`) | 5..=3600 | refresh interval for the retained `_stats` snapshot |
+| `[sink.mqtt] discovery_enabled`     | bool     | no (default `false`) | bool | opt-in HA MQTT auto-discovery |
+| `[sink.mqtt] discovery_prefix`      | string   | no (default `homeassistant`) | 1..=200 chars, no `+`/`#`, no leading/trailing `/` | HA discovery topic prefix |
+| `[sink.mqtt] device_name`           | string   | no | 1..=128 chars | friendly device name in HA; defaults to `Gluco Hub (<client_id>)` |
+
+### Home Assistant MQTT auto-discovery (V3, opt-in)
+
+When `discovery_enabled = true`, the sink publishes one retained config
+message per ConnAck on `<discovery_prefix>/sensor/gluco_hub_<client_id>_glucose/config`.
+HA's MQTT integration consumes this and instantiates a sensor entity
+that:
+
+* reads its state from `<topic_prefix>/glucose` via
+  `value_template = "{{ value_json.mgdl }}"`,
+* derives availability from `<topic_prefix>/_health` via the boolean
+  `online` field,
+* exposes the full glucose JSON body as entity attributes
+  (`json_attributes_topic` = `<topic_prefix>/glucose`).
+
+The config payload shape is stable; field names match HA's [MQTT sensor
+discovery schema](https://www.home-assistant.io/integrations/sensor.mqtt/)
+verbatim. `unique_id` is derived from `client_id`, so renaming a
+gluco-hub instance creates a new HA entity rather than overwriting the
+existing one.
 
 ## Module map
 

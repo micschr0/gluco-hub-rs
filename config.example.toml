@@ -80,3 +80,10 @@ interval_secs = 60
 # tls = true                  # false only for local plaintext brokers
 # include_patient_id = true   # set false to omit the patient field
 # stats_interval_secs = 60    # 5..=3600; how often _stats is refreshed
+#
+# Home Assistant MQTT auto-discovery (opt-in). When `true`, the sink
+# publishes a retained config on `<discovery_prefix>/sensor/.../config`
+# after each ConnAck so HA picks the glucose sensor up automatically.
+# discovery_enabled = false
+# discovery_prefix = "homeassistant"     # HA's default; change only if HA is reconfigured
+# device_name = "Gluco Hub (kitchen)"    # optional; defaults to `Gluco Hub (<client_id>)`
