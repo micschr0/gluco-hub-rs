@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 mod api;
 mod config;
 mod metrics;
+mod sink_router;
 mod sinks;
 mod sources;
 
@@ -449,7 +450,7 @@ async fn nsdryrun(cfg: &config::Config) -> Result<()> {
 async fn poll_loop(
     source: Arc<dyn Source>,
     cache: ReadingCache,
-    sinks: Vec<Arc<dyn Sink>>,
+    sinks: Vec<Arc<sink_router::SinkRouter>>,
     interval: Duration,
 ) {
     let source_id = source.id().as_str().to_string();
@@ -539,25 +540,55 @@ fn sink_push_timeout(interval: Duration) -> Duration {
 }
 
 /// Push `batch` to every sink concurrently, with a per-sink timeout.
+/// Routing is delegated to `SinkRouter::push_filtered` so each sink only
+/// sees readings strictly newer than its watermark — see
+/// `sink_router::SinkRouter` for the backfill / recovery semantics.
 /// Errors are logged + counted; a failing sink never propagates and never
 /// blocks the next poll tick.
-async fn fan_out_to_sinks(sinks: &[Arc<dyn Sink>], batch: &[Reading], timeout: Duration) {
+async fn fan_out_to_sinks(
+    sinks: &[Arc<sink_router::SinkRouter>],
+    batch: &[Reading],
+    timeout: Duration,
+) {
     use futures::future::join_all;
 
-    let pushes = sinks.iter().map(|sink| {
-        let sink = Arc::clone(sink);
+    let pushes = sinks.iter().map(|router| {
+        let router = Arc::clone(router);
         let batch_owned: Vec<Reading> = batch.to_vec();
         async move {
-            let name = sink.name();
-            match tokio::time::timeout(timeout, sink.push(&batch_owned)).await {
-                Ok(Ok(())) => {
-                    ::metrics::counter!(
-                        metrics::COUNTER_SINK_SUCCESS,
-                        "sink" => name,
-                    )
-                    .increment(1);
+            let name = router.name();
+            match tokio::time::timeout(timeout, router.push_filtered(&batch_owned)).await {
+                Ok((outcome, Ok(()))) => {
+                    if outcome.filtered > 0 {
+                        ::metrics::counter!(
+                            metrics::COUNTER_SINK_FILTERED,
+                            "sink" => name,
+                        )
+                        .increment(outcome.filtered as u64);
+                    }
+                    if outcome.replayed > 0 {
+                        ::metrics::counter!(
+                            metrics::COUNTER_SINK_REPLAYED,
+                            "sink" => name,
+                        )
+                        .increment(outcome.replayed as u64);
+                    }
+                    if outcome.pushed > 0 {
+                        ::metrics::counter!(
+                            metrics::COUNTER_SINK_SUCCESS,
+                            "sink" => name,
+                        )
+                        .increment(1);
+                    }
                 }
-                Ok(Err(e)) => {
+                Ok((outcome, Err(e))) => {
+                    if outcome.filtered > 0 {
+                        ::metrics::counter!(
+                            metrics::COUNTER_SINK_FILTERED,
+                            "sink" => name,
+                        )
+                        .increment(outcome.filtered as u64);
+                    }
                     let code = extract_error_code(&format!("{e}"));
                     ::metrics::counter!(
                         metrics::COUNTER_SINK_ERRORS,
@@ -603,9 +634,10 @@ fn extract_error_code(message: &str) -> String {
     "UNKNOWN".to_string()
 }
 
-/// Build the configured sinks. Order is config-driven; future sinks
-/// (webhook, …) slot in as additional entries.
-fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<dyn Sink>>> {
+/// Build the configured sinks, each wrapped in a `SinkRouter` for
+/// per-sink watermark filtering (V3 — Backfill). Order is config-driven;
+/// future sinks (webhook, …) slot in as additional entries.
+fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>> {
     let _ = cfg;
     #[cfg_attr(
         not(any(feature = "sink-nightscout", feature = "sink-mqtt")),
@@ -623,7 +655,10 @@ fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<dyn Sink>>> {
         sinks.push(build_mqtt_sink(mqtt).context("build MQTT sink")?);
     }
 
-    Ok(sinks)
+    Ok(sinks
+        .into_iter()
+        .map(|s| Arc::new(sink_router::SinkRouter::new(s)))
+        .collect())
 }
 
 #[cfg(feature = "sink-mqtt")]
@@ -737,23 +772,27 @@ mod tests {
         assert_eq!(extract_error_code(""), "UNKNOWN");
     }
 
+    fn wrap_router(sink: Arc<dyn Sink>) -> Arc<sink_router::SinkRouter> {
+        Arc::new(sink_router::SinkRouter::new(sink))
+    }
+
     #[tokio::test]
     async fn fan_out_calls_every_sink_on_success() {
         let calls_a = Arc::new(StdMutex::new(0));
         let calls_b = Arc::new(StdMutex::new(0));
-        let sinks: Vec<Arc<dyn Sink>> = vec![
-            Arc::new(RecorderSink {
+        let sinks: Vec<Arc<sink_router::SinkRouter>> = vec![
+            wrap_router(Arc::new(RecorderSink {
                 name: "a",
                 calls: calls_a.clone(),
                 fail_with: None,
                 delay: None,
-            }),
-            Arc::new(RecorderSink {
+            })),
+            wrap_router(Arc::new(RecorderSink {
                 name: "b",
                 calls: calls_b.clone(),
                 fail_with: None,
                 delay: None,
-            }),
+            })),
         ];
         fan_out_to_sinks(&sinks, &[one_reading()], Duration::from_secs(5)).await;
         assert_eq!(*calls_a.lock().unwrap(), 1);
@@ -764,19 +803,19 @@ mod tests {
     async fn fan_out_isolates_sink_failures() {
         let calls_ok = Arc::new(StdMutex::new(0));
         let calls_bad = Arc::new(StdMutex::new(0));
-        let sinks: Vec<Arc<dyn Sink>> = vec![
-            Arc::new(RecorderSink {
+        let sinks: Vec<Arc<sink_router::SinkRouter>> = vec![
+            wrap_router(Arc::new(RecorderSink {
                 name: "good",
                 calls: calls_ok.clone(),
                 fail_with: None,
                 delay: None,
-            }),
-            Arc::new(RecorderSink {
+            })),
+            wrap_router(Arc::new(RecorderSink {
                 name: "bad",
                 calls: calls_bad.clone(),
                 fail_with: Some("NS004"),
                 delay: None,
-            }),
+            })),
         ];
         // The function returns `()`; failures are absorbed.
         fan_out_to_sinks(&sinks, &[one_reading()], Duration::from_secs(5)).await;
@@ -788,19 +827,19 @@ mod tests {
     async fn fan_out_times_out_slow_sink_without_blocking_others() {
         let calls_fast = Arc::new(StdMutex::new(0));
         let calls_slow = Arc::new(StdMutex::new(0));
-        let sinks: Vec<Arc<dyn Sink>> = vec![
-            Arc::new(RecorderSink {
+        let sinks: Vec<Arc<sink_router::SinkRouter>> = vec![
+            wrap_router(Arc::new(RecorderSink {
                 name: "fast",
                 calls: calls_fast.clone(),
                 fail_with: None,
                 delay: None,
-            }),
-            Arc::new(RecorderSink {
+            })),
+            wrap_router(Arc::new(RecorderSink {
                 name: "slow",
                 calls: calls_slow.clone(),
                 fail_with: None,
                 delay: Some(Duration::from_secs(5)),
-            }),
+            })),
         ];
         let started = std::time::Instant::now();
         fan_out_to_sinks(&sinks, &[one_reading()], Duration::from_millis(50)).await;

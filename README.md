@@ -39,6 +39,7 @@ gluco-hub-rs is a small, self-hosted relay between a CGM (currently LibreLink Up
 - **Multiple destinations** — Nightscout, MQTT for smart displays (smart pixel clocks, Home Assistant, …), HTTP API
 - **Lightweight** — self-contained Rust binary with a small footprint; runs on Raspberry Pi, VPS, or home server
 - **Modular design** — add sources or sinks with a single file plus a feature flag ([how-to](./docs/EXTENDING.md))
+- **Resilient sinks** — per-sink watermark drops already-pushed readings each cycle and replays missed ones automatically when a sink recovers, within LLU's 24 h history
 - **Operable** — Prometheus metrics, structured JSON logs, graceful shutdown on `SIGINT`/`SIGTERM`
 
 ## Roadmap

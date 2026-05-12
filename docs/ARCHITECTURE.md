@@ -25,6 +25,7 @@ flowchart LR
         Poll["poll_loop\n(tokio task)"]
         Cache["ReadingCache\nArc&lt;RwLock&lt;Option&lt;Reading&gt;&gt;&gt;"]
         FanOut["fan_out_to_sinks\n(parallel, per-sink timeout)"]
+        Router["SinkRouter\nper-sink watermark"]
         API["axum HTTP API\n/healthz /glucose/latest /metrics"]
         Metrics["PrometheusHandle"]
     end
@@ -32,8 +33,9 @@ flowchart LR
     LLU -->|"login → connections → graph"| Poll
     Poll -->|"Vec&lt;Reading&gt;"| Cache
     Poll -->|"Vec&lt;Reading&gt;"| FanOut
-    FanOut -->|"POST /api/v3/entries\n(after dedup)"| NS
-    FanOut -->|"PUBLISH &lt;prefix&gt;/glucose\n(schema v:1)"| MQTT_B
+    FanOut -->|"per-sink filter\n(timestamp &gt; watermark)"| Router
+    Router -->|"POST /api/v3/entries\n(after dedup)"| NS
+    Router -->|"PUBLISH &lt;prefix&gt;/glucose\n(schema v:1)"| MQTT_B
     Cache --> API
     Metrics --> API
 ```
@@ -235,6 +237,36 @@ environment variables — never embed them in TOML.
 | `[sink.mqtt] discovery_prefix`      | string   | no (default `homeassistant`) | 1..=200 chars, no `+`/`#`, no leading/trailing `/` | HA discovery topic prefix |
 | `[sink.mqtt] device_name`           | string   | no | 1..=128 chars | friendly device name in HA; defaults to `Gluco Hub (<client_id>)` |
 
+### Per-sink watermark backfill (V3)
+
+Every `Sink` is wrapped in a [`SinkRouter`](../gluco-hub/src/sink_router.rs)
+that holds a per-sink `last_pushed_ts` watermark. The fan-out passes the
+full source batch (LLU returns ~24 h of `graphData` per poll) through
+each router, which drops readings `<= watermark` before calling
+`Sink::push`. On a successful push the watermark advances to the highest
+timestamp in the attempted slice; on failure it stays put and the next
+poll-cycle naturally replays the missed window.
+
+Two operational properties fall out:
+
+* **Steady-state burst reduction.** After the first poll, each sink
+  only sees the 1 new reading per cycle, not the full 288-reading
+  `graphData` slab. Critical for the MQTT sink, which would otherwise
+  publish 288 messages/minute.
+* **Recovery without DLQ.** If a sink is offline for one or several
+  cycles, the watermark holds. As soon as the sink recovers, the next
+  successful `push` sends every reading newer than the watermark — a
+  drop-in gap-fill within LLU's 24 h history. No persistent queue, no
+  on-disk DLQ machinery.
+
+Watermarks are in-memory only. After a process restart the first cycle
+re-sends the full 24 h batch to each sink once (matching the prior
+behaviour); persisting watermarks across restarts is tracked as part of
+the V3 DLQ work. Two Prometheus counters expose the routing decisions:
+`cgm_sink_filtered_total` (readings skipped by the watermark filter)
+and `cgm_sink_replayed_total` (readings sent in recovery — `pushed - 1`
+per cycle, since the steady-state new-reading-per-cycle does not count).
+
 ### Home Assistant MQTT auto-discovery (V3, opt-in)
 
 When `discovery_enabled = true`, the sink publishes one retained config
@@ -272,6 +304,7 @@ gluco-hub/src/
 │                           poll loop + fan-out, source/sink builders
 ├── config.rs               Config + validators + resolve_secret_file
 ├── metrics.rs              Prometheus recorder + counter/gauge names
+├── sink_router.rs          SinkRouter — per-sink watermark filter (V3)
 ├── api/
 │   ├── mod.rs              router + AppState
 │   ├── auth.rs             bearer middleware (subtle::ConstantTimeEq)
