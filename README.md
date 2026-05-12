@@ -41,6 +41,15 @@ gluco-hub-rs is a small, self-hosted relay between a CGM (currently LibreLink Up
 - **Modular design** — add sources or sinks with a single file plus a feature flag ([how-to](./docs/EXTENDING.md))
 - **Operable** — Prometheus metrics, structured JSON logs, graceful shutdown on `SIGINT`/`SIGTERM`
 
+## Roadmap
+
+- **Shipped** — LLU source · Nightscout sink · MQTT v5 sink · HTTP API with optional Bearer
+- **V3 (next)** — DLQ for failed sink pushes · historical backfill · Home Assistant MQTT auto-discovery
+- **V5 (later)** — embedded tailscale-rs · MQTT mTLS · JWT-as-password
+- **Deferred** — TUI · generic webhook sink · NS-Socket source · multi-source routing · NS v1 fallback
+
+See [`CLAUDE.md`](./CLAUDE.md#roadmap) for the canonical, more detailed roadmap.
+
 ## Requirements
 
 - A **FreeStyle Libre** sensor (Libre 2 / 3) linked to a **LibreLink Up** account — same email/password as the LibreLinkUp mobile app. No other CGMs supported today.
