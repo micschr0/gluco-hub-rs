@@ -45,10 +45,10 @@ gluco-hub-rs is a small, self-hosted relay between a CGM (currently LibreLink Up
 
 ## Roadmap
 
-- **Shipped** — LLU source · Nightscout sink · MQTT v5 sink · HTTP API with optional Bearer
-- **V3 (next)** — DLQ for failed sink pushes · historical backfill · Home Assistant MQTT auto-discovery
-- **V5 (later)** — embedded tailscale-rs · MQTT mTLS · JWT-as-password
-- **Deferred** — TUI · generic webhook sink · NS-Socket source · multi-source routing · NS v1 fallback
+- **Shipped** — LLU source · Nightscout sink · MQTT v5 sink · HTTP API with optional Bearer · HA auto-discovery · per-sink backfill (SinkRouter) · persistent DLQ
+- **V5 (next)** — embedded tailscale-rs · MQTT mTLS · JWT-as-password
+- **V6 (later)** — NS-Socket source (Nightscout as upstream via Socket.IO)
+- **Deferred** — TUI · generic webhook sink · multi-source routing · NS v1 fallback
 
 See [`CLAUDE.md`](./CLAUDE.md#roadmap) for the canonical, more detailed roadmap.
 
