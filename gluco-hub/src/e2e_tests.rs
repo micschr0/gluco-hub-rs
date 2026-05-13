@@ -314,3 +314,184 @@ async fn custom_version_propagates_to_login_header() {
         "tok-e2e"
     );
 }
+
+// ─── DLQ E2E tests ───────────────────────────────────────────────────────
+//
+// These tests exercise the full layered stack:
+//   `SinkRouter` (watermark) → `DlqSink` (persistence) → `NightscoutSink`
+// against a wiremock NS server. Readings are constructed in-process so we
+// can vary timestamps precisely and don't depend on the LLU graph fixture.
+
+mod dlq_e2e {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use chrono::{TimeZone, Utc};
+    use gluco_hub_core::{GlucoseMgDl, PatientId, Reading, Sink, SourceId, Trend};
+    use secrecy::SecretString;
+    use tempfile::TempDir;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::dlq::DlqSink;
+    use crate::sink_router::SinkRouter;
+    use crate::sinks::nightscout::{NightscoutClient, NightscoutSink};
+
+    /// sha1("e2e-secret") — must match the header wiremock asserts on.
+    /// Lifted verbatim from `mount_nightscout` so all tests in this
+    /// file use the same secret.
+    const API_SECRET_SHA1: &str = "631a0d6c3813ee3a11e19b0a37a10ad75bbe8a0c";
+
+    fn reading_at(ts_secs: i64, mgdl: f64) -> Reading {
+        Reading {
+            patient_id: PatientId::new("p1").unwrap(),
+            source_id: SourceId::new("llu").unwrap(),
+            timestamp: Utc
+                .timestamp_opt(ts_secs, 0)
+                .single()
+                .expect("ts_secs is a valid non-ambiguous UTC timestamp"),
+            glucose: GlucoseMgDl::new(mgdl).unwrap(),
+            trend: Trend::Flat,
+        }
+    }
+
+    /// Mount the read-side `GET /api/v3/entries` (always 404 = "NS empty,
+    /// post everything"). Tests mount the POST mock separately so each
+    /// test can control success/failure on its own.
+    async fn mount_ns_get_empty(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/api/v3/entries"))
+            .and(header("api-secret", API_SECRET_SHA1))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(server)
+            .await;
+    }
+
+    /// Build the production-shape layered sink stack pointing at
+    /// `server`'s URL and using `state_dir` for DLQ persistence.
+    /// Returns the `SinkRouter` (what `fan_out_to_sinks` expects) plus
+    /// the inner-most NS-name-string for file-path construction.
+    fn build_layered_sink(
+        server: &MockServer,
+        state_dir: &std::path::Path,
+        max_entries: usize,
+    ) -> Arc<SinkRouter> {
+        let ns_client = NightscoutClient::new(server.uri(), SecretString::from("e2e-secret"))
+            .expect("ns client")
+            .with_device("cgm-bridge")
+            .with_app("cgm-bridge");
+        let ns_sink: Arc<dyn Sink> = Arc::new(NightscoutSink::new(ns_client));
+        let dlq = DlqSink::open(ns_sink, state_dir, max_entries).expect("open dlq");
+        Arc::new(SinkRouter::new(Arc::new(dlq)))
+    }
+
+    /// Outage → DLQ persistence → Recovery happy path.
+    ///
+    /// Cycle 1: NS returns 502 on POST. Push 2 readings through the
+    /// layered stack via `fan_out_to_sinks`. Assert:
+    ///   - DLQ file exists at `<state_dir>/dlq/nightscout.jsonl`
+    ///   - DLQ file has 2 lines (one per reading)
+    ///   - SinkRouter watermark is still `None`
+    ///
+    /// Cycle 2: NS returns 201 on POST. Push 1 *new* reading. Assert:
+    ///   - DLQ file is gone
+    ///   - NS received exactly one POST with 3 readings (2 drained + 1 new)
+    ///   - SinkRouter watermark advanced to the newest reading's timestamp
+    #[tokio::test]
+    async fn outage_then_recovery_drains_dlq() {
+        let server = MockServer::start().await;
+        mount_ns_get_empty(&server).await;
+
+        let state = TempDir::new().unwrap();
+        let dlq_file = state.path().join("dlq").join("nightscout.jsonl");
+        let router = build_layered_sink(&server, state.path(), 1000);
+
+        // ── Cycle 1: NS outage. `mount_as_scoped` so we can drop it. ─
+        let outage = Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .and(header("api-secret", API_SECRET_SHA1))
+            .respond_with(ResponseTemplate::new(502))
+            .named("cycle-1 NS 502 outage")
+            .mount_as_scoped(&server)
+            .await;
+
+        // 1_700_000_{100,200,300} = arbitrary epoch seconds picked to give
+        // three strictly-ordered instants (~ 2023-11-14 22:13:20 UTC base).
+        let batch1 = vec![
+            reading_at(1_700_000_100, 110.0),
+            reading_at(1_700_000_200, 112.0),
+        ];
+        crate::fan_out_to_sinks(
+            std::slice::from_ref(&router),
+            &batch1,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(dlq_file.exists(), "DLQ file must exist after sink failure");
+        let lines = std::fs::read_to_string(&dlq_file).unwrap();
+        assert_eq!(
+            lines.lines().count(),
+            2,
+            "DLQ should hold exactly 2 readings after cycle 1: {lines:?}"
+        );
+        assert!(
+            router.watermark().is_none(),
+            "watermark must not advance on failure"
+        );
+
+        // ── Cycle 2: NS recovers (drop the 502 scoped mock first). ───
+        drop(outage);
+        Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .and(header("api-secret", API_SECRET_SHA1))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+
+        let batch2 = vec![reading_at(1_700_000_300, 115.0)];
+        crate::fan_out_to_sinks(
+            std::slice::from_ref(&router),
+            &batch2,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(!dlq_file.exists(), "DLQ file must be deleted after drain");
+        assert_eq!(
+            router.watermark().map(|t| t.timestamp()),
+            Some(1_700_000_300),
+            "watermark advances to newest reading after success"
+        );
+
+        // ── Verify wiremock saw a single recovery POST with all 3 readings. ─
+        let requests = server.received_requests().await.unwrap();
+        let posts: Vec<_> = requests
+            .iter()
+            .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v3/entries")
+            .collect();
+        // NS retries 502 internally via `NightscoutClient::post_entries`
+        // (MAX_POST_RETRIES = 2 → 1 initial + 2 retries = 3 attempts).
+        // DlqSink does NOT retry — it just propagates the final Err and
+        // persists. So cycle 1 = 3 POSTs (all 502), cycle 2 = 1 POST (201).
+        assert_eq!(
+            posts.len(),
+            4,
+            "3 failing POSTs (1 + 2 retries on cycle 1) + 1 recovery POST"
+        );
+        let recovery_req = posts.last().expect("at least one POST must exist");
+        let recovery_body: serde_json::Value =
+            serde_json::from_slice(&recovery_req.body).expect("recovery POST body json");
+        let arr = recovery_body.as_array().expect("array");
+        assert_eq!(
+            arr.len(),
+            3,
+            "recovery POST must carry 2 drained + 1 new = 3 readings"
+        );
+        // Oldest-first ordering is the DLQ's merge_dedup contract.
+        let dates: Vec<i64> = arr.iter().map(|e| e["date"].as_i64().unwrap()).collect();
+        let mut sorted = dates.clone();
+        sorted.sort();
+        assert_eq!(dates, sorted, "DLQ drain must emit oldest-first");
+    }
+}
