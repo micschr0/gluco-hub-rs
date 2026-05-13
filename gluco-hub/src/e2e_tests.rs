@@ -494,4 +494,114 @@ mod dlq_e2e {
         sorted.sort();
         assert_eq!(dates, sorted, "DLQ drain must emit oldest-first");
     }
+
+    /// DLQ persistence survives dropping & re-opening the sink stack.
+    ///
+    /// Simulates a process restart: Phase 1 builds a layered stack,
+    /// forces NS failure, writes the DLQ file, then drops the stack.
+    /// Phase 2 builds a fresh stack against the same `state_dir` and
+    /// pushes ONE new reading (with a timestamp not in the persisted
+    /// set). NS recovers and the recovery POST must carry FOUR
+    /// readings — 3 loaded from disk + 1 new — proving the fresh
+    /// `DlqSink` loaded the persisted queue (otherwise the POST would
+    /// only have the 1 new reading).
+    #[tokio::test]
+    async fn dlq_survives_simulated_restart() {
+        let server = MockServer::start().await;
+        mount_ns_get_empty(&server).await;
+
+        let state = TempDir::new().unwrap();
+        let dlq_file = state.path().join("dlq").join("nightscout.jsonl");
+
+        // ── Phase 1: build stack, fail, drop ─────────────────────────
+        let outage = Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .and(header("api-secret", API_SECRET_SHA1))
+            .respond_with(ResponseTemplate::new(502))
+            .named("phase-1 NS 502 outage")
+            .mount_as_scoped(&server)
+            .await;
+
+        {
+            let router = build_layered_sink(&server, state.path(), 1000);
+            let batch = vec![
+                reading_at(1_700_000_100, 110.0),
+                reading_at(1_700_000_200, 112.0),
+                reading_at(1_700_000_300, 115.0),
+            ];
+            crate::fan_out_to_sinks(
+                std::slice::from_ref(&router),
+                &batch,
+                Duration::from_secs(5),
+            )
+            .await;
+            assert!(dlq_file.exists(), "DLQ file must exist after phase-1 push");
+        } // router + DlqSink + NightscoutSink dropped here
+
+        assert!(dlq_file.exists(), "DLQ file must survive sink-stack drop");
+        let persisted_lines = std::fs::read_to_string(&dlq_file).unwrap();
+        assert_eq!(
+            persisted_lines.lines().count(),
+            3,
+            "3 readings persisted before restart"
+        );
+
+        // ── Phase 2: NS recovers, fresh stack drains the queue ───────
+        drop(outage);
+        Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .and(header("api-secret", API_SECRET_SHA1))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+
+        let router2 = build_layered_sink(&server, state.path(), 1000);
+        // Push ONE new reading whose timestamp is NOT in the persisted set.
+        // If `DlqSink::open` correctly loaded the file, merge-dedup yields
+        // 3 (disk) + 1 (new) = 4 readings in the recovery POST. If open
+        // silently failed, only the 1 new reading would appear — catching
+        // the bug immediately.
+        let replay_batch = vec![
+            reading_at(1_700_000_400, 117.0), // NEW timestamp — not on disk
+        ];
+        crate::fan_out_to_sinks(
+            std::slice::from_ref(&router2),
+            &replay_batch,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(!dlq_file.exists(), "DLQ file removed after drain");
+        assert_eq!(
+            router2.watermark().map(|t| t.timestamp()),
+            Some(1_700_000_400),
+            "watermark advanced to newest reading after drain+replay"
+        );
+
+        let requests = server.received_requests().await.unwrap();
+        // 4 readings = 3 from disk + 1 from `replay_batch`. If `DlqSink::open`
+        // had silently failed to load the file, this assertion would catch it
+        // (the POST would only carry the 1 new reading).
+        // Use a single combined predicate so we search all POSTs, not just the
+        // first one (Phase 1 POSTs carried 3 readings and would defeat a
+        // `.find().filter()` chain).
+        let recovery_post = requests
+            .iter()
+            .find(|r| {
+                r.method.as_str() == "POST"
+                    && r.url.path() == "/api/v3/entries"
+                    && serde_json::from_slice::<serde_json::Value>(&r.body)
+                        .ok()
+                        .and_then(|v| v.as_array().cloned())
+                        .map(|arr| arr.len() == 4)
+                        .unwrap_or(false)
+            })
+            .expect("recovery POST with 4 readings (3 disk + 1 new) must be present");
+        let body: serde_json::Value = serde_json::from_slice(&recovery_post.body).unwrap();
+        assert_eq!(
+            body.as_array().unwrap().len(),
+            4,
+            "drained POST contains 3 persisted + 1 new reading"
+        );
+    }
 }
