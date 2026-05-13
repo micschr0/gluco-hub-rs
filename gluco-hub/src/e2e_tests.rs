@@ -604,4 +604,69 @@ mod dlq_e2e {
             "drained POST contains 3 persisted + 1 new reading"
         );
     }
+
+    /// During an extended outage the DLQ must cap at `max_entries` by
+    /// evicting the oldest readings. This is the only E2E test in the
+    /// file that uses a non-default cap — value 3 with 5 readings makes
+    /// the eviction visible without parsing 9999 lines of JSON.
+    #[tokio::test]
+    async fn dlq_cap_evicts_oldest_during_outage() {
+        let server = MockServer::start().await;
+        mount_ns_get_empty(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .and(header("api-secret", API_SECRET_SHA1))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&server)
+            .await;
+
+        let state = TempDir::new().unwrap();
+        let dlq_file = state.path().join("dlq").join("nightscout.jsonl");
+        let router = build_layered_sink(&server, state.path(), 3);
+
+        // Five readings, cap = 3 → oldest two (100, 200) must be evicted.
+        let batch = vec![
+            reading_at(1_700_000_100, 110.0),
+            reading_at(1_700_000_200, 111.0),
+            reading_at(1_700_000_300, 112.0),
+            reading_at(1_700_000_400, 113.0),
+            reading_at(1_700_000_500, 114.0),
+        ];
+        crate::fan_out_to_sinks(
+            std::slice::from_ref(&router),
+            &batch,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(dlq_file.exists(), "DLQ file must exist after failed push");
+        let lines: Vec<String> = std::fs::read_to_string(&dlq_file)
+            .unwrap()
+            .lines()
+            .map(|l| l.to_string())
+            .collect();
+        assert_eq!(lines.len(), 3, "cap = 3 must trim oldest two");
+
+        // Each line is a `DlqEntry { v: 1, reading: Reading }`. Deserialise
+        // into the concrete `Reading` type — this anchors the test to the
+        // actual serde contract and fails loudly (with a clear field-level
+        // error) if the on-disk schema ever changes shape.
+        #[derive(serde::Deserialize)]
+        struct PersistedEntry {
+            reading: Reading,
+        }
+        let parsed: Vec<i64> = lines
+            .iter()
+            .map(|l| {
+                let entry: PersistedEntry =
+                    serde_json::from_str(l).expect("parse DLQ line as PersistedEntry");
+                entry.reading.timestamp.timestamp()
+            })
+            .collect();
+        assert_eq!(
+            parsed,
+            vec![1_700_000_300, 1_700_000_400, 1_700_000_500],
+            "DLQ must keep the newest 3 readings in oldest-first order"
+        );
+    }
 }
