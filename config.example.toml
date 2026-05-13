@@ -87,3 +87,15 @@ interval_secs = 60
 # discovery_enabled = false
 # discovery_prefix = "homeassistant"     # HA's default; change only if HA is reconfigured
 # device_name = "Gluco Hub (kitchen)"    # optional; defaults to `Gluco Hub (<client_id>)`
+
+# On-disk state — used by the dead-letter queue (one JSONL file per sink
+# at `<dir>/dlq/<sink>.jsonl`). In containers, mount a persistent volume
+# at this path so DLQ entries survive restarts.
+# [state]
+# dir = "./state"
+
+# Dead-letter queue. Failed sink pushes are persisted here and retried
+# on the next successful push attempt. Survives process restarts.
+# [dlq]
+# enabled = true        # set false to keep prior V2 behaviour (failures lost on restart)
+# max_entries = 10000   # per-sink hard cap; ~35 days at LLU's 5-min raster

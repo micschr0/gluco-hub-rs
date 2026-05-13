@@ -30,6 +30,69 @@ pub struct Config {
     #[serde(default)]
     #[validate(nested)]
     pub sink: SinkConfig,
+
+    /// On-disk state used by the dead-letter queue. Defaults to
+    /// `./state` (relative to CWD). In containers, mount a persistent
+    /// volume here.
+    #[serde(default)]
+    #[validate(nested)]
+    pub state: StateConfig,
+
+    /// Dead-letter queue knobs — see `gluco-hub/src/dlq.rs` for
+    /// behaviour. Defaults are sensible for a home-grade CGM bridge.
+    #[serde(default)]
+    #[validate(nested)]
+    pub dlq: DlqConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Validate)]
+pub struct StateConfig {
+    /// Directory that holds gluco-hub's persistent state files (DLQ
+    /// JSONL today; watermark snapshots later). Created on startup if
+    /// missing.
+    #[serde(default = "default_state_dir")]
+    pub dir: std::path::PathBuf,
+}
+
+impl Default for StateConfig {
+    fn default() -> Self {
+        Self {
+            dir: default_state_dir(),
+        }
+    }
+}
+
+fn default_state_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("./state")
+}
+
+#[derive(Debug, Clone, Deserialize, Validate)]
+pub struct DlqConfig {
+    /// Master toggle. When `false`, sink failures behave as before
+    /// V3-DLQ (lost on restart, replayed only within LLU's 24 h
+    /// `graphData` window).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Per-sink hard cap on queued readings. When exceeded, the oldest
+    /// readings are evicted (logged + `cgm_dlq_evicted_total`). 10000
+    /// covers ~35 days at the 5-min LLU raster.
+    #[serde(default = "default_dlq_max_entries")]
+    #[validate(range(min = 100, max = 1_000_000))]
+    pub max_entries: usize,
+}
+
+impl Default for DlqConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_entries: default_dlq_max_entries(),
+        }
+    }
+}
+
+fn default_dlq_max_entries() -> usize {
+    10_000
 }
 
 #[derive(Debug, Clone, Deserialize, Validate)]
@@ -736,6 +799,8 @@ region = "EU"
                 }),
                 mqtt: None,
             },
+            state: StateConfig::default(),
+            dlq: DlqConfig::default(),
         };
         let err = verify_secrets(&cfg).expect_err("must reject empty api_secret");
         assert!(
@@ -754,6 +819,8 @@ region = "EU"
             poller: PollerConfig { interval_secs: 60 },
             source: SourceConfig::default(),
             sink: SinkConfig::default(),
+            state: StateConfig::default(),
+            dlq: DlqConfig::default(),
         };
         let err = verify_secrets(&cfg).expect_err("must reject empty bearer_token");
         assert!(
@@ -778,6 +845,8 @@ region = "EU"
             poller: PollerConfig { interval_secs: 60 },
             source: SourceConfig::default(),
             sink: SinkConfig::default(),
+            state: StateConfig::default(),
+            dlq: DlqConfig::default(),
         };
         verify_features(&cfg).expect("empty config always accepted");
     }

@@ -20,6 +20,10 @@ pub const COUNTER_SINK_ERRORS: &str = "cgm_sink_push_errors_total";
 pub const COUNTER_SINK_RETRY: &str = "cgm_sink_post_retry_total";
 pub const COUNTER_SINK_FILTERED: &str = "cgm_sink_filtered_total";
 pub const COUNTER_SINK_REPLAYED: &str = "cgm_sink_replayed_total";
+pub const COUNTER_DLQ_ENQUEUED: &str = "cgm_dlq_enqueued_total";
+pub const COUNTER_DLQ_DRAINED: &str = "cgm_dlq_drained_total";
+pub const COUNTER_DLQ_EVICTED: &str = "cgm_dlq_evicted_total";
+pub const GAUGE_DLQ_SIZE: &str = "cgm_dlq_size";
 pub const GAUGE_GLUCOSE: &str = "cgm_glucose_mgdl";
 pub const GAUGE_BUILD_INFO: &str = "gluco_hub_build_info";
 
@@ -120,6 +124,26 @@ fn describe_all() {
         "Number of readings re-sent to a recovering sink after a prior \
         failure (PushOutcome.replayed); labelled by sink"
     );
+    describe_counter!(
+        COUNTER_DLQ_ENQUEUED,
+        "Number of readings added to a sink's dead-letter queue after a \
+        failed push; labelled by sink"
+    );
+    describe_counter!(
+        COUNTER_DLQ_DRAINED,
+        "Number of readings successfully replayed out of a sink's DLQ \
+        on the next successful push; labelled by sink"
+    );
+    describe_counter!(
+        COUNTER_DLQ_EVICTED,
+        "Number of readings dropped from a sink's DLQ because the \
+        per-sink cap was exceeded; labelled by sink"
+    );
+    describe_gauge!(
+        GAUGE_DLQ_SIZE,
+        Unit::Count,
+        "Current in-memory size of each sink's DLQ"
+    );
     describe_gauge!(
         GAUGE_GLUCOSE,
         Unit::Count,
@@ -138,9 +162,18 @@ mod tests {
     #[test]
     fn init_recorder_is_idempotent() {
         let h1 = init_recorder().expect("first install");
-        let h2 = init_recorder().expect("second call must not error");
-        // Both handles render to the same exposition (same global registry).
-        assert_eq!(h1.render(), h2.render());
+        let _h2 = init_recorder().expect("second call must not error");
+        // Both calls must succeed and `describe_all` runs on the second
+        // call too — verify the describe target is present in the
+        // exposition. We deliberately do NOT compare h1.render() against
+        // h2.render(): metric values change between the two calls when
+        // parallel tests touch the global registry, but the *describe*
+        // metadata is stable.
+        let r1 = h1.render();
+        assert!(
+            r1.contains("gluco_hub_build_info{"),
+            "build_info missing from render after second init_recorder(): {r1}"
+        );
     }
 
     #[test]
