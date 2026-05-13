@@ -363,14 +363,16 @@ mod dlq_e2e {
             .and(path("/api/v3/entries"))
             .and(header("api-secret", API_SECRET_SHA1))
             .respond_with(ResponseTemplate::new(404))
+            .named("GET /api/v3/entries always-404")
             .mount(server)
             .await;
     }
 
     /// Build the production-shape layered sink stack pointing at
     /// `server`'s URL and using `state_dir` for DLQ persistence.
-    /// Returns the `SinkRouter` (what `fan_out_to_sinks` expects) plus
-    /// the inner-most NS-name-string for file-path construction.
+    /// Returns the `SinkRouter` (what `fan_out_to_sinks` expects); the
+    /// DLQ file path inside `state_dir` is `dlq/nightscout.jsonl`
+    /// (derived from `NightscoutSink::name()`).
     fn build_layered_sink(
         server: &MockServer,
         state_dir: &std::path::Path,
@@ -598,10 +600,21 @@ mod dlq_e2e {
             })
             .expect("recovery POST with 4 readings (3 disk + 1 new) must be present");
         let body: serde_json::Value = serde_json::from_slice(&recovery_post.body).unwrap();
+        let arr = body.as_array().expect("array");
         assert_eq!(
-            body.as_array().unwrap().len(),
+            arr.len(),
             4,
             "drained POST contains 3 persisted + 1 new reading"
+        );
+        // Disk-load → merge → POST must preserve oldest-first order
+        // (`DlqSink::merge_dedup` contract). Catches a regression where
+        // restart-reload returns entries out of order.
+        let dates: Vec<i64> = arr.iter().map(|e| e["date"].as_i64().unwrap()).collect();
+        let mut sorted = dates.clone();
+        sorted.sort();
+        assert_eq!(
+            dates, sorted,
+            "drained POST after restart must be oldest-first"
         );
     }
 
@@ -617,6 +630,7 @@ mod dlq_e2e {
             .and(path("/api/v3/entries"))
             .and(header("api-secret", API_SECRET_SHA1))
             .respond_with(ResponseTemplate::new(502))
+            .named("extended-outage NS 502")
             .mount(&server)
             .await;
 
