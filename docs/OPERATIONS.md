@@ -132,6 +132,24 @@ Docker caches the dep-cook layer until `Cargo.lock` or `Cargo.toml` changes. Sou
 
 `GLUCO_HUB_GIT_SHA` populates `gluco_hub_build_info{git_sha=…}`; `BUILD_DATE` sets `org.opencontainers.image.created`.
 
+### Dead-letter queue (V3)
+
+Failed sink pushes are persisted to `<state_dir>/dlq/<sink>.jsonl` (one
+JSON-encoded `Reading` per line). On the next successful push the file
+is deleted and the readings drained to the sink.
+
+Inspect: `wc -l ./state/dlq/*.jsonl` (counts pending readings per sink).
+Metrics: `cgm_dlq_size{sink=...}` (current size), `cgm_dlq_enqueued_total`
++ `cgm_dlq_drained_total` + `cgm_dlq_evicted_total` (counters).
+
+Clear a stuck queue manually: stop the service, `rm
+./state/dlq/<sink>.jsonl`, restart. The watermark in `SinkRouter` is
+in-memory so a restart causes the next cycle to resend the full 24 h
+window; the deleted DLQ stays empty.
+
+In containers, mount a persistent volume at the configured `[state] dir`
+or accept that DLQ contents reset on each container recreation.
+
 ### GHCR storage hygiene
 
 Every push to `main`, `develop`, or a `v*` tag publishes a multi-arch

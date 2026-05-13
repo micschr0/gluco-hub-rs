@@ -12,6 +12,7 @@ use tracing::{error, info, warn};
 
 mod api;
 mod config;
+mod dlq;
 mod metrics;
 mod sink_router;
 mod sinks;
@@ -634,9 +635,10 @@ fn extract_error_code(message: &str) -> String {
     "UNKNOWN".to_string()
 }
 
-/// Build the configured sinks, each wrapped in a `SinkRouter` for
-/// per-sink watermark filtering (V3 — Backfill). Order is config-driven;
-/// future sinks (webhook, …) slot in as additional entries.
+/// Build the configured sinks, each layered as
+/// `SinkRouter (watermark)` → `DlqSink (persistence)` → real sink.
+/// Order is config-driven; future sinks (webhook, …) slot in as
+/// additional entries.
 fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>> {
     let _ = cfg;
     #[cfg_attr(
@@ -655,10 +657,32 @@ fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>
         sinks.push(build_mqtt_sink(mqtt).context("build MQTT sink")?);
     }
 
-    Ok(sinks
-        .into_iter()
-        .map(|s| Arc::new(sink_router::SinkRouter::new(s)))
-        .collect())
+    let routed: Vec<Arc<sink_router::SinkRouter>> = if cfg.dlq.enabled {
+        info!(
+            state_dir = %cfg.state.dir.display(),
+            max_entries = cfg.dlq.max_entries,
+            sinks = sinks.len(),
+            "dlq: enabled — wrapping sinks with persistent DLQ",
+        );
+        sinks
+            .into_iter()
+            .map(|inner| {
+                let dlq = dlq::DlqSink::open(inner, &cfg.state.dir, cfg.dlq.max_entries)
+                    .with_context(|| format!("open DLQ at {}", cfg.state.dir.display()))?;
+                Ok::<Arc<sink_router::SinkRouter>, anyhow::Error>(Arc::new(
+                    sink_router::SinkRouter::new(Arc::new(dlq)),
+                ))
+            })
+            .collect::<Result<_>>()?
+    } else {
+        info!("dlq: disabled — sink failures will not be persisted");
+        sinks
+            .into_iter()
+            .map(|s| Arc::new(sink_router::SinkRouter::new(s)))
+            .collect()
+    };
+
+    Ok(routed)
 }
 
 #[cfg(feature = "sink-mqtt")]

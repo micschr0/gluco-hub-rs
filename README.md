@@ -40,6 +40,7 @@ gluco-hub-rs is a small, self-hosted relay between a CGM (currently LibreLink Up
 - **Lightweight** — self-contained Rust binary with a small footprint; runs on Raspberry Pi, VPS, or home server
 - **Modular design** — add sources or sinks with a single file plus a feature flag ([how-to](./docs/EXTENDING.md))
 - **Resilient sinks** — per-sink watermark drops already-pushed readings each cycle and replays missed ones automatically when a sink recovers, within LLU's 24 h history
+- **Persistent DLQ** — failed pushes are written to a per-sink JSONL queue on disk and replayed on the next successful push, surviving process restarts and arbitrary outage windows beyond LLU's history
 - **Operable** — Prometheus metrics, structured JSON logs, graceful shutdown on `SIGINT`/`SIGTERM`
 
 ## Roadmap
