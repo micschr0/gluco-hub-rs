@@ -237,6 +237,26 @@ environment variables — never embed them in TOML.
 | `[sink.mqtt] discovery_prefix`      | string   | no (default `homeassistant`) | 1..=200 chars, no `+`/`#`, no leading/trailing `/` | HA discovery topic prefix |
 | `[sink.mqtt] device_name`           | string   | no | 1..=128 chars | friendly device name in HA; defaults to `Gluco Hub (<client_id>)` |
 
+### Sink layering: SinkRouter → DlqSink → real sink (V3)
+
+Every configured sink is wrapped twice:
+
+```
+Vec<Arc<SinkRouter>>            ← exposed to fan_out_to_sinks
+        ↓                         (watermark filter; backfill semantics)
+Arc<SinkRouter>
+        ↓
+Arc<DlqSink>                    ← persistent dead-letter queue
+        ↓                         (failed pushes accumulate on disk,
+Arc<dyn Sink>                     drain on next successful push)
+        ↓
+NightscoutSink / MqttSink       ← actual transport
+```
+
+`SinkRouter`'s watermark only advances when the layered push (DLQ drain
++ live batch) returns `Ok` — so the watermark is always at-or-behind
+"all readings confirmed delivered to the wire".
+
 ### Per-sink watermark backfill (V3)
 
 Every `Sink` is wrapped in a [`SinkRouter`](../gluco-hub/src/sink_router.rs)
@@ -266,6 +286,32 @@ the V3 DLQ work. Two Prometheus counters expose the routing decisions:
 `cgm_sink_filtered_total` (readings skipped by the watermark filter)
 and `cgm_sink_replayed_total` (readings sent in recovery — `pushed - 1`
 per cycle, since the steady-state new-reading-per-cycle does not count).
+
+### Persistent dead-letter queue (V3)
+
+`DlqSink` lives between `SinkRouter` and the real sink and persists
+failed pushes to disk so they survive process restarts and outage
+windows longer than LLU's 24 h `graphData` history.
+
+On each `push(batch)`:
+
+1. Merge the in-memory queue with `batch`, deduplicated by
+   `(patient_id, timestamp)` and sorted oldest-first.
+2. Enforce `max_entries` cap — overflow drops the oldest entries and
+   bumps `cgm_dlq_evicted_total`.
+3. Try the inner sink. On success: clear the queue, delete the file,
+   bump `cgm_dlq_drained_total`. On failure: persist the merged set
+   atomically (`tempfile::NamedTempFile::persist`) and bump
+   `cgm_dlq_enqueued_total` by the number of newly-added readings.
+
+On startup `DlqSink::open` reads any pre-existing JSONL file into the
+in-memory queue, so the first push after a restart replays whatever
+was outstanding when the previous run exited.
+
+Per-sink files at `<state_dir>/dlq/<sink_name>.jsonl`, one JSON-encoded
+`Reading` per line. Bounded by `[dlq] max_entries` (default 10000 ≈ 35
+days at the LLU 5-min raster). Disable wholesale via `[dlq] enabled =
+false`.
 
 ### Home Assistant MQTT auto-discovery (V3, opt-in)
 
@@ -305,6 +351,7 @@ gluco-hub/src/
 ├── config.rs               Config + validators + resolve_secret_file
 ├── metrics.rs              Prometheus recorder + counter/gauge names
 ├── sink_router.rs          SinkRouter — per-sink watermark filter (V3)
+├── dlq.rs                  DlqSink — persistent per-sink dead-letter queue (V3)
 ├── api/
 │   ├── mod.rs              router + AppState
 │   ├── auth.rs             bearer middleware (subtle::ConstantTimeEq)
