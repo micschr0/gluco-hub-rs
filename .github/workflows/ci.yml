@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 # Cancel superseded runs on the same branch / PR — but never on main,
 # so every push to main completes and primes the shared cache.
@@ -52,6 +52,13 @@ jobs:
       - name: clippy --no-default-features
         run: cargo clippy --all-targets --no-default-features --locked -- -D warnings
 
+      # The `integration-tests` feature pulls in the testcontainers
+      # surface; lint it explicitly too so changes there don't slip
+      # past clippy on develop pushes (the dedicated `integration-tests`
+      # job below only runs for PRs to main).
+      - name: clippy --features integration-tests
+        run: cargo clippy --all-targets --features integration-tests --locked -- -D warnings
+
   test:
     name: test
     runs-on: ubuntu-latest
@@ -62,8 +69,11 @@ jobs:
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: test --all-features
-        run: cargo test --all-features --locked
+      # Run production features explicitly rather than `--all-features`
+      # to avoid pulling in the container-backed `integration-tests`
+      # feature, which has its own dedicated job below (PRs to main only).
+      - name: test (production features)
+        run: cargo test --locked --features "source-llu sink-nightscout sink-mqtt mock-source"
 
       - name: test --no-default-features
         run: cargo test --no-default-features --locked
@@ -105,3 +115,40 @@ jobs:
         # `+1.95` overrides rust-toolchain.toml (which pins stable for
         # local dev) so the MSRV signal stays real.
         run: cargo +1.95 check --all-features --locked
+
+  # Container-backed integration tests (Mosquitto, Nightscout + MongoDB,
+  # combined fan-out). Slow — ~5 minutes per test boot of NS — so gated
+  # to PRs against `main` only. develop pushes get fmt/clippy/test/build
+  # but not this lane.
+  integration-tests:
+    name: integration-tests (container-backed)
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # Don't pollute the main cache scope — integration deps are
+          # large and only used by this job.
+          cache-key: integration-tests
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: verify Docker is available
+        # GH ubuntu-latest images ship Docker but make the version
+        # explicit in the log so failures are easy to root-cause.
+        run: docker version
+
+      - name: pre-pull container images
+        # Pulling in serial up-front avoids parallel test boots racing
+        # for the same image layer.
+        run: |
+          docker pull eclipse-mosquitto:2
+          docker pull mongo:6
+          docker pull nightscout/cgm-remote-monitor:15.0.3
+
+      - name: cargo test --features integration-tests
+        # --test-threads=1 serialises tests because NS startup is heavy
+        # and parallel docker-compose stacks on smaller runners stress
+        # both memory and Docker's network setup.
+        run: cargo test --features integration-tests --locked -- --test-threads=1
