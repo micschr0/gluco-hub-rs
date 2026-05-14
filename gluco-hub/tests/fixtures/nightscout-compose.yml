@@ -1,0 +1,46 @@
+# Compose stack used by integration_tests::nightscout to spin up a real
+# Nightscout v15+ instance backed by MongoDB. The Rust test code drives
+# this via testcontainers' DockerCompose API (feature `docker-compose`),
+# so no `docker compose` CLI invocation is needed at runtime — but the
+# file must remain valid Compose v3+.
+#
+# Container names are deterministic so NS can reach Mongo by hostname
+# (`mongodb://mongo:27017/...`). Both services join the implicit default
+# network testcontainers creates for the stack.
+
+version: "3.8"
+
+services:
+  mongo:
+    image: mongo:6
+    environment:
+      # No auth — the test stack is ephemeral and not exposed to the
+      # host network beyond the random port testcontainers assigns.
+      MONGO_INITDB_DATABASE: nightscout
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nightscout:
+    image: nightscout/cgm-remote-monitor:15.0.3
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      # NS connects to the sibling `mongo` service by Docker DNS.
+      MONGO_CONNECTION: "mongodb://mongo:27017/nightscout"
+      # 12-char minimum enforced by NS. Tests duplicate this literal
+      # when computing the sha1 `api-secret` header.
+      API_SECRET: "itest-secret-please-rotate"
+      # Modern NS rejects plain HTTP at boot by default. Override for
+      # the test stack only.
+      INSECURE_USE_HTTP: "true"
+      NODE_ENV: "production"
+      DISPLAY_UNITS: "mg/dl"
+      # Minimal feature set — most plugins not needed for our entry POST
+      # / GET tests.
+      ENABLE: "careportal"
+    ports:
+      - "1337"
