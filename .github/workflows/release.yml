@@ -165,6 +165,13 @@ jobs:
       - name: Compute image metadata
         id: meta
         uses: docker/metadata-action@v6
+        # `buildx imagetools create` operates on the manifest list / OCI
+        # index and rejects the default `manifest:` annotation prefix
+        # ("manifest annotations are not supported yet"). Tell metadata-
+        # action to emit `index:`-prefixed annotations instead, which is
+        # the level imagetools is actually editing.
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           flavor: |
