@@ -22,6 +22,11 @@ sink-mqtt = ["dep:rumqttc", "dep:bytes", "dep:tokio-util"]
 # Enables the in-memory `MockSource` fixture so the HTTP API can be
 # exercised end-to-end before the LibreLink Up source lands.
 mock-source = ["gluco-hub-core/mock-source"]
+# Container-backed integration tests (V3+) — gated behind a feature
+# flag so they don't slow down every `cargo test`. CI runs them on
+# PRs against `main` only; local `task test-all` ignores them.
+# Requires Docker on the test host.
+integration-tests = ["sink-mqtt", "sink-nightscout", "mock-source"]
 
 [dependencies]
 gluco-hub-core = { path = "../gluco-hub-core" }
@@ -66,6 +71,14 @@ tokio-util = { workspace = true, optional = true }
 [dev-dependencies]
 wiremock = { workspace = true }
 http-body-util = "0.1"
+
+# Container-backed integration tests (gated by `integration-tests`
+# feature flag — see [features]). testcontainers spins up real
+# Mosquitto / Nightscout / MongoDB instances; the wiremock-based
+# E2E tests in src/e2e_tests.rs stay as the fast path.
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["mongo"] }
+uuid = { version = "1", features = ["v4"] }
 
 # `cargo release` rewrites the workspace CHANGELOG.md from this crate
 # (the binary). The library crate inherits no replacements, so the
