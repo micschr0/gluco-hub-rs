@@ -5,9 +5,16 @@ on:
     - cron: "0 8 * * 1"
   workflow_dispatch:
 
+# Deny-all by default. Renovate authenticates with its own RENOVATE_TOKEN
+# (PAT) — the workflow's GITHUB_TOKEN only needs `contents: read` for
+# checkout.
+permissions: {}
+
 jobs:
   renovate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: renovatebot/github-action@79dc0ba74dc3de28db0a7aeb1d0b95d5bf5fde2a # v46.1.13

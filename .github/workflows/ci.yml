@@ -16,10 +16,17 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: short
 
+# Deny-all by default; each job opts into the narrowest token scope it
+# actually needs. A compromised Action in any of these jobs cannot push
+# packages, open PRs, or write contents.
+permissions: {}
+
 jobs:
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -34,6 +41,8 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -62,6 +71,8 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -81,6 +92,8 @@ jobs:
   build:
     name: build release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -102,6 +115,8 @@ jobs:
   msrv:
     name: MSRV (1.95)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -124,6 +139,8 @@ jobs:
     name: integration-tests (container-backed)
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
