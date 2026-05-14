@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **Release workflow: manifest publish on develop pushes** — the "merge & publish manifest" step built its `docker buildx imagetools create` argv via unquoted command substitution. Annotation values containing shell-meaningful characters (e.g. the auto-derived GitHub-repo description `CGM glucose -> Nightscout, MQTT, HTTP-API`) word-split, so `->` reached docker as a stray flag and the step exited 125 — breaking `:develop` and `:sha-<short>` publishes since the V3 work landed. Replaced with a quoted bash-array argv so arbitrary tag, annotation, and digest values are safe (closes a CWE-88 argument-injection footgun where any field flowing into `DOCKER_METADATA_OUTPUT_JSON` could inject docker flags).
+- **Release workflow: annotation level for `buildx imagetools create`** — once the argv-quoting fix above let the actual `--annotation` calls through, they surfaced a second latent bug: `docker/metadata-action` emits annotations with the default `manifest:` prefix (intended for `buildx build`), but `buildx imagetools create` rejects it with `"manifest" annotations are not supported yet` because it edits the OCI image index, not per-arch manifests. Set `DOCKER_METADATA_ANNOTATIONS_LEVELS: index` on the metadata-action step so the emitted annotations target the layer imagetools is actually writing.
 
 ### Added
 
