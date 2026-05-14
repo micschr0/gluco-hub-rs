@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **CI supply-chain hardening: minimum per-job `permissions:`** — every workflow now declares `permissions: {}` at the top level (deny-all default for `GITHUB_TOKEN`), and each job opts into the narrowest scope it needs. `ci.yml`, `deny.yml`, and `renovate.yml` only get `contents: read`. `release.yml`'s per-arch `build` jobs only add `packages: write` for digest pushes, and only the `merge` job gets `id-token: write` (cosign keyless) + `attestations: write` (SLSA build-provenance). A compromised Action in a `build` job can no longer publish a manifest, and CI/lint jobs cannot push packages or write to the repo even if an upstream Action is hijacked.
 - **CI supply-chain hardening: SHA-pin all third-party Actions** — every `uses:` line across `.github/workflows/{ci,deny,release,renovate}.yml` now references a third-party Action by its full 40-char commit SHA with a `# vX.Y.Z` trailing comment, instead of the floating major tag (`@v3`, `@v4`, …). A tag-hijack on any upstream Action repo (docker/*, EmbarkStudios/cargo-deny-action, sigstore/cosign-installer, renovatebot/github-action, etc.) can no longer silently run with our GHCR `packages: write` token. Renovate's `helpers:pinGitHubActionDigestsToSemver` (already active via `config:best-practices`) keeps the SHAs current; the new `groupName: "github-actions"` rule in `renovate.json` bundles all Action bumps into a single weekly PR instead of one per Action.
 
 ### Fixed

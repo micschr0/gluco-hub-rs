@@ -37,6 +37,14 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/gluco-hub
 
+# Deny-all by default. Each job below opts into the narrowest token scope
+# it needs — `build` only `packages: write` for digest push, `merge` adds
+# `id-token: write` for cosign keyless OIDC and `attestations: write` for
+# the SLSA build-provenance attestation. PR runs gate the actual push via
+# `if:` on the step, so even though the build job has `packages: write`,
+# nothing exercises it on `pull_request`.
+permissions: {}
+
 jobs:
   build:
     name: build (${{ matrix.platform }})
