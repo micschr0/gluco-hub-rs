@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **CI supply-chain hardening: SHA-pin all third-party Actions** — every `uses:` line across `.github/workflows/{ci,deny,release,renovate}.yml` now references a third-party Action by its full 40-char commit SHA with a `# vX.Y.Z` trailing comment, instead of the floating major tag (`@v3`, `@v4`, …). A tag-hijack on any upstream Action repo (docker/*, EmbarkStudios/cargo-deny-action, sigstore/cosign-installer, renovatebot/github-action, etc.) can no longer silently run with our GHCR `packages: write` token. Renovate's `helpers:pinGitHubActionDigestsToSemver` (already active via `config:best-practices`) keeps the SHAs current; the new `groupName: "github-actions"` rule in `renovate.json` bundles all Action bumps into a single weekly PR instead of one per Action.
+
 ### Fixed
 
 - **Release workflow: manifest publish on develop pushes** — the "merge & publish manifest" step built its `docker buildx imagetools create` argv via unquoted command substitution. Annotation values containing shell-meaningful characters (e.g. the auto-derived GitHub-repo description `CGM glucose -> Nightscout, MQTT, HTTP-API`) word-split, so `->` reached docker as a stray flag and the step exited 125 — breaking `:develop` and `:sha-<short>` publishes since the V3 work landed. Replaced with a quoted bash-array argv so arbitrary tag, annotation, and digest values are safe (closes a CWE-88 argument-injection footgun where any field flowing into `DOCKER_METADATA_OUTPUT_JSON` could inject docker flags).
