@@ -17,7 +17,7 @@ use gluco_hub_core::Sink;
 use secrecy::SecretString;
 use serde_json::Value;
 
-use crate::config::{MqttQos, MqttSinkConfig};
+use crate::config::{MqttGlucoseUnit, MqttQos, MqttSinkConfig};
 use crate::dlq::DlqSink;
 use crate::sink_router::SinkRouter;
 use crate::sinks::mqtt::MqttSink;
@@ -70,6 +70,7 @@ async fn one_reading_fans_out_to_both_ns_and_mqtt() {
         discovery_enabled: false,
         discovery_prefix: "homeassistant".into(),
         device_name: None,
+        discovery_unit: MqttGlucoseUnit::default(),
     };
     let mqtt_sink: Arc<dyn Sink> = Arc::new(MqttSink::new(&mqtt_cfg, None).expect("mqtt sink"));
     let mqtt_dlq = Arc::new(DlqSink::open(mqtt_sink, dlq_dir.path(), 1000).expect("dlq mqtt"));
@@ -147,6 +148,7 @@ async fn watermark_drops_duplicates_across_both_sinks_in_steady_state() {
         discovery_enabled: false,
         discovery_prefix: "homeassistant".into(),
         device_name: None,
+        discovery_unit: MqttGlucoseUnit::default(),
     };
     let mqtt_sink: Arc<dyn Sink> = Arc::new(MqttSink::new(&mqtt_cfg, None).expect("mqtt sink"));
     let mqtt_router = Arc::new(SinkRouter::new(Arc::new(

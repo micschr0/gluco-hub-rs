@@ -184,6 +184,22 @@ pub enum MqttQos {
     ExactlyOnce,
 }
 
+/// Selects which glucose unit the Home Assistant MQTT discovery sensor
+/// reports as its state value. The wire payload always carries both
+/// `mgdl` and `mmol` fields (see [`crate::sinks::mqtt::wire::GlucosePayload`]);
+/// this option only switches the `unit_of_measurement` string and the
+/// `value_template` HA reads. Default `mgdl` preserves the V2 / V3
+/// behaviour and matches US clinical convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MqttGlucoseUnit {
+    /// Report `mg/dL`. Default — preserves existing behaviour.
+    #[default]
+    MgDl,
+    /// Report `mmol/L`. Sensible for EU / UK / most-of-world deployments.
+    Mmol,
+}
+
 impl TryFrom<u8> for MqttQos {
     type Error = String;
     fn try_from(value: u8) -> Result<Self, Self::Error> {
@@ -284,6 +300,13 @@ pub struct MqttSinkConfig {
     #[serde(default)]
     #[validate(length(min = 1, max = 128))]
     pub device_name: Option<String>,
+
+    /// Unit reported by the HA discovery sensor entity. The wire
+    /// payload always carries both `mgdl` and `mmol`; this switches the
+    /// `unit_of_measurement` + `value_template` HA reads. Default
+    /// `mgdl` preserves V2 / V3 behaviour.
+    #[serde(default)]
+    pub discovery_unit: MqttGlucoseUnit,
 }
 
 fn default_mqtt_keep_alive() -> u64 {
