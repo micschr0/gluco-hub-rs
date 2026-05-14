@@ -87,6 +87,9 @@ interval_secs = 60
 # discovery_enabled = false
 # discovery_prefix = "homeassistant"     # HA's default; change only if HA is reconfigured
 # device_name = "Gluco Hub (kitchen)"    # optional; defaults to `Gluco Hub (<client_id>)`
+# discovery_unit = "mgdl"                # "mgdl" (default, US) or "mmol" (EU/UK). Switches only
+#                                        # the HA sensor's reported unit + value_template; the
+#                                        # wire payload always carries both fields.
 
 # On-disk state — used by the dead-letter queue (one JSONL file per sink
 # at `<dir>/dlq/<sink>.jsonl`). In containers, mount a persistent volume

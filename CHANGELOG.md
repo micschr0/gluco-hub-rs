@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **MQTT HA-discovery: configurable glucose unit** — new optional `[sink.mqtt] discovery_unit` field accepts `"mgdl"` (default, preserves V3 behaviour) or `"mmol"`. When set to `mmol`, the discovery payload reports `unit_of_measurement = "mmol/L"` and `value_template = "{{ value_json.mmol }}"` so EU/UK Home Assistant users see mmol/L directly on the sensor entity. The wire payload is unchanged — both `mgdl` and `mmol` fields are always emitted, so subscribers other than HA see the same JSON they did before.
+
 ### Changed
 
 - **CI supply-chain hardening: `step-security/harden-runner` egress audit** — every job in `ci.yml`, `deny.yml`, `release.yml`, and `renovate.yml` now starts with a SHA-pinned `step-security/harden-runner@v2.19.3` step in `egress-policy: audit` mode. The action installs an eBPF agent on the runner that records every outbound network call without blocking it; the resulting audit log is attached to each workflow run and visible at `app.stepsecurity.io`. This is the observation pass — once a baseline allow-list is stable across CI, deny, release, and renovate runs, a follow-up commit will flip the policy to `block` so a hijacked Action cannot exfiltrate or call out to unexpected hosts.

@@ -502,7 +502,7 @@ mod tests {
     use serde_json::Value;
     use tokio_util::codec::Framed;
 
-    use crate::config::{MqttQos, MqttSinkConfig};
+    use crate::config::{MqttGlucoseUnit, MqttQos, MqttSinkConfig};
 
     use super::MqttSink;
 
@@ -585,6 +585,7 @@ mod tests {
             discovery_enabled: false,
             discovery_prefix: "homeassistant".into(),
             device_name: None,
+            discovery_unit: MqttGlucoseUnit::default(),
         }
     }
 
