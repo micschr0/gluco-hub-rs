@@ -13,7 +13,7 @@ use chrono::{TimeZone, Utc};
 use gluco_hub_core::Sink;
 use serde_json::Value;
 
-use crate::config::{MqttQos, MqttSinkConfig};
+use crate::config::{MqttGlucoseUnit, MqttQos, MqttSinkConfig};
 use crate::sinks::mqtt::MqttSink;
 
 use super::common::ha_schema::validate_sensor_discovery;
@@ -37,6 +37,7 @@ fn cfg(host: &str, port: u16, client_id: &str, topic_prefix: &str) -> MqttSinkCo
         discovery_enabled: false,
         discovery_prefix: "homeassistant".into(),
         device_name: None,
+        discovery_unit: MqttGlucoseUnit::default(),
     }
 }
 

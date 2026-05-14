@@ -16,7 +16,26 @@
 
 use serde::Serialize;
 
-use crate::config::MqttSinkConfig;
+use crate::config::{MqttGlucoseUnit, MqttSinkConfig};
+
+impl MqttGlucoseUnit {
+    /// HA `unit_of_measurement` string for the discovery payload.
+    pub(crate) fn unit_of_measurement(self) -> &'static str {
+        match self {
+            Self::MgDl => "mg/dL",
+            Self::Mmol => "mmol/L",
+        }
+    }
+
+    /// HA `value_template` (Jinja2) that reads the matching field from
+    /// the JSON wire payload — both fields are always present.
+    pub(crate) fn value_template(self) -> &'static str {
+        match self {
+            Self::MgDl => "{{ value_json.mgdl }}",
+            Self::Mmol => "{{ value_json.mmol }}",
+        }
+    }
+}
 
 /// Discovery message published once per ConnAck (retained, QoS 1).
 /// Field names match HA's [MQTT sensor discovery schema][1] verbatim;
@@ -64,8 +83,8 @@ pub fn build_discovery_payload(cfg: &MqttSinkConfig) -> DiscoveryPayload<'_> {
         name: "Glucose",
         unique_id: format!("{device_identifier}_glucose"),
         state_topic: format!("{}/glucose", cfg.topic_prefix),
-        value_template: "{{ value_json.mgdl }}",
-        unit_of_measurement: "mg/dL",
+        value_template: cfg.discovery_unit.value_template(),
+        unit_of_measurement: cfg.discovery_unit.unit_of_measurement(),
         state_class: "measurement",
         icon: "mdi:water-percent",
         availability_topic: format!("{}/_health", cfg.topic_prefix),
@@ -93,7 +112,7 @@ fn unique_id(cfg: &MqttSinkConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{MqttQos, MqttSinkConfig};
+    use crate::config::{MqttGlucoseUnit, MqttQos, MqttSinkConfig};
 
     fn cfg(client_id: &str) -> MqttSinkConfig {
         MqttSinkConfig {
@@ -112,6 +131,7 @@ mod tests {
             discovery_enabled: true,
             discovery_prefix: "homeassistant".into(),
             device_name: None,
+            discovery_unit: MqttGlucoseUnit::default(),
         }
     }
 
@@ -180,5 +200,40 @@ mod tests {
         assert_eq!(v["value_template"], "{{ value_json.mgdl }}");
         assert_eq!(v["state_class"], "measurement");
         assert_eq!(v["device"]["manufacturer"], "gluco-hub-rs");
+    }
+
+    #[test]
+    fn default_discovery_unit_is_mgdl() {
+        // Preserves V2 / V3 behaviour — operators upgrading do not see
+        // a unit change unless they explicitly opt in.
+        assert_eq!(MqttGlucoseUnit::default(), MqttGlucoseUnit::MgDl);
+    }
+
+    #[test]
+    fn mmol_discovery_unit_switches_unit_and_template() {
+        let mut c = cfg("eu-1");
+        c.discovery_unit = MqttGlucoseUnit::Mmol;
+        let p = build_discovery_payload(&c);
+        assert_eq!(p.unit_of_measurement, "mmol/L");
+        assert_eq!(p.value_template, "{{ value_json.mmol }}");
+    }
+
+    #[test]
+    fn mgdl_discovery_unit_keeps_legacy_strings() {
+        let mut c = cfg("us-1");
+        c.discovery_unit = MqttGlucoseUnit::MgDl;
+        let p = build_discovery_payload(&c);
+        assert_eq!(p.unit_of_measurement, "mg/dL");
+        assert_eq!(p.value_template, "{{ value_json.mgdl }}");
+    }
+
+    #[test]
+    fn mqtt_glucose_unit_deserialises_from_lowercase_strings() {
+        // ENV-based config sets the field as a plain lowercase string;
+        // serde must accept both forms.
+        let mgdl: MqttGlucoseUnit = serde_json::from_str(r#""mgdl""#).expect("mgdl");
+        let mmol: MqttGlucoseUnit = serde_json::from_str(r#""mmol""#).expect("mmol");
+        assert_eq!(mgdl, MqttGlucoseUnit::MgDl);
+        assert_eq!(mmol, MqttGlucoseUnit::Mmol);
     }
 }
