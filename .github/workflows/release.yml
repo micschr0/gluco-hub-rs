@@ -185,11 +185,22 @@ jobs:
 
       - name: Create manifest list & push
         working-directory: /tmp/digests
+        # Build the argv as a bash array so values containing spaces or
+        # shell-meaningful chars (e.g. "->", "--flag=") cannot be word-split
+        # into stray flags — closes a CWE-88 argument-injection footgun.
         run: |
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(jq -cr '.annotations // [] | map("--annotation " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+          set -euo pipefail
+          args=()
+          while IFS= read -r tag; do
+            args+=(-t "$tag")
+          done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          while IFS= read -r ann; do
+            args+=(--annotation "$ann")
+          done < <(jq -r '.annotations[]? // empty' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          for digest in *; do
+            args+=("${REGISTRY}/${IMAGE_NAME}@sha256:${digest}")
+          done
+          docker buildx imagetools create "${args[@]}"
 
       - name: Inspect manifest
         run: |
