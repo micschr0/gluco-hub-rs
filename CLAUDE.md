@@ -80,7 +80,7 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 
 - **V1** ✓: LLU source + Nightscout sink + HTTP API + optional Bearer
 - **V2** ✓: MQTT sink (v5, LWT, schema `v: 1`, topics `_health` and `_stats`)
-- **V3** ✓: HA MQTT auto-discovery, per-sink watermark backfill (SinkRouter), persistent DLQ (DlqSink)
+- **V3** ✓: HA MQTT auto-discovery, per-sink watermark backfill (SinkRouter), persistent DLQ (DlqSink). Pre-merge gate: `docs/V3_VALIDATION.md` checklist run against real infrastructure with `:develop`.
 - **V5**: tailscale-rs embedded, mTLS for MQTT, JWT-as-password
 - **V6**: NS-Socket source — Nightscout as an alternative data source via Socket.IO (NS becomes the upstream; gluco-hub fans out to MQTT / HA / Webhook). Standalone alternative to LLU; multi-source coexistence stays deferred.
 - **Deferred** (revisit when a concrete use case emerges):
