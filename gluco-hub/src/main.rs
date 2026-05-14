@@ -10,13 +10,16 @@ use clap::{Parser, Subcommand};
 use gluco_hub_core::{Reading, ReadingCache, Sink, Source};
 use tracing::{error, info, warn};
 
-mod api;
-mod config;
-mod dlq;
-mod metrics;
-mod sink_router;
-mod sinks;
-mod sources;
+pub mod api;
+pub mod config;
+pub mod dlq;
+pub mod metrics;
+pub mod sink_router;
+pub mod sinks;
+pub mod sources;
+
+#[cfg(all(test, feature = "integration-tests"))]
+mod integration_tests;
 
 #[cfg(all(test, feature = "source-llu", feature = "sink-nightscout"))]
 mod e2e_tests;
