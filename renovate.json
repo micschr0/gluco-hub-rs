@@ -60,9 +60,10 @@
       "automerge": true
     },
     {
-      "description": "Automerge GitHub Actions minor/patch/digest bumps",
+      "description": "Group GitHub Actions bumps and automerge non-major. SHA pinning is enforced by helpers:pinGitHubActionDigestsToSemver (via config:best-practices).",
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "github-actions",
       "automerge": true
     },
     {
