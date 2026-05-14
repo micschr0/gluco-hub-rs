@@ -76,7 +76,7 @@ http-body-util = "0.1"
 # feature flag — see [features]). testcontainers spins up real
 # Mosquitto / Nightscout / MongoDB instances; the wiremock-based
 # E2E tests in src/e2e_tests.rs stay as the fast path.
-testcontainers = "0.27"
+testcontainers = { version = "0.27", features = ["docker-compose"] }
 testcontainers-modules = { version = "0.15", features = ["mongo"] }
 uuid = { version = "1", features = ["v4"] }
 
