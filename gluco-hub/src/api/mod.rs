@@ -22,14 +22,6 @@ mod metrics;
 const X_DISCLAIMER_HEADER: HeaderName = HeaderName::from_static("x-disclaimer");
 const X_DISCLAIMER_VALUE: HeaderValue = HeaderValue::from_static("not-for-medical-use");
 
-/// Inlined into the JSON body of `/glucose/latest` so consumers that only
-/// look at the body still see the warning. Long-form text lives in
-/// `DISCLAIMER.md` and `SCOPE.md` at the repo root.
-pub(crate) const READING_DISCLAIMER: &str = "Not for medical use. \
-    Unofficial research and self-hosting tool, not affiliated with Abbott. \
-    Use may violate Abbott's LibreLink Up Terms of Service. \
-    No warranty. Use at your own risk.";
-
 /// Shared application state passed to handlers via `State<AppState>`.
 ///
 /// `bearer_token` is `Some` only when `GLUCO_HUB__HTTP__BEARER_TOKEN` was

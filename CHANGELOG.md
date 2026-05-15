@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Disclaimer JSON field removed from `/glucose/*` responses (BREAKING wire-format change)** — the `disclaimer` field is no longer carried in the JSON body. Consumers that read `response.disclaimer` will see `undefined` and should switch to the `X-Disclaimer: not-for-medical-use` HTTP header (present on every response) or to `DISCLAIMER.md` for the long-form text. Rationale: the body-carried string duplicated the signal three other paths already convey (header, startup banner, DISCLAIMER.md) and added ~150 bytes to every reading response. The test in `gluco-hub/src/api/glucose.rs` now asserts the field is absent (regression sentinel).
+- **Startup banner closer** — `print_disclaimer_banner` now ends with `Use at your own risk.` on its own line (was previously inline with the `See SCOPE.md, DISCLAIMER.md, LICENSE.` reference). Banner grew from 6 to 7 content lines. Matches the canonical disclaimer phrasing used across docs.
+- **`DISCLAIMER.md` (en) + `Cargo.toml` `description`** — appended `Use at your own risk.` so every disclaimer-bearing surface closes with the same sentence.
 - **Startup disclaimer banner + HTTP-API disclaimer string** now spell out three previously-implicit risks alongside the existing not-for-medical-use posture: (a) the project is unofficial and not affiliated with Abbott; (b) use may violate Abbott's LibreLink Up Terms of Service; (c) the software is provided "as is" — use at your own risk. The banner gains two lines (now six), and `READING_DISCLAIMER` (inlined into every `/glucose/*` JSON body) is expanded from `"Not for medical use. Research only."` to the full multi-sentence statement so API consumers that only parse the body see the complete warning. Triggered by aligning the ha-libre-glucose-mqtt addon's disclaimer wording with the upstream binary's startup output.
 
 ## [2026.515.0] - 2026-05-15

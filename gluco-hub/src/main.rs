@@ -127,7 +127,8 @@ fn print_disclaimer_banner() {
     eprintln!("Unofficial research and self-hosting tool.");
     eprintln!("Not affiliated with Abbott; use may violate LibreLink Up ToS.");
     eprintln!("No warranty. Not for medical decisions, therapy, dosing, or diagnosis.");
-    eprintln!("Use at your own risk. See SCOPE.md, DISCLAIMER.md, LICENSE.");
+    eprintln!("See SCOPE.md, DISCLAIMER.md, LICENSE.");
+    eprintln!("Use at your own risk.");
     eprintln!("===========================================================");
 }
 

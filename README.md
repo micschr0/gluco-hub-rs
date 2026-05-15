@@ -186,7 +186,7 @@ GLUCO_HUB__HTTP__BIND=0.0.0.0:9090 GLUCO_HUB__POLLER__INTERVAL_SECS=30 ./gluco-h
 | `GET /metrics`        | public          | Prometheus text exposition (v0.0.4)        |
 | `GET /glucose/latest` | optional Bearer | Latest cached reading, or `503` + `API001` |
 
-Setting `GLUCO_HUB__HTTP__BEARER_TOKEN` puts `/glucose/*` behind Bearer auth. Every response also carries the header `X-Disclaimer: not-for-medical-use`. Example reading response:
+Setting `GLUCO_HUB__HTTP__BEARER_TOKEN` puts `/glucose/*` behind Bearer auth. Every response also carries the header `X-Disclaimer: not-for-medical-use` — that header is the canonical machine-readable disclaimer signal; long-form text lives in `DISCLAIMER.md`. Example reading response:
 
 ```json
 {
@@ -194,8 +194,7 @@ Setting `GLUCO_HUB__HTTP__BEARER_TOKEN` puts `/glucose/*` behind Bearer auth. Ev
   "source_id": "llu",
   "timestamp": "2025-01-01T12:00:00Z",
   "glucose_mgdl": 112,
-  "trend": "Flat",
-  "disclaimer": "Not for medical use. Research only."
+  "trend": "Flat"
 }
 ```
 
