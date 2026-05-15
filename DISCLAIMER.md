@@ -10,7 +10,7 @@
 
 **The authors and contributors** are not medical professionals, provide no warranty (see LICENSE), and disclaim all liability for outcomes resulting from use. We close issues that ask for medical advice and reject PRs that add clinical features.
 
-For medical decisions, use approved devices and consult your healthcare provider.
+For medical decisions, use approved devices and consult your healthcare provider. Use at your own risk.
 
 ---
 

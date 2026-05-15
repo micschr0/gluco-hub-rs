@@ -9,7 +9,7 @@ license = "AGPL-3.0-or-later"
 authors = []
 version = "2026.515.0"
 repository = "https://github.com/micschr0/gluco-hub-rs"
-description = "Self-hosted Rust pipeline for LibreLink Up CGM data — HTTP API, Nightscout, MQTT v5. Research and self-hosting tool. Not for medical use."
+description = "Self-hosted Rust pipeline for LibreLink Up CGM data — HTTP API, Nightscout, MQTT v5. Research and self-hosting tool. Not for medical use. Use at your own risk."
 
 # Canonical version reference. Member crates use `serde = { workspace = true }`.
 # Renovate keeps these on the latest minor — no exact pins.
