@@ -41,11 +41,6 @@ struct ReadingDto {
     timestamp: chrono::DateTime<chrono::Utc>,
     glucose_mgdl: f64,
     trend: gluco_hub_core::Trend,
-    /// Static "not a medical device" marker. Carried in the body so
-    /// consumers that only inspect JSON (and ignore the `X-Disclaimer`
-    /// response header) still see the warning. Long-form text lives
-    /// in `DISCLAIMER.md`.
-    disclaimer: &'static str,
 }
 
 impl From<Reading> for ReadingDto {
@@ -56,7 +51,6 @@ impl From<Reading> for ReadingDto {
             timestamp: r.timestamp,
             glucose_mgdl: r.glucose.get(),
             trend: r.trend,
-            disclaimer: super::READING_DISCLAIMER,
         }
     }
 }
@@ -118,10 +112,8 @@ mod tests {
         assert_eq!(json["patient_id"], "p1");
         assert_eq!(json["source_id"], "primary");
         assert!(
-            json["disclaimer"]
-                .as_str()
-                .is_some_and(|s| s.contains("Not for medical use")),
-            "disclaimer field missing or wrong: {json}"
+            json.get("disclaimer").is_none(),
+            "disclaimer field should have been removed: {json}"
         );
     }
 }
