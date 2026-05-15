@@ -93,7 +93,12 @@ uuid = { version = "1", features = ["v4"] }
 # `replace`, not in `search`. The version regex `v[\w.-]+` matches any
 # SemVer including pre-release suffixes (e.g. `0.1.0-rc.1`).
 [package.metadata.release]
-pre-release-hook = ["sh", "-c", "cd \"$(git rev-parse --show-toplevel)\" && task check"]
+# Local pre-release gate. Matches what CI's regular `test` job runs on every
+# push/PR (fmt + clippy + production-feature tests, mirroring the matrix in
+# ci.yml). The container-backed `integration-tests` feature is intentionally
+# excluded — that lane only runs in CI on PRs targeting main and requires a
+# Docker daemon, which the release operator's machine isn't expected to provide.
+pre-release-hook = ["sh", "-c", "cd \"$(git rev-parse --show-toplevel)\" && task lint && cargo test --locked --features \"source-llu sink-nightscout sink-mqtt mock-source\""]
 # Inline tables MUST be on one line per TOML 1.0 (cargo-chef parses strictly,
 # cargo itself is lenient). Keep each replacement on a single line.
 pre-release-replacements = [
