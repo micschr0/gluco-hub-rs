@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Startup disclaimer banner + HTTP-API disclaimer string** now spell out three previously-implicit risks alongside the existing not-for-medical-use posture: (a) the project is unofficial and not affiliated with Abbott; (b) use may violate Abbott's LibreLink Up Terms of Service; (c) the software is provided "as is" — use at your own risk. The banner gains two lines (now six), and `READING_DISCLAIMER` (inlined into every `/glucose/*` JSON body) is expanded from `"Not for medical use. Research only."` to the full multi-sentence statement so API consumers that only parse the body see the complete warning. Triggered by aligning the ha-libre-glucose-mqtt addon's disclaimer wording with the upstream binary's startup output.
+
 ## [2026.515.0] - 2026-05-15
 
 ### Added
