@@ -80,11 +80,17 @@ async fn health_topic_retained_with_online_marker() {
     let client_id = unique_id("hlth");
     let prefix = format!("itest/{client_id}");
 
+    // Subscribe AFTER the sink so the broker replays the retained
+    // `_health` topic to a new subscriber with `retain=true`. MQTT v5
+    // §3.3.1.3.2 only sets RETAIN=1 on messages delivered as a result
+    // of a new subscription, so subscribing first sees the live
+    // publish with `retain=false` and races the SUBSCRIBE.
+    let _sink = MqttSink::new(&cfg(&host, port, &client_id, &prefix), None).expect("sink");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
     let (mut rx, _cancel) = subscribe_to(&broker, &format!("{prefix}/_health"), "sub-hlth")
         .await
         .expect("subscribe");
-
-    let _sink = MqttSink::new(&cfg(&host, port, &client_id, &prefix), None).expect("sink");
 
     let pkt = wait_for_topic(
         &mut rx,
@@ -111,11 +117,16 @@ async fn discovery_config_published_when_enabled_and_passes_ha_schema() {
     c.discovery_enabled = true;
 
     let discovery_topic = format!("homeassistant/sensor/gluco_hub_{client_id}_glucose/config");
+
+    // Subscribe AFTER the sink so the broker replays the retained
+    // discovery config to a new subscriber with `retain=true` — see
+    // the matching comment in `health_topic_retained_with_online_marker`.
+    let _sink = MqttSink::new(&c, None).expect("sink");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
     let (mut rx, _cancel) = subscribe_to(&broker, &discovery_topic, "sub-disc")
         .await
         .expect("subscribe");
-
-    let _sink = MqttSink::new(&c, None).expect("sink");
 
     let pkt = wait_for_topic(&mut rx, &discovery_topic, Duration::from_secs(5))
         .await
@@ -146,11 +157,20 @@ async fn trend_discovery_config_published_when_enabled_and_passes_ha_schema() {
     c.discovery_enabled = true;
 
     let trend_topic = format!("homeassistant/sensor/gluco_hub_{client_id}_trend/config");
+
+    // Subscribe AFTER the sink has had a chance to connect and publish
+    // the retained discovery config — MQTT v5 §3.3.1.3.2 only sets
+    // RETAIN=1 on messages delivered as a result of a NEW subscription,
+    // so subscribing before the publisher races and frequently observes
+    // `retain=false` on what is in fact a retained topic. Subscribing
+    // after the publisher means the broker replays the retained backlog
+    // with `retain=true` deterministically.
+    let _sink = MqttSink::new(&c, None).expect("sink");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
     let (mut rx, _cancel) = subscribe_to(&broker, &trend_topic, "sub-trend")
         .await
         .expect("subscribe");
-
-    let _sink = MqttSink::new(&c, None).expect("sink");
 
     let pkt = wait_for_topic(&mut rx, &trend_topic, Duration::from_secs(5))
         .await
