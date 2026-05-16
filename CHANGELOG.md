@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`http.enabled` toggle + liveness heartbeat file** — new optional `[http] enabled` field (default `true`, backward-compatible). Setting `enabled = false` (or `GLUCO_HUB__HTTP__ENABLED=false`) suppresses the embedded axum listener entirely so MQTT-only deployments (e.g. the Home Assistant add-on) don't run an unused TCP server. The poller and all sinks behave identically regardless. Liveness is now observable independently from HTTP via the heartbeat file at `<state.dir>/.alive` — atomically rewritten after every poll iteration (success, fetch error, OR timeout) so Docker/Supervisor healthchecks can use `stat -c %Y` on it instead of probing port 8080. A configured `bearer_token` is ignored with a one-shot startup WARN when `enabled = false`. The state directory is now created unconditionally on startup (was previously created lazily by the DLQ; needed for the heartbeat path when DLQ is off).
+
 ### Changed
 
 - **Disclaimer JSON field removed from `/glucose/*` responses (BREAKING wire-format change)** — the `disclaimer` field is no longer carried in the JSON body. Consumers that read `response.disclaimer` will see `undefined` and should switch to the `X-Disclaimer: not-for-medical-use` HTTP header (present on every response) or to `DISCLAIMER.md` for the long-form text. Rationale: the body-carried string duplicated the signal three other paths already convey (header, startup banner, DISCLAIMER.md) and added ~150 bytes to every reading response. The test in `gluco-hub/src/api/glucose.rs` now asserts the field is absent (regression sentinel).

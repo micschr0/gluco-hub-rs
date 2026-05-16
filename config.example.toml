@@ -10,11 +10,18 @@
 # the same `GLUCO_HUB__SECTION__KEY` convention, e.g. `GLUCO_HUB__HTTP__BIND`.
 
 [http]
-# Address the HTTP API listens on.
+# Master toggle for the embedded HTTP server (cache API + /healthz +
+# /metrics). Defaults to true. Set to false for MQTT-only deployments
+# (e.g. the Home Assistant add-on): the poller + sinks still run, but
+# no TCP listener is opened. Liveness is then observable via the
+# heartbeat file `<state.dir>/.alive` (touched after every poll tick).
+# enabled = true
+# Address the HTTP API listens on. Ignored when enabled = false.
 bind = "0.0.0.0:8080"
 # Optional: when set, /glucose/* requires `Authorization: Bearer <token>`
 # where the token equals the value of GLUCO_HUB__HTTP__BEARER_TOKEN.
-# /healthz and /metrics stay public.
+# /healthz and /metrics stay public. Ignored (with a startup warning)
+# when enabled = false.
 # (set GLUCO_HUB__HTTP__BEARER_TOKEN=<secret> in the environment to enable)
 
 [poller]

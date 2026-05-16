@@ -195,10 +195,27 @@ async fn serve(cfg: config::Config) -> Result<()> {
     // ended up empty.
     config::verify_secrets(&cfg).context("verify configured secrets")?;
 
+    // state.dir hosts both the DLQ tree and the liveness heartbeat file.
+    // The DLQ creates its own subdir lazily, but the heartbeat writer
+    // needs the parent to exist regardless. Create unconditionally so
+    // both code paths behave the same.
+    std::fs::create_dir_all(&cfg.state.dir)
+        .with_context(|| format!("create state dir {}", cfg.state.dir.display()))?;
+
     let metrics_handle = metrics::init_recorder().context("init metrics recorder")?;
     let cache = ReadingCache::new();
     let bearer_token = resolve_bearer_token(&cfg);
-    info!(auth_enabled = bearer_token.is_some(), "http auth state");
+    if !cfg.http.enabled && bearer_token.is_some() {
+        warn!(
+            "http.enabled = false; configured bearer_token is ignored — \
+             remove it from config to silence this warning"
+        );
+    }
+    info!(
+        http_enabled = cfg.http.enabled,
+        auth_enabled = bearer_token.is_some(),
+        "http config",
+    );
     let state = api::AppState {
         cache: cache.clone(),
         metrics_handle,
@@ -207,7 +224,12 @@ async fn serve(cfg: config::Config) -> Result<()> {
 
     let sinks = build_sinks(&cfg)?;
     info!(sink_count = sinks.len(), "sinks configured");
-    if sinks.is_empty() {
+    if sinks.is_empty() && !cfg.http.enabled {
+        warn!(
+            "no sink AND http.enabled = false — readings will populate the \
+             in-memory cache only and be unreachable; this is rarely intended"
+        );
+    } else if sinks.is_empty() {
         warn!(
             "no sink configured; readings will populate the in-memory cache and \
              HTTP API only — nothing is pushed downstream"
@@ -218,11 +240,31 @@ async fn serve(cfg: config::Config) -> Result<()> {
         let interval = Duration::from_secs(cfg.poller.interval_secs);
         let cache_for_poller = cache.clone();
         let sinks_for_poller = sinks.clone();
+        let heartbeat_path = Some(cfg.state.dir.join(".alive"));
         tokio::spawn(async move {
-            poll_loop(source, cache_for_poller, sinks_for_poller, interval).await;
+            poll_loop(
+                source,
+                cache_for_poller,
+                sinks_for_poller,
+                interval,
+                heartbeat_path,
+            )
+            .await;
         });
-    } else {
+    } else if cfg.http.enabled {
         warn!("no source configured; HTTP API will serve 503 until one is enabled");
+    } else {
+        warn!("no source configured AND http.enabled = false — process will idle");
+    }
+
+    if !cfg.http.enabled {
+        info!(
+            heartbeat = %cfg.state.dir.join(".alive").display(),
+            "http server disabled; liveness via heartbeat file. \
+             Waiting for shutdown signal."
+        );
+        shutdown_signal().await;
+        return Ok(());
     }
 
     let router = api::router(state);
@@ -453,11 +495,37 @@ async fn nsdryrun(cfg: &config::Config) -> Result<()> {
     Ok(())
 }
 
+/// Touch the liveness heartbeat file. Called after every poll iteration
+/// (success, fetch error, AND timeout) so liveness reflects "the polling
+/// task is alive and ticking", not "LLU is reachable". Atomic write via
+/// `tempfile::NamedTempFile::persist` so a reader (the HA Supervisor
+/// healthcheck script via `stat -c %Y`) never sees a half-written file.
+/// Failure to write is logged but does not stop the loop — heartbeat is
+/// observability, not a correctness requirement of the poller itself.
+fn write_heartbeat(path: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "heartbeat path has no parent",
+        )
+    })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    writeln!(tmp, "{now}")?;
+    tmp.persist(path).map_err(std::io::Error::other)?;
+    Ok(())
+}
+
 async fn poll_loop(
     source: Arc<dyn Source>,
     cache: ReadingCache,
     sinks: Vec<Arc<sink_router::SinkRouter>>,
     interval: Duration,
+    heartbeat_path: Option<PathBuf>,
 ) {
     let source_id = source.id().as_str().to_string();
     let sink_timeout = sink_push_timeout(interval);
@@ -478,7 +546,6 @@ async fn poll_loop(
                     timeout_secs = sink_timeout.as_secs(),
                     "source fetch timed out",
                 );
-                continue;
             }
             Ok(Err(e)) => {
                 ::metrics::counter!(
@@ -492,7 +559,6 @@ async fn poll_loop(
                     error = %e,
                     "source fetch failed",
                 );
-                continue;
             }
             Ok(Ok(batch)) => {
                 let count = batch.len();
@@ -535,6 +601,15 @@ async fn poll_loop(
                     fan_out_to_sinks(&sinks, &batch, sink_timeout).await;
                 }
             }
+        }
+        if let Some(path) = heartbeat_path.as_deref()
+            && let Err(e) = write_heartbeat(path)
+        {
+            warn!(
+                heartbeat_path = %path.display(),
+                error = %e,
+                "heartbeat write failed (non-fatal)",
+            );
         }
     }
 }
@@ -911,6 +986,107 @@ mod tests {
         assert_eq!(to_n(mk("[CFG004]")), to_n(ExitCode::from(2)));
         // Unknown / unclassified → generic failure.
         assert_eq!(to_n(mk("totally unrelated panic")), to_n(ExitCode::FAILURE));
+    }
+
+    /// Helper-level liveness test: a fresh write succeeds and the file
+    /// content is an ASCII UNIX-seconds value within a couple of seconds
+    /// of "now". Atomic-write means no leftover `.tmp*` neighbours.
+    #[test]
+    fn write_heartbeat_creates_file_with_recent_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".alive");
+        write_heartbeat(&path).expect("write");
+        let body = std::fs::read_to_string(&path).expect("read");
+        let stamp: u64 = body.trim().parse().expect("ascii unix seconds");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(now >= stamp, "clock went backwards in same test?");
+        assert!(now - stamp < 5, "stamp too old: now={now} stamp={stamp}");
+        // No leftover temp neighbours from `NamedTempFile::persist`.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name() != "" && e.path() != path)
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "unexpected leftover files: {leftovers:?}"
+        );
+    }
+
+    /// Calling twice in a row overwrites cleanly; the second timestamp
+    /// is >= the first (no atomicity glitch leaves stale content).
+    #[test]
+    fn write_heartbeat_overwrites_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".alive");
+        write_heartbeat(&path).unwrap();
+        let first: u64 = std::fs::read_to_string(&path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // sleep 1s so the second timestamp definitely differs in seconds
+        std::thread::sleep(Duration::from_millis(1_100));
+        write_heartbeat(&path).unwrap();
+        let second: u64 = std::fs::read_to_string(&path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(second > first, "second={second} first={first}");
+    }
+
+    /// Failing source: each poll iteration must still touch the
+    /// heartbeat file, because liveness reports "the polling task is
+    /// alive" — not "the upstream API is reachable". HA Supervisor and
+    /// docker healthchecks rely on this.
+    #[tokio::test]
+    async fn heartbeat_is_touched_even_when_source_errors() {
+        struct FailingSource {
+            id: SourceId,
+        }
+        #[async_trait::async_trait]
+        impl Source for FailingSource {
+            fn id(&self) -> &SourceId {
+                &self.id
+            }
+            async fn fetch_latest(&self) -> Result<Vec<Reading>, CoreError> {
+                Err(CoreError::Source {
+                    message: "[LLU003] simulated".into(),
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let heartbeat = dir.path().join(".alive");
+        let source: Arc<dyn Source> = Arc::new(FailingSource {
+            id: SourceId::new("llu").unwrap(),
+        });
+        let cache = ReadingCache::new();
+        let handle = tokio::spawn(poll_loop(
+            source,
+            cache,
+            Vec::new(),
+            // 10 ms interval => first tick fires almost immediately
+            Duration::from_millis(10),
+            Some(heartbeat.clone()),
+        ));
+        // Poll for the file with a generous overall timeout so flaky CI
+        // schedulers don't surface as test failures.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if heartbeat.exists() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                handle.abort();
+                panic!("heartbeat file never appeared at {}", heartbeat.display());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        handle.abort();
     }
 
     /// `scripts/ns-dryrun.sh` exit-code contract. Pinned mirror of
