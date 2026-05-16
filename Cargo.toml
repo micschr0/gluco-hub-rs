@@ -7,7 +7,7 @@ edition = "2024"
 rust-version = "1.95"
 license = "AGPL-3.0-or-later"
 authors = []
-version = "2026.516.0"
+version = "2026.516.1"
 repository = "https://github.com/micschr0/gluco-hub-rs"
 description = "Self-hosted Rust pipeline for LibreLink Up CGM data — HTTP API, Nightscout, MQTT v5. Research and self-hosting tool. Not for medical use. Use at your own risk."
 
