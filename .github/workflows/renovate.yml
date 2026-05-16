@@ -28,6 +28,6 @@ jobs:
           RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
           RENOVATE_REPOSITORIES: ${{ github.repository }}
           GIT_AUTHOR_NAME: micschro
-          GIT_AUTHOR_EMAIL: micschro@mailbox.org
+          GIT_AUTHOR_EMAIL: micschr0@mailbox.org
           GIT_COMMITTER_NAME: micschro
-          GIT_COMMITTER_EMAIL: micschro@mailbox.org
+          GIT_COMMITTER_EMAIL: micschr0@mailbox.org

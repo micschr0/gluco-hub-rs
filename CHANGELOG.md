@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Security reporting now goes through GitHub Private Vulnerability Reporting** — `SECURITY.md` no longer lists a maintainer email; sensitive reports use the in-platform [advisory form](https://github.com/micschr0/gluco-hub-rs/security/advisories/new) instead. Public bug reports still go to GitHub issues. Reduces address harvesting from the public repo and routes coordinated disclosure through GitHub's audit trail.
+
 ## [2026.516.0] - 2026-05-16
 
 ### Added

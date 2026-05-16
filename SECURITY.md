@@ -16,7 +16,7 @@ gluco-hub-rs is a data-relay tool for self-hosting enthusiasts. It is **not** a 
 
 **For non-sensitive bugs** (wrong HTTP status, config parsing errors, unclear messages): [open a GitHub issue](https://github.com/micschr0/gluco-hub-rs/issues). Include the error code (e.g. `LLU003`) and the output of `check-config` if relevant.
 
-**For sensitive issues** (credential leakage, auth bypass, secret exposure in logs): email [micschro@mailbox.org](mailto:micschro@mailbox.org) with the subject line `[gluco-hub-rs] Security report`. Do **not** open a public issue.
+**For sensitive issues** (credential leakage, auth bypass, secret exposure in logs): use GitHub's [private vulnerability reporting](https://github.com/micschr0/gluco-hub-rs/security/advisories/new). Do **not** open a public issue.
 
 ## What to Include
 
