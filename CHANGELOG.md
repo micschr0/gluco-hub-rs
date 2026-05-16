@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2026.516.0] - 2026-05-16
+
 ### Added
 
 - **`http.enabled` toggle + liveness heartbeat file** — new optional `[http] enabled` field (default `true`, backward-compatible). Setting `enabled = false` (or `GLUCO_HUB__HTTP__ENABLED=false`) suppresses the embedded axum listener entirely so MQTT-only deployments (e.g. the Home Assistant add-on) don't run an unused TCP server. The poller and all sinks behave identically regardless. Liveness is now observable independently from HTTP via the heartbeat file at `<state.dir>/.alive` — atomically rewritten after every poll iteration (success, fetch error, OR timeout) so Docker/Supervisor healthchecks can use `stat -c %Y` on it instead of probing port 8080. A configured `bearer_token` is ignored with a one-shot startup WARN when `enabled = false`. The state directory is now created unconditionally on startup (was previously created lazily by the DLQ; needed for the heartbeat path when DLQ is off).
@@ -41,5 +43,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Sink backfill via per-sink watermark** (V3) — each sink is now wrapped in a `SinkRouter` that tracks the highest reading timestamp it has successfully pushed. The fan-out only delivers strictly-newer readings per cycle. Two consequences: (a) the MQTT sink no longer republishes the full ~24 h `graphData` batch every minute — only the new reading; (b) when a sink fails, its watermark stays put and the next poll-cycle replays the missed window automatically (LLU's 24 h history covers most realistic outages — no on-disk DLQ required). New Prometheus counters `cgm_sink_filtered_total` and `cgm_sink_replayed_total` make the behaviour visible. Watermarks are in-memory and reset on restart (persisting them is tracked as part of the V3 DLQ work).
 - **Persistent dead-letter queue** (V3) — `DlqSink` sits between `SinkRouter` and the real sink. Failed pushes accumulate in a per-sink JSONL file at `<state_dir>/dlq/<sink>.jsonl` (atomic writes via `tempfile::NamedTempFile::persist`) and replay on the next successful push, surviving process restarts and outages longer than LLU's 24 h history. New config: `[state] dir` (default `./state`), `[dlq] enabled` (default `true`), `[dlq] max_entries` (default `10000` ≈ 35 days at the 5-min raster). Cap-exceeding entries drop oldest-first. Four new metrics: `cgm_dlq_enqueued_total{sink}`, `cgm_dlq_drained_total{sink}`, `cgm_dlq_evicted_total{sink}`, `cgm_dlq_size{sink}` gauge.
 
-[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.515.0...HEAD
+[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.516.0...HEAD
+[2026.516.0]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.515.0...v2026.516.0
 [2026.515.0]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.513.0...v2026.515.0
