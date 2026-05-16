@@ -145,6 +145,7 @@ For a file-based setup, copy `config.example.toml` and uncomment the sections yo
 
 ```toml
 [http]
+# enabled = false              # MQTT-only deployments: skip TCP listener entirely
 bind = "0.0.0.0:8080"
 # Bearer auth for /glucose/*: set GLUCO_HUB__HTTP__BEARER_TOKEN=<token>
 

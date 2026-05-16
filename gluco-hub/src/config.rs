@@ -97,11 +97,21 @@ fn default_dlq_max_entries() -> usize {
 
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct HttpConfig {
+    /// Master toggle for the embedded axum HTTP server (the cache API,
+    /// `/healthz`, and `/metrics`). When `false`, the binary still
+    /// polls the source and pushes to sinks — only the local HTTP
+    /// listener is suppressed. Defaults to `true` (backwards-compatible).
+    /// Useful for MQTT-only deployments (e.g. Home Assistant) where
+    /// liveness is observed via the heartbeat file under `state.dir`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
     pub bind: SocketAddr,
 
     /// Optional Bearer token. When set, `/glucose/*` requires
     /// `Authorization: Bearer <token>`. Supply via
     /// `GLUCO_HUB__HTTP__BEARER_TOKEN`. `/healthz` and `/metrics` stay public.
+    /// Ignored (with a startup warning) when `enabled = false`.
     #[serde(default)]
     pub bearer_token: Option<SecretString>,
 }
@@ -517,6 +527,7 @@ const ENV_PREFIX: &str = "GLUCO_HUB";
 /// built-in defaults suitable for local development.
 pub fn load(override_path: Option<&Path>) -> Result<Config, ConfigError> {
     let mut builder = ConfigBuilder::builder()
+        .set_default("http.enabled", true)?
         .set_default("http.bind", "127.0.0.1:8080")?
         .set_default("poller.interval_secs", 60_i64)?;
 
@@ -643,9 +654,36 @@ mod tests {
     #[test]
     fn defaults_load_without_file() {
         let cfg = load(Some(Path::new("/nonexistent.toml"))).expect("defaults must load");
+        assert!(cfg.http.enabled, "http.enabled defaults to true");
         assert_eq!(cfg.http.bind.to_string(), "127.0.0.1:8080");
         assert_eq!(cfg.poller.interval_secs, 60);
         assert!(cfg.source.llu.is_none());
+    }
+
+    /// MQTT-only deployments (e.g. the HA add-on) disable the listener
+    /// to avoid running an unused TCP server. `http.enabled = false` in
+    /// the TOML must round-trip without touching other config knobs.
+    #[test]
+    fn http_enabled_round_trips_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [http]
+            enabled = false
+            bind = "127.0.0.1:8080"
+
+            [poller]
+            interval_secs = 60
+            "#,
+        )
+        .unwrap();
+        let cfg = load(Some(&path)).expect("must load");
+        assert!(!cfg.http.enabled);
+        // bind is still parsed even when disabled — the schema stays
+        // uniform regardless of the toggle.
+        assert_eq!(cfg.http.bind.to_string(), "127.0.0.1:8080");
     }
 
     #[test]
@@ -808,6 +846,7 @@ region = "EU"
     fn verify_secrets_rejects_empty_ns_api_secret() {
         let cfg = Config {
             http: HttpConfig {
+                enabled: true,
                 bind: "127.0.0.1:0".parse().unwrap(),
                 bearer_token: None,
             },
@@ -836,6 +875,7 @@ region = "EU"
     fn verify_secrets_rejects_empty_bearer_token() {
         let cfg = Config {
             http: HttpConfig {
+                enabled: true,
                 bind: "127.0.0.1:0".parse().unwrap(),
                 bearer_token: Some(SecretString::from(String::new())),
             },
@@ -862,6 +902,7 @@ region = "EU"
     fn verify_features_accepts_when_all_features_match() {
         let cfg = Config {
             http: HttpConfig {
+                enabled: true,
                 bind: "127.0.0.1:0".parse().unwrap(),
                 bearer_token: None,
             },
