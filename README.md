@@ -43,15 +43,6 @@ gluco-hub-rs is a small, self-hosted relay between a CGM (currently LibreLink Up
 - **Persistent DLQ** — failed pushes are written to a per-sink JSONL queue on disk and replayed on the next successful push, surviving process restarts and arbitrary outage windows beyond LLU's history
 - **Operable** — Prometheus metrics, structured JSON logs, graceful shutdown on `SIGINT`/`SIGTERM`
 
-## Roadmap
-
-- **Shipped** — LLU source · Nightscout sink · MQTT v5 sink · HTTP API with optional Bearer · HA auto-discovery · per-sink backfill (SinkRouter) · persistent DLQ
-- **V5 (next)** — embedded tailscale-rs · MQTT mTLS · JWT-as-password
-- **V6 (later)** — NS-Socket source (Nightscout as upstream via Socket.IO)
-- **Deferred** — TUI · generic webhook sink · multi-source routing · NS v1 fallback
-
-See [`CLAUDE.md`](./CLAUDE.md#roadmap) for the canonical, more detailed roadmap.
-
 ## Requirements
 
 - A **FreeStyle Libre** sensor (Libre 2 / 3) linked to a **LibreLink Up** account — same email/password as the LibreLinkUp mobile app. No other CGMs supported today.
