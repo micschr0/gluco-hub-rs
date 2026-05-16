@@ -202,7 +202,10 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 
 `<prefix>` is the `topic_prefix` value from `[sink.mqtt]`. Set `include_patient_id = false` to drop the `patient` field on shared brokers. The schema is versioned via the `v` field — see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full payload contracts.
 
-**Home Assistant auto-discovery.** Set `discovery_enabled = true` in `[sink.mqtt]`. The sink then publishes a retained config message on `<discovery_prefix>/sensor/gluco_hub_<client_id>_glucose/config` (default `discovery_prefix = "homeassistant"`) after each MQTT ConnAck. Home Assistant picks the entity up automatically — state reads `mgdl` from `<prefix>/glucose`, availability tracks `<prefix>/_health` via the `online` flag, and the full JSON body is exposed as entity attributes (trend, source, patient, ts).
+**Home Assistant auto-discovery.** Set `discovery_enabled = true` in `[sink.mqtt]`. The sink then publishes two retained config messages on `<discovery_prefix>/sensor/gluco_hub_<client_id>_glucose/config` and `<discovery_prefix>/sensor/gluco_hub_<client_id>_trend/config` (default `discovery_prefix = "homeassistant"`) after each MQTT ConnAck. Home Assistant picks both entities up automatically and groups them under one device:
+
+* **Glucose entity** — state reads `mgdl` (or `mmol`) from `<prefix>/glucose`, availability tracks `<prefix>/_health` via the `online` flag, and the full JSON body is exposed as entity attributes (trend, source, patient, ts).
+* **Trend entity** — state reads `value_json.trend` from the same topic and declares `device_class: "enum"` with every `Trend` variant (`Flat`, `SingleUp`, `FortyFiveUp`, …) in `options`. Use a `template`/`mushroom` card with a state→icon mapping to render directional arrows on a dashboard — HA's MQTT discovery does not support templated icons, so arrow rendering is a dashboard concern.
 
 ## Container
 
