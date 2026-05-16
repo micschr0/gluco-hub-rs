@@ -63,11 +63,19 @@ item as an issue before the merge.
 - [ ] `[sink.mqtt] discovery_enabled = true` in config; restart container.
 - [ ] HA's MQTT integration auto-creates a `sensor.gluco_hub_<client_id>_glucose`
       entity within seconds of ConnAck.
-- [ ] Entity state = current mg/dL.
-- [ ] Entity attributes carry `trend`, `source`, `patient`, `ts`.
-- [ ] Entity availability flips to `unavailable` when gluco-hub is
-      stopped (LWT-driven `_health` flip).
-- [ ] Changing `discovery_enabled = false` → restart → entity stays
+- [ ] HA *also* auto-creates a sibling `sensor.gluco_hub_<client_id>_trend`
+      entity, grouped under the same device as the glucose entity.
+- [ ] Glucose entity state = current mg/dL (or mmol/L).
+- [ ] Glucose entity attributes carry `trend`, `source`, `patient`, `ts`.
+- [ ] Trend entity state = current `Trend` variant string (`Flat`,
+      `SingleUp`, …) and updates whenever glucose updates.
+- [ ] Trend entity is classified as an enum sensor (HA UI: device_class
+      "enum"; allowed states match `options` in the discovery payload).
+- [ ] Both entities' availability flip to `unavailable` together when
+      gluco-hub is stopped (LWT-driven `_health` flip).
+- [ ] HA "Device info" panel shows the gluco-hub-rs `origin` block
+      (integration name + sw_version + support URL).
+- [ ] Changing `discovery_enabled = false` → restart → entities stay
       in HA (retained config not deleted; manual cleanup required —
       documented behaviour).
 

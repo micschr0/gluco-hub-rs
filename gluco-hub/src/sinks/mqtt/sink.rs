@@ -82,19 +82,36 @@ impl MqttSink {
         let health_topic = format!("{}/_health", cfg.topic_prefix);
         let stats_topic = format!("{}/_stats", cfg.topic_prefix);
 
-        // Pre-serialise the HA discovery payload once at startup so the
+        // Pre-serialise the HA discovery payloads once at startup so the
         // poll loop has cheap retained republishes on every reconnect.
-        let discovery = if cfg.discovery_enabled {
-            let payload = serde_json::to_vec(&super::discovery::build_discovery_payload(cfg))
-                .map_err(|e| MqttError::Payload {
-                    message: e.to_string(),
-                })?;
-            Some(DiscoveryPublish {
-                topic: super::discovery::discovery_topic(cfg),
-                payload: Bytes::from(payload),
-            })
+        // Two entities (glucose + trend) ride the same `Vec` so adding
+        // future sibling entities is a one-line push, not a new
+        // Option<...> field.
+        let discovery: Vec<DiscoveryPublish> = if cfg.discovery_enabled {
+            let glucose_payload = serde_json::to_vec(&super::discovery::build_discovery_payload(
+                cfg,
+            ))
+            .map_err(|e| MqttError::Payload {
+                message: e.to_string(),
+            })?;
+            let trend_payload = serde_json::to_vec(
+                &super::discovery::build_trend_discovery_payload(cfg),
+            )
+            .map_err(|e| MqttError::Payload {
+                message: e.to_string(),
+            })?;
+            vec![
+                DiscoveryPublish {
+                    topic: super::discovery::discovery_topic(cfg),
+                    payload: Bytes::from(glucose_payload),
+                },
+                DiscoveryPublish {
+                    topic: super::discovery::discovery_topic_trend(cfg),
+                    payload: Bytes::from(trend_payload),
+                },
+            ]
         } else {
-            None
+            Vec::new()
         };
 
         let poll_task = tokio::spawn(run_poll_loop(
@@ -281,7 +298,7 @@ async fn run_poll_loop(
     mut eventloop: EventLoop,
     client: AsyncClient,
     health_topic: String,
-    discovery: Option<DiscoveryPublish>,
+    discovery: Vec<DiscoveryPublish>,
     cancel: CancellationToken,
     stats: Arc<Mutex<MqttStatsState>>,
 ) {
@@ -332,14 +349,16 @@ async fn run_poll_loop(
                                 );
                             }
                             // HA auto-discovery: retained, QoS 1, idempotent
-                            // across reconnects. A failed publish is logged
-                            // but does not break the connect path — the next
-                            // ConnAck retries.
-                            if let Some(d) = &discovery {
+                            // across reconnects. A failed publish on one
+                            // entity is logged but does not stop the others
+                            // from publishing or break the connect path —
+                            // the next ConnAck retries.
+                            for d in &discovery {
                                 if let Err(e) = publish_discovery(&client, d).await {
                                     warn!(
                                         error_code = e.code(),
                                         error = %e,
+                                        topic = %d.topic,
                                         "mqtt: failed to publish HA discovery config"
                                     );
                                 } else {
@@ -743,10 +762,10 @@ mod tests {
         c.discovery_enabled = true;
         let _sink = MqttSink::new(&c, None).expect("build sink");
 
-        let expected_topic = "homeassistant/sensor/gluco_hub_test-client_glucose/config";
-        let p = wait_for_topic(&mut rx, expected_topic, Duration::from_secs(3))
+        let glucose_topic = "homeassistant/sensor/gluco_hub_test-client_glucose/config";
+        let p = wait_for_topic(&mut rx, glucose_topic, Duration::from_secs(3))
             .await
-            .expect("HA discovery publish must arrive");
+            .expect("HA glucose discovery publish must arrive");
         assert!(p.retain, "discovery publish must be retained");
 
         let body: Value = serde_json::from_slice(&p.payload).expect("json body");
@@ -756,6 +775,42 @@ mod tests {
         assert_eq!(body["value_template"], "{{ value_json.mgdl }}");
         assert_eq!(body["unit_of_measurement"], "mg/dL");
         assert_eq!(body["device"]["manufacturer"], "gluco-hub-rs");
+        assert_eq!(body["has_entity_name"], Value::Bool(true));
+        assert_eq!(body["origin"]["name"], "gluco-hub-rs");
+    }
+
+    #[tokio::test]
+    async fn discovery_publish_includes_trend_entity() {
+        let (port, mut rx) = start_stub_broker().await;
+        let mut c = cfg(port, "test", 60);
+        c.discovery_enabled = true;
+        let _sink = MqttSink::new(&c, None).expect("build sink");
+
+        let trend_topic = "homeassistant/sensor/gluco_hub_test-client_trend/config";
+        let p = wait_for_topic(&mut rx, trend_topic, Duration::from_secs(3))
+            .await
+            .expect("HA trend discovery publish must arrive");
+        assert!(p.retain, "trend discovery publish must be retained");
+
+        let body: Value = serde_json::from_slice(&p.payload).expect("json body");
+        assert_eq!(body["unique_id"], "gluco_hub_test-client_trend");
+        assert_eq!(body["state_topic"], "test/glucose");
+        assert_eq!(body["availability_topic"], "test/_health");
+        assert_eq!(body["value_template"], "{{ value_json.trend }}");
+        assert_eq!(body["device_class"], "enum");
+        assert_eq!(body["icon"], "mdi:trending-up");
+        assert!(body["options"].is_array(), "options must be a JSON array");
+        // The trend entity must NOT declare a unit or state_class.
+        assert!(
+            body.get("unit_of_measurement").is_none(),
+            "trend payload must not declare unit_of_measurement: {body}"
+        );
+        assert!(
+            body.get("state_class").is_none(),
+            "trend payload must not declare state_class: {body}"
+        );
+        // Same device identifier as the glucose entity → HA grouping.
+        assert_eq!(body["device"]["identifiers"][0], "gluco_hub_test-client");
     }
 
     #[tokio::test]

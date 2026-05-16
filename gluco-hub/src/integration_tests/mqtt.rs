@@ -136,6 +136,69 @@ async fn discovery_config_published_when_enabled_and_passes_ha_schema() {
 }
 
 #[tokio::test]
+async fn trend_discovery_config_published_when_enabled_and_passes_ha_schema() {
+    let broker = start_mosquitto().await.expect("start mosquitto");
+    let (host, port) = broker.broker_addr();
+    let client_id = unique_id("trend");
+    let prefix = format!("itest/{client_id}");
+
+    let mut c = cfg(&host, port, &client_id, &prefix);
+    c.discovery_enabled = true;
+
+    let trend_topic = format!("homeassistant/sensor/gluco_hub_{client_id}_trend/config");
+    let (mut rx, _cancel) = subscribe_to(&broker, &trend_topic, "sub-trend")
+        .await
+        .expect("subscribe");
+
+    let _sink = MqttSink::new(&c, None).expect("sink");
+
+    let pkt = wait_for_topic(&mut rx, &trend_topic, Duration::from_secs(5))
+        .await
+        .expect("trend discovery publish must arrive");
+
+    assert!(pkt.retain, "trend discovery config must be retained");
+    let body: Value = serde_json::from_slice(&pkt.payload).expect("json");
+
+    // HA-side schema validation — passes because the trend payload
+    // intentionally omits `state_class` (categorical, not a numeric
+    // measurement) and the schema treats `state_class` as optional.
+    validate_sensor_discovery(&body).expect("HA discovery schema");
+
+    // Tight assertions on fields we control directly.
+    assert_eq!(body["state_topic"], format!("{prefix}/glucose"));
+    assert_eq!(body["availability_topic"], format!("{prefix}/_health"));
+    assert_eq!(body["value_template"], "{{ value_json.trend }}");
+    assert_eq!(body["unique_id"], format!("gluco_hub_{client_id}_trend"));
+    assert_eq!(body["device_class"], "enum");
+    assert_eq!(body["icon"], "mdi:trending-up");
+    assert_eq!(body["device"]["manufacturer"], "gluco-hub-rs");
+    assert_eq!(
+        body["device"]["identifiers"][0],
+        format!("gluco_hub_{client_id}")
+    );
+
+    // Every wire `Trend` variant must be in `options:` — otherwise HA
+    // rejects readings whose state isn't in the declared enum.
+    let options = body["options"].as_array().expect("options array");
+    for expected in [
+        "DoubleUp",
+        "SingleUp",
+        "FortyFiveUp",
+        "Flat",
+        "FortyFiveDown",
+        "SingleDown",
+        "DoubleDown",
+        "NotComputable",
+        "RateOutOfRange",
+    ] {
+        assert!(
+            options.iter().any(|v| v == expected),
+            "trend options missing {expected}: {options:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn discovery_silent_when_disabled() {
     let broker = start_mosquitto().await.expect("start mosquitto");
     let (host, port) = broker.broker_addr();

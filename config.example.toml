@@ -89,8 +89,11 @@ interval_secs = 60
 # stats_interval_secs = 60    # 5..=3600; how often _stats is refreshed
 #
 # Home Assistant MQTT auto-discovery (opt-in). When `true`, the sink
-# publishes a retained config on `<discovery_prefix>/sensor/.../config`
-# after each ConnAck so HA picks the glucose sensor up automatically.
+# publishes two retained configs on `<discovery_prefix>/sensor/.../config`
+# after each ConnAck: one for the glucose sensor and one for a
+# categorical trend sensor (Flat / SingleUp / …) grouped under the same
+# HA device. HA picks both up automatically. See docs/ARCHITECTURE.md
+# for the entity layout.
 # discovery_enabled = false
 # discovery_prefix = "homeassistant"     # HA's default; change only if HA is reconfigured
 # device_name = "Gluco Hub (kitchen)"    # optional; defaults to `Gluco Hub (<client_id>)`

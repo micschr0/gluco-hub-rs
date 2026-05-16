@@ -108,7 +108,9 @@ pub struct StatsSnapshot {
 
 /// Stable wire-form of the Trend enum. PascalCase matches the JSON
 /// representation already produced by serde on `Reading` itself.
-fn trend_to_str(t: gluco_hub_core::Trend) -> &'static str {
+/// `pub(crate)` so `super::discovery` can use it to validate that its
+/// `TREND_OPTIONS` enum list covers every wire variant.
+pub(crate) fn trend_to_str(t: gluco_hub_core::Trend) -> &'static str {
     use gluco_hub_core::Trend;
     match t {
         Trend::DoubleUp => "DoubleUp",

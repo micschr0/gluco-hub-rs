@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **MQTT HA-discovery: dedicated trend sensor entity** — when `discovery_enabled = true`, the sink now publishes a *second* retained config message on `<discovery_prefix>/sensor/gluco_hub_<client_id>_trend/config` alongside the existing glucose one. The trend entity reads `value_json.trend` from the same `<prefix>/glucose` topic, declares `device_class = "enum"` with the full `Trend` variant list in `options`, and shares the glucose entity's `device` block so HA groups both entities under one device. Operators get a first-class `sensor.<device>_trend` they can put directly on a dashboard card (with state→icon mapping for arrows) instead of having to wrap the glucose entity's `trend` attribute in a template sensor. The wire payload is unchanged. Backward-compatible: existing templates reading `state_attr('sensor.glucose', 'trend')` keep working because the glucose entity still exposes `json_attributes_topic`.
+
+### Changed
+
+- **MQTT HA-discovery: `has_entity_name: true` + `origin:` block on both entities** — the glucose and trend discovery payloads now carry `has_entity_name: true` (HA 2024+ idiom: HA renders entities as `<Device Name> Glucose` / `<Device Name> Trend` and respects user-driven renames) and an `origin: { name, sw_version, support_url }` block (HA 2024.6+ recommendation: surfaces the integration name and gluco-hub-rs version in HA's device picker). Pure visibility improvements — no entity IDs change, no breaking schema changes.
+
 ## [2026.516.1] - 2026-05-16
 
 ### Changed
