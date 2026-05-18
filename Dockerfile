@@ -34,7 +34,7 @@
 
 # ── Stage 1: chef ─────────────────────────────────────────────────────────────
 # renovate: datasource=docker depName=docker.io/library/rust
-FROM docker.io/library/rust:1.95.0-bookworm AS chef
+FROM docker.io/library/rust:1.95.0-bookworm@sha256:503651ea31e66ecb74623beabde781059a5978df1595a9e8ed03974d5fec1bf0 AS chef
 
 # `aws-lc-sys` (a transitive dep of rustls) needs cmake at build time.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -89,7 +89,7 @@ RUN GLUCO_HUB_GIT_SHA="${GLUCO_HUB_GIT_SHA}" \
 # ── Stage 4: runtime ───────────────────────────────────────────────────────────
 # Distroless `cc` provides glibc + ca-certificates; no shell, no package manager.
 # renovate: datasource=docker depName=gcr.io/distroless/cc-debian12
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:bd2899c12b335c827750ccf2359879eab09c09b206023dcebea408947d54127c
 
 WORKDIR /app
 
