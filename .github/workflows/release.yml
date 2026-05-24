@@ -139,6 +139,48 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  scan:
+    name: Container CVE scan
+    needs: [build]
+    if: github.event_name == 'push' || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build local amd64 image for scanning
+        run: |
+          docker build \
+            --build-arg GLUCO_HUB_GIT_SHA=${{ github.sha }} \
+            --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            --platform linux/amd64 \
+            -t gluco-hub:scan \
+            .
+
+      - name: Scan image with Grype
+        id: grype
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8525e7c4989ea9d2 # v7.4.0
+        with:
+          image: gluco-hub:scan
+          fail-build: true
+          severity-cutoff: critical
+          output-format: sarif
+
+      - name: Upload SARIF to GitHub Security
+        if: always() && steps.grype.outputs.sarif != ''
+        uses: github/codeql-action/upload-sarif@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype
+
   merge:
     name: merge & publish manifest
     if: github.event_name != 'pull_request'

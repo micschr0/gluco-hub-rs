@@ -1,0 +1,20 @@
+# Ignore rules for the Grype container CVE scan.
+#
+# Every entry MUST justify why we accept the risk and carry a review
+# date (~90 days). Renovate bumps the base image when upstream rebuilds;
+# revisit then and prune stale exceptions.
+#
+# To add an exception:
+#   - vulnerability: CVE-YYYY-NNNNN
+#     package:
+#       name: <package-name>
+#       type: <type>          # e.g. go-module, apk, deb
+#   # Justification: <why accepted> — review by: <date>
+#
+# Last reviewed: 2026-05-23 — review by: 2026-08-21
+
+fail-on-severity: critical
+
+ignore:
+  # No project-specific exceptions yet.
+  # Add entries here as needed, following the template above.
