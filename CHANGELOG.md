@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **CI: Grype container CVE scan** — `release.yml` now builds a local amd64
+  image after every push/release and scans it with Grype. Builds fail on
+  CRITICAL CVEs; findings upload to the GitHub Security tab as SARIF. CVE
+  exceptions are managed in `.grype.yaml` with mandatory 90-day review dates.
+- **CI: Zizmor GitHub Actions audit** — new `zizmor` job in `ci.yml` audits
+  all workflow files for template injection, unpinned actions, and excessive
+  permissions (min-severity: medium).
+- **`.grype.yaml`** — baseline Grype config; empty exception list with an
+  inline template for adding justified, time-boxed CVE ignores.
+
 ## [2026.516.2] - 2026-05-16
 
 ### Added
