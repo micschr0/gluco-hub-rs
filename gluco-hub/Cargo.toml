@@ -70,15 +70,15 @@ tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
-http-body-util = "0.1"
+http-body-util = "=0.1.3"
 
 # Container-backed integration tests (gated by `integration-tests`
 # feature flag — see [features]). testcontainers spins up real
 # Mosquitto / Nightscout / MongoDB instances; the wiremock-based
 # E2E tests in src/e2e_tests.rs stay as the fast path.
-testcontainers = { version = "0.27", features = ["docker-compose"] }
-testcontainers-modules = { version = "0.15", features = ["mongo"] }
-uuid = { version = "1", features = ["v4"] }
+testcontainers = { version = "=0.27.3", features = ["docker-compose"] }
+testcontainers-modules = { version = "=0.15.0", features = ["mongo"] }
+uuid = { version = "=1.23.1", features = ["v4"] }
 
 # `cargo release` rewrites the workspace CHANGELOG.md from this crate
 # (the binary). The library crate inherits no replacements, so the
