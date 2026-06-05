@@ -28,10 +28,14 @@ mod tests {
     #[tokio::test]
     async fn metrics_returns_prometheus_text() {
         let handle = crate::metrics::init_recorder().expect("recorder");
+        let (tx, rx) =
+            tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
         let state = AppState {
             cache: ReadingCache::new(),
             metrics_handle: handle,
             bearer_token: None,
+            poll_status_tx: std::sync::Arc::new(tx),
+            poll_status_rx: rx,
         };
         let app = router_with_state(state);
         let resp = app

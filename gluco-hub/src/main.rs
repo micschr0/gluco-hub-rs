@@ -14,6 +14,7 @@ pub mod api;
 pub mod config;
 pub mod dlq;
 pub mod metrics;
+pub mod poll_status;
 pub mod sink_router;
 pub mod sinks;
 pub mod sources;
@@ -216,10 +217,19 @@ async fn serve(cfg: config::Config) -> Result<()> {
         auth_enabled = bearer_token.is_some(),
         "http config",
     );
+    let (poll_status_tx, poll_status_rx) = tokio::sync::watch::channel(
+        poll_status::PollStatus {
+            poll_interval_secs: cfg.poller.interval_secs,
+            ..Default::default()
+        },
+    );
+    let poll_status_tx = std::sync::Arc::new(poll_status_tx);
     let state = api::AppState {
         cache: cache.clone(),
         metrics_handle,
         bearer_token,
+        poll_status_tx: poll_status_tx.clone(),
+        poll_status_rx,
     };
 
     let sinks = build_sinks(&cfg)?;
@@ -241,6 +251,7 @@ async fn serve(cfg: config::Config) -> Result<()> {
         let cache_for_poller = cache.clone();
         let sinks_for_poller = sinks.clone();
         let heartbeat_path = Some(cfg.state.dir.join(".alive"));
+        let poll_status_tx_for_poller = poll_status_tx.clone();
         tokio::spawn(async move {
             poll_loop(
                 source,
@@ -248,6 +259,7 @@ async fn serve(cfg: config::Config) -> Result<()> {
                 sinks_for_poller,
                 interval,
                 heartbeat_path,
+                poll_status_tx_for_poller,
             )
             .await;
         });
@@ -526,13 +538,26 @@ async fn poll_loop(
     sinks: Vec<Arc<sink_router::SinkRouter>>,
     interval: Duration,
     heartbeat_path: Option<PathBuf>,
+    poll_status_tx: std::sync::Arc<tokio::sync::watch::Sender<poll_status::PollStatus>>,
 ) {
     let source_id = source.id().as_str().to_string();
     let sink_timeout = sink_push_timeout(interval);
+    let poll_interval_secs = interval.as_secs();
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // Track across iterations so partial updates preserve previous values.
+    // `last_successful_reading_at` stays `None` until the first successful
+    // fetch; `last_poll_attempt_at` is set unconditionally each iteration.
+    let mut last_poll_attempt_at: Option<chrono::DateTime<chrono::Utc>>;
+    let mut last_successful_reading_at: Option<chrono::DateTime<chrono::Utc>> = None;
+
     loop {
         ticker.tick().await;
+
+        // Record attempt timestamp before the fetch.
+        last_poll_attempt_at = Some(chrono::Utc::now());
+
         let fetch_result = tokio::time::timeout(sink_timeout, source.fetch_latest()).await;
         match fetch_result {
             Err(_elapsed) => {
@@ -597,11 +622,34 @@ async fn poll_loop(
                     None => info!(source_id = %source_id, count, "cache updated (empty batch)"),
                 }
 
+                // Only advance last_successful_reading_at when the batch
+                // was non-empty — an empty Ok(vec![]) means the source
+                // responded but had no measurements to report.
+                if !batch.is_empty() {
+                    last_successful_reading_at = Some(chrono::Utc::now());
+                }
+
                 if !sinks.is_empty() {
                     fan_out_to_sinks(&sinks, &batch, sink_timeout).await;
                 }
             }
         }
+
+        // `tokio::time::Interval` does not expose the next deadline directly.
+        // Use the configured interval as the best-effort estimate; the HTTP
+        // handler interprets this as "approximately when the next poll fires".
+        let next_poll_in_secs = poll_interval_secs;
+
+        // Publish updated poll status. Errors are ignored — if all
+        // receivers have been dropped the write channel is logically closed,
+        // but that shouldn't happen in normal operation.
+        let _ = poll_status_tx.send(poll_status::PollStatus {
+            last_poll_attempt_at,
+            last_successful_reading_at,
+            next_poll_in_secs,
+            poll_interval_secs,
+        });
+
         if let Some(path) = heartbeat_path.as_deref()
             && let Err(e) = write_heartbeat(path)
         {
@@ -1065,6 +1113,7 @@ mod tests {
             id: SourceId::new("llu").unwrap(),
         });
         let cache = ReadingCache::new();
+        let (tx, _rx) = tokio::sync::watch::channel(poll_status::PollStatus::default());
         let handle = tokio::spawn(poll_loop(
             source,
             cache,
@@ -1072,6 +1121,7 @@ mod tests {
             // 10 ms interval => first tick fires almost immediately
             Duration::from_millis(10),
             Some(heartbeat.clone()),
+            std::sync::Arc::new(tx),
         ));
         // Poll for the file with a generous overall timeout so flaky CI
         // schedulers don't surface as test failures.
