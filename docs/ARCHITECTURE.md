@@ -226,7 +226,7 @@ environment variables — never embed them in TOML.
 | `[sink.mqtt] client_id`             | string   | yes (MQTT only) | 1..=23 chars, `[A-Za-z0-9_-]` | conservative MQTT 5 limit |
 | `[sink.mqtt] username`              | string   | no       | 1..=256 chars | optional |
 | `[sink.mqtt] password`              | SecretString | no | — | supply via `GLUCO_HUB__SINK__MQTT__PASSWORD` |
-| `[sink.mqtt] topic_prefix`          | string   | yes (MQTT only) | 1..=200 chars, no `+`/`#`, no leading/trailing `/` | publishes to `<prefix>/{glucose,_health,_stats}` |
+| `[sink.mqtt] topic_prefix`          | string   | yes (MQTT only) | 1..=200 chars, no `+`/`#`, no leading/trailing `/` | publishes to `<prefix>/{glucose,_health,_stats,_patients}` |
 | `[sink.mqtt] qos`                   | int      | no (default `1`) | 0\|1\|2 | glucose publish QoS |
 | `[sink.mqtt] keep_alive_secs`       | u64      | no (default `30`) | 5..=300 | |
 | `[sink.mqtt] session_expiry_secs`   | u32      | no (default `0`) | any | 0 = clean-start every connect |

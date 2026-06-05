@@ -43,8 +43,14 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 | `<prefix>/glucose` | No       | `{"v":1,"glucose_mgdl":…,"trend":…,"timestamp_utc":…}`    |
 | `<prefix>/_health` | Yes      | `{"online":true}` · LWT: `{"online":false}`                |
 | `<prefix>/_stats`  | No       | periodic stats payload                                     |
+| `<prefix>/_patients` | Yes    | `[{"id":…,"display_name":"Anna M.","is_active":…}, …]` after LLU login |
 
 `<prefix>` is `topic_prefix` from `[sink.mqtt]` (e.g. `gluco-hub/gluco-hub-1`).
+
+The `_patients` list is published (LLU source only) after each successful
+`list_connections()` so consumers can discover patient UUIDs without a UI.
+`display_name` is abbreviated to first name + last initial (PHI: no full
+surname, no birthdate ever leaves the bridge).
 
 Home Assistant auto-discovery via MQTT is planned for V3.
 
