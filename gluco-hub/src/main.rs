@@ -222,12 +222,20 @@ async fn serve(cfg: config::Config) -> Result<()> {
         ..Default::default()
     });
     let poll_status_tx = std::sync::Arc::new(poll_status_tx);
+    // Broadcast channel for the Clock View SSE stream. Held in AppState so it
+    // stays open with zero subscribers; the poll loop publishes a
+    // `ClockReadingEvent` after each successful reading. A small buffer is
+    // enough — slow SSE clients resync on the next reading rather than
+    // replaying history.
+    let (clock_tx, _clock_rx) = tokio::sync::broadcast::channel(16);
+    let clock_tx = std::sync::Arc::new(clock_tx);
     let state = api::AppState {
         cache: cache.clone(),
         metrics_handle,
         bearer_token,
         poll_status_tx: poll_status_tx.clone(),
         poll_status_rx,
+        clock_tx: clock_tx.clone(),
     };
 
     let built_sinks = build_sinks(&cfg)?;
@@ -268,6 +276,7 @@ async fn serve(cfg: config::Config) -> Result<()> {
 
         let source = built_source.source;
         let poll_status_tx_for_poller = poll_status_tx.clone();
+        let clock_tx_for_poller = clock_tx.clone();
         tokio::spawn(async move {
             poll_loop(
                 source,
@@ -276,6 +285,7 @@ async fn serve(cfg: config::Config) -> Result<()> {
                 interval,
                 heartbeat_path,
                 poll_status_tx_for_poller,
+                clock_tx_for_poller,
             )
             .await;
         });
@@ -597,6 +607,7 @@ async fn poll_loop(
     interval: Duration,
     heartbeat_path: Option<PathBuf>,
     poll_status_tx: std::sync::Arc<tokio::sync::watch::Sender<poll_status::PollStatus>>,
+    clock_tx: std::sync::Arc<tokio::sync::broadcast::Sender<api::ClockReadingEvent>>,
 ) {
     let source_id = source.id().as_str().to_string();
     let sink_timeout = sink_push_timeout(interval);
@@ -609,6 +620,11 @@ async fn poll_loop(
     // fetch; `last_poll_attempt_at` is set unconditionally each iteration.
     let mut last_poll_attempt_at: Option<chrono::DateTime<chrono::Utc>>;
     let mut last_successful_reading_at: Option<chrono::DateTime<chrono::Utc>> = None;
+
+    // Previous glucose value (mg/dL), retained across iterations so the Clock
+    // View SSE event can carry a delta. The single-slot `ReadingCache` keeps
+    // no history, so this is the only place a delta can be derived.
+    let mut prev_glucose_mgdl: Option<f64> = None;
 
     loop {
         ticker.tick().await;
@@ -660,7 +676,7 @@ async fn poll_loop(
                         (chrono::Utc::now() - r.timestamp).num_seconds(),
                     )
                 });
-                if let Some(latest) = newest {
+                if let Some(latest) = newest.as_ref() {
                     ::metrics::gauge!(
                         metrics::GAUGE_GLUCOSE,
                         "patient_id" => latest.patient_id.as_str().to_string(),
@@ -685,6 +701,29 @@ async fn poll_loop(
                 // responded but had no measurements to report.
                 if !batch.is_empty() {
                     last_successful_reading_at = Some(chrono::Utc::now());
+                }
+
+                // Publish the newest reading to Clock View SSE subscribers.
+                // The delta is computed against the previous iteration's value
+                // (the cache holds a single slot, so it has no history). The
+                // broadcast event uses the Clock View defaults (mg/dL, lo=70,
+                // hi=180); the client re-zones against its own CLOCK_CONFIG and
+                // `/clock/state` re-derives the zone from query params.
+                if let Some(latest) = newest.as_ref() {
+                    let value_mgdl = latest.glucose.get();
+                    let event = api::build_reading_event(
+                        value_mgdl,
+                        latest.trend,
+                        latest.timestamp.timestamp_millis(),
+                        prev_glucose_mgdl,
+                        "mgdl",
+                        70.0,
+                        180.0,
+                    );
+                    // Errors mean no subscribers are connected — expected and
+                    // harmless because the channel is held open by AppState.
+                    let _ = clock_tx.send(event);
+                    prev_glucose_mgdl = Some(value_mgdl);
                 }
 
                 if !sinks.is_empty() {
@@ -1292,6 +1331,7 @@ mod tests {
         });
         let cache = ReadingCache::new();
         let (tx, _rx) = tokio::sync::watch::channel(poll_status::PollStatus::default());
+        let (clock_tx, _clock_rx) = tokio::sync::broadcast::channel(16);
         let handle = tokio::spawn(poll_loop(
             source,
             cache,
@@ -1300,6 +1340,7 @@ mod tests {
             Duration::from_millis(10),
             Some(heartbeat.clone()),
             std::sync::Arc::new(tx),
+            std::sync::Arc::new(clock_tx),
         ));
         // Poll for the file with a generous overall timeout so flaky CI
         // schedulers don't surface as test failures.
