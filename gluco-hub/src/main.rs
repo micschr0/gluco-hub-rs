@@ -231,6 +231,10 @@ async fn serve(cfg: config::Config) -> Result<()> {
     // replaying history.
     let (clock_tx, _clock_rx) = tokio::sync::broadcast::channel(16);
     let clock_tx = std::sync::Arc::new(clock_tx);
+    // Bounded readings history backing the Clock View sparkline
+    // (`GET /clock/history`). Shared with the poll loop, which pushes one point
+    // per successful reading.
+    let clock_history = api::new_history();
     let state = api::AppState {
         cache: cache.clone(),
         metrics_handle,
@@ -238,6 +242,7 @@ async fn serve(cfg: config::Config) -> Result<()> {
         poll_status_tx: poll_status_tx.clone(),
         poll_status_rx,
         clock_tx: clock_tx.clone(),
+        clock_history: clock_history.clone(),
     };
 
     let sinks = build_sinks(&cfg)?;
@@ -260,7 +265,10 @@ async fn serve(cfg: config::Config) -> Result<()> {
         let sinks_for_poller = sinks.clone();
         let heartbeat_path = Some(cfg.state.dir.join(".alive"));
         let poll_status_tx_for_poller = poll_status_tx.clone();
-        let clock_tx_for_poller = clock_tx.clone();
+        let clock_sink_for_poller = api::ClockSink {
+            tx: clock_tx.clone(),
+            history: clock_history.clone(),
+        };
         tokio::spawn(async move {
             poll_loop(
                 source,
@@ -269,7 +277,7 @@ async fn serve(cfg: config::Config) -> Result<()> {
                 interval,
                 heartbeat_path,
                 poll_status_tx_for_poller,
-                clock_tx_for_poller,
+                clock_sink_for_poller,
             )
             .await;
         });
@@ -549,7 +557,7 @@ async fn poll_loop(
     interval: Duration,
     heartbeat_path: Option<PathBuf>,
     poll_status_tx: std::sync::Arc<tokio::sync::watch::Sender<poll_status::PollStatus>>,
-    clock_tx: std::sync::Arc<tokio::sync::broadcast::Sender<api::ClockReadingEvent>>,
+    clock_sink: api::ClockSink,
 ) {
     let source_id = source.id().as_str().to_string();
     let sink_timeout = sink_push_timeout(interval);
@@ -662,9 +670,11 @@ async fn poll_loop(
                         70.0,
                         180.0,
                     );
-                    // Errors mean no subscribers are connected — expected and
-                    // harmless because the channel is held open by AppState.
-                    let _ = clock_tx.send(event);
+                    // Publish to Clock View: broadcast the SSE event AND append
+                    // to the bounded sparkline history, so the live value and
+                    // the chart share one source of truth. No subscribers is an
+                    // expected, harmless case (channel held open by AppState).
+                    clock_sink.publish(event);
                     prev_glucose_mgdl = Some(value_mgdl);
                 }
 
@@ -1154,6 +1164,10 @@ mod tests {
         let cache = ReadingCache::new();
         let (tx, _rx) = tokio::sync::watch::channel(poll_status::PollStatus::default());
         let (clock_tx, _clock_rx) = tokio::sync::broadcast::channel(16);
+        let clock_sink = api::ClockSink {
+            tx: std::sync::Arc::new(clock_tx),
+            history: api::new_history(),
+        };
         let handle = tokio::spawn(poll_loop(
             source,
             cache,
@@ -1162,7 +1176,7 @@ mod tests {
             Duration::from_millis(10),
             Some(heartbeat.clone()),
             std::sync::Arc::new(tx),
-            std::sync::Arc::new(clock_tx),
+            clock_sink,
         ));
         // Poll for the file with a generous overall timeout so flaky CI
         // schedulers don't surface as test failures.

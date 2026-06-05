@@ -23,7 +23,9 @@ mod health;
 mod metrics;
 mod status;
 
-pub use clock::{ClockReadingEvent, build_reading_event};
+pub use clock::{
+    ClockHistory, ClockReadingEvent, ClockSink, build_reading_event, new_history, push_history,
+};
 
 /// Header attached to every API response so downstream consumers
 /// (Home Assistant, dashboards, scripts) can detect the
@@ -45,6 +47,10 @@ const X_DISCLAIMER_VALUE: HeaderValue = HeaderValue::from_static("not-for-medica
 /// when no SSE client is connected. The poll task publishes a
 /// `ClockReadingEvent` after each successful reading; `GET /clock/events`
 /// handlers subscribe via `clock_tx.subscribe()`.
+///
+/// `clock_history` is a bounded ring buffer of recent `{ ts, mgdl }` points
+/// backing `GET /clock/history` (the Clock View sparkline). The poll task
+/// pushes one point per successful reading via `push_history`.
 #[derive(Clone)]
 pub struct AppState {
     pub cache: ReadingCache,
@@ -53,6 +59,7 @@ pub struct AppState {
     pub poll_status_tx: Arc<watch::Sender<PollStatus>>,
     pub poll_status_rx: watch::Receiver<PollStatus>,
     pub clock_tx: Arc<broadcast::Sender<ClockReadingEvent>>,
+    pub clock_history: ClockHistory,
 }
 
 /// Build the public HTTP router with state.
@@ -88,6 +95,7 @@ pub(crate) fn router_with_state(state: AppState) -> Router {
         // `/clock` path (no trailing slash) resolves under the Ingress proxy.
         .route("/clock", get(clock::clock_html))
         .route("/clock/state", get(clock::clock_state))
+        .route("/clock/history", get(clock::clock_history))
         .route("/clock/events", get(clock::clock_events_sse))
         .with_state(state)
         .layer(axum::middleware::from_fn(add_disclaimer_header))
@@ -125,6 +133,7 @@ mod tests {
             poll_status_tx: Arc::new(tx),
             poll_status_rx: rx,
             clock_tx: Arc::new(clock_tx),
+            clock_history: new_history(),
         }
     }
 
