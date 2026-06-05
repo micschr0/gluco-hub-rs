@@ -37,6 +37,7 @@ mod tests {
             poll_status_tx: std::sync::Arc::new(tx),
             poll_status_rx: rx,
             clock_tx: std::sync::Arc::new(clock_tx),
+            clock_history: crate::api::new_history(),
         };
         let app = router_with_state(state);
         let resp = app

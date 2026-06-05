@@ -13,7 +13,9 @@
 //! heartbeat so the Home Assistant Ingress (nginx) proxy does not buffer the
 //! stream.
 
+use std::collections::VecDeque;
 use std::convert::Infallible;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Json;
@@ -27,6 +29,78 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use super::AppState;
+
+/// Maximum number of readings retained for the Clock View sparkline.
+///
+/// Sized for six hours at the default 60-second poll interval. The polished
+/// sparkline only renders the most recent three hours (`HISTORY_MAX = 180` on
+/// the client), so this leaves comfortable headroom and still bounds memory to
+/// a few kilobytes regardless of uptime.
+pub const HISTORY_CAP: usize = 360;
+
+/// One point in the bounded readings history that backs `GET /clock/history`.
+///
+/// Field names are chosen to match the shape the polished sparkline consumes
+/// verbatim (`{ ts, mgdl }`) so the handler needs no client-side adaptation.
+/// `ts` is Unix epoch milliseconds (same basis as `ClockReadingEvent.timestamp_ms`)
+/// and `mgdl` is the raw mg/dL value; the client converts to mmol/L for display.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct HistoryPoint {
+    pub ts: i64,
+    pub mgdl: f64,
+}
+
+/// Shared, cheaply-cloneable bounded history store for the sparkline.
+///
+/// The poll loop pushes one point per successful reading via [`push_history`];
+/// `GET /clock/history` snapshots it. A `Mutex` is sufficient — writes happen
+/// once per poll interval and reads once per page load, so contention is nil.
+pub type ClockHistory = Arc<Mutex<VecDeque<HistoryPoint>>>;
+
+/// Construct an empty history store sized to [`HISTORY_CAP`].
+pub fn new_history() -> ClockHistory {
+    Arc::new(Mutex::new(VecDeque::with_capacity(HISTORY_CAP)))
+}
+
+/// The two Clock View write-side dependencies the poll loop feeds after each
+/// successful reading: the SSE broadcast sender and the sparkline history
+/// buffer. Bundling them keeps `poll_loop`'s argument list within bounds and
+/// makes "publish a reading to the Clock View" a single concern.
+#[derive(Clone)]
+pub struct ClockSink {
+    pub tx: Arc<broadcast::Sender<ClockReadingEvent>>,
+    pub history: ClockHistory,
+}
+
+impl ClockSink {
+    /// Publish a reading to Clock View subscribers and append it to the
+    /// sparkline history. The broadcast `send` error (no subscribers) is
+    /// intentionally ignored — the channel is held open by `AppState`.
+    pub fn publish(&self, event: ClockReadingEvent) {
+        let ts_ms = event.timestamp_ms;
+        let value = event.value;
+        let _ = self.tx.send(event);
+        push_history(&self.history, ts_ms, value);
+    }
+}
+
+/// Append a reading to the bounded history, evicting the oldest point once the
+/// buffer is full. Called by the poll loop alongside the SSE broadcast so the
+/// sparkline series and the live value share a single source of truth.
+///
+/// A poisoned lock (a panic while another thread held it) is recovered rather
+/// than propagated — losing one history point is preferable to taking down the
+/// poll loop.
+pub fn push_history(history: &ClockHistory, ts: i64, mgdl: f64) {
+    let mut buf = match history.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if buf.len() >= HISTORY_CAP {
+        buf.pop_front();
+    }
+    buf.push_back(HistoryPoint { ts, mgdl });
+}
 
 /// Embedded HTML page. `include_str!` resolves at compile time so there is no
 /// runtime file I/O and the binary stays self-contained.
@@ -240,6 +314,22 @@ pub async fn clock_state(State(state): State<AppState>, Query(q): Query<ClockQue
     };
 
     no_store((StatusCode::OK, Json(dto)))
+}
+
+/// `GET /clock/history` — JSON array of recent `{ ts, mgdl }` points for the
+/// Clock View sparkline.
+///
+/// Returns the bounded ring buffer (oldest first) exactly as the polished
+/// sparkline consumes it: each element is `{ "ts": <epoch_ms>, "mgdl": <value> }`.
+/// An empty buffer (before the first reading) returns `200 []`, not `503` — the
+/// sparkline treats history as optional and renders a placeholder. Sets
+/// `Cache-Control: no-store` because the series is PHI.
+pub async fn clock_history(State(state): State<AppState>) -> Response {
+    let points: Vec<HistoryPoint> = match state.clock_history.lock() {
+        Ok(g) => g.iter().copied().collect(),
+        Err(poisoned) => poisoned.into_inner().iter().copied().collect(),
+    };
+    no_store((StatusCode::OK, Json(points)))
 }
 
 /// `GET /clock/events` — SSE stream of `reading` events.
@@ -573,6 +663,138 @@ mod tests {
         assert!(chunk.contains("\"delta\":22"), "got: {chunk}");
     }
 
+    #[test]
+    fn push_history_evicts_oldest_when_full() {
+        let h = new_history();
+        // Fill exactly to capacity with monotonically increasing values.
+        for i in 0..HISTORY_CAP {
+            push_history(&h, i as i64, i as f64);
+        }
+        {
+            let buf = h.lock().unwrap();
+            assert_eq!(buf.len(), HISTORY_CAP);
+            assert_eq!(buf.front().copied(), Some(HistoryPoint { ts: 0, mgdl: 0.0 }));
+            let last = (HISTORY_CAP - 1) as i64;
+            assert_eq!(
+                buf.back().copied(),
+                Some(HistoryPoint {
+                    ts: last,
+                    mgdl: last as f64
+                })
+            );
+        }
+        // One more push evicts the oldest (ts=0) and appends the newest.
+        push_history(&h, 9_999, 9_999.0);
+        let buf = h.lock().unwrap();
+        assert_eq!(buf.len(), HISTORY_CAP, "cap is enforced, not exceeded");
+        assert_eq!(
+            buf.front().copied(),
+            Some(HistoryPoint {
+                ts: 1,
+                mgdl: 1.0
+            }),
+            "oldest point was evicted"
+        );
+        assert_eq!(
+            buf.back().copied(),
+            Some(HistoryPoint {
+                ts: 9_999,
+                mgdl: 9_999.0
+            }),
+            "newest point is at the back"
+        );
+    }
+
+    #[tokio::test]
+    async fn history_empty_returns_200_empty_array_no_store() {
+        use crate::api::router_with_state;
+        use axum::body::Body;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let app = router_with_state(test_state(None));
+        let resp = app
+            .oneshot(Request::get("/clock/history").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // Empty buffer is a 200 with [], NOT a 503 — history is optional.
+        assert_eq!(resp.status(), StatusCode::OK);
+        let cc = resp
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(cc, Some("no-store"));
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn history_returns_points_in_order_with_expected_shape() {
+        use crate::api::router_with_state;
+        use axum::body::Body;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let state = test_state(None);
+        // Seed three points out of nothing, oldest first.
+        push_history(&state.clock_history, 1_000, 100.0);
+        push_history(&state.clock_history, 2_000, 110.0);
+        push_history(&state.clock_history, 3_000, 95.0);
+
+        let app = router_with_state(state);
+        let resp = app
+            .oneshot(Request::get("/clock/history").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // Exact wire shape the sparkline consumes: [{ ts, mgdl }, ...].
+        assert_eq!(
+            json,
+            serde_json::json!([
+                { "ts": 1_000, "mgdl": 100.0 },
+                { "ts": 2_000, "mgdl": 110.0 },
+                { "ts": 3_000, "mgdl": 95.0 },
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn history_endpoint_caps_at_history_cap() {
+        use crate::api::router_with_state;
+        use axum::body::Body;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let state = test_state(None);
+        // Push more than the cap; the endpoint must return exactly HISTORY_CAP
+        // points and the oldest must have been evicted.
+        let total = HISTORY_CAP + 25;
+        for i in 0..total {
+            push_history(&state.clock_history, i as i64, (i % 400) as f64);
+        }
+
+        let app = router_with_state(state);
+        let resp = app
+            .oneshot(Request::get("/clock/history").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let arr = json.as_array().expect("array");
+        assert_eq!(arr.len(), HISTORY_CAP);
+        // First retained point is the (total - HISTORY_CAP)th pushed.
+        assert_eq!(arr[0]["ts"], (total - HISTORY_CAP) as i64);
+        // Last retained point is the most recent push.
+        assert_eq!(arr[HISTORY_CAP - 1]["ts"], (total - 1) as i64);
+    }
+
     // --- test helpers ---
 
     fn test_state(cache: Option<gluco_hub_core::ReadingCache>) -> AppState {
@@ -590,6 +812,7 @@ mod tests {
             poll_status_tx: std::sync::Arc::new(tx),
             poll_status_rx: rx,
             clock_tx: std::sync::Arc::new(clock_tx),
+            clock_history: new_history(),
         }
     }
 
