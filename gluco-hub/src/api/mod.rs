@@ -11,16 +11,19 @@ use axum::routing::get;
 use gluco_hub_core::ReadingCache;
 use metrics_exporter_prometheus::PrometheusHandle;
 use secrecy::SecretString;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tower_http::trace::TraceLayer;
 
 use crate::poll_status::PollStatus;
 
 mod auth;
+pub mod clock;
 mod glucose;
 mod health;
 mod metrics;
 mod status;
+
+pub use clock::{ClockReadingEvent, build_reading_event};
 
 /// Header attached to every API response so downstream consumers
 /// (Home Assistant, dashboards, scripts) can detect the
@@ -37,6 +40,11 @@ const X_DISCLAIMER_VALUE: HeaderValue = HeaderValue::from_static("not-for-medica
 /// `poll_status_tx` is owned here to keep the channel alive for the
 /// lifetime of the server. The poll task gets a clone of the `Sender`;
 /// HTTP handlers read via `poll_status_rx`.
+///
+/// `clock_tx` is a broadcast sender owned here to keep the channel open even
+/// when no SSE client is connected. The poll task publishes a
+/// `ClockReadingEvent` after each successful reading; `GET /clock/events`
+/// handlers subscribe via `clock_tx.subscribe()`.
 #[derive(Clone)]
 pub struct AppState {
     pub cache: ReadingCache,
@@ -44,6 +52,7 @@ pub struct AppState {
     pub bearer_token: Option<SecretString>,
     pub poll_status_tx: Arc<watch::Sender<PollStatus>>,
     pub poll_status_rx: watch::Receiver<PollStatus>,
+    pub clock_tx: Arc<broadcast::Sender<ClockReadingEvent>>,
 }
 
 /// Build the public HTTP router with state.
@@ -75,6 +84,11 @@ pub(crate) fn router_with_state(state: AppState) -> Router {
     public
         .nest("/glucose", glucose)
         .nest("/api/v1", api_v1)
+        // Clock View routes are registered at the top level so the bare
+        // `/clock` path (no trailing slash) resolves under the Ingress proxy.
+        .route("/clock", get(clock::clock_html))
+        .route("/clock/state", get(clock::clock_state))
+        .route("/clock/events", get(clock::clock_events_sse))
         .with_state(state)
         .layer(axum::middleware::from_fn(add_disclaimer_header))
         .layer(TraceLayer::new_for_http())
@@ -103,12 +117,14 @@ mod tests {
         let handle = crate::metrics::init_recorder().expect("recorder");
         let (tx, rx) =
             tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
+        let (clock_tx, _clock_rx) = broadcast::channel(16);
         AppState {
             cache: ReadingCache::new(),
             metrics_handle: handle,
             bearer_token: bearer.map(|s| SecretString::from(s.to_string())),
             poll_status_tx: Arc::new(tx),
             poll_status_rx: rx,
+            clock_tx: Arc::new(clock_tx),
         }
     }
 

@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Clock View: single-file responsive glucose display. No external deps,
+     no build step. Config injected server-side as window.CLOCK_CONFIG before
+     </head>. All fetch()/EventSource URLs are RELATIVE (no leading slash) so
+     they resolve under the Home Assistant Ingress path prefix. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Glucose</title>
+  <style>
+    :root {
+      --base: min(4vw, 4vh);
+      --stale-opacity: 1;
+      --stale-sat: 1;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; width: 100%; overflow: hidden; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+      background: #1C1C1E;
+      color: #fff;
+      display: grid;
+      place-items: stretch;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Layout root fills the viewport and carries the zone background. */
+    .clock {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-rows: 1fr;
+      transition: background-color 0.4s ease;
+    }
+
+    /* --- Zone colors --- */
+    [data-zone="hypo"]      { background: #FF2D55; color: #fff; }
+    [data-zone="low"]       { background: #FF9500; color: #1C1C1E; }
+    [data-zone="in_range"]  { background: #1C1C1E; color: #30D158; }
+    [data-zone="high"]      { background: #FFD60A; color: #1C1C1E; }
+    [data-zone="very_high"] { background: #FF6B35; color: #fff; }
+
+    /* HYPO pulse — the only animation. */
+    [data-zone="hypo"] { animation: hypo-pulse 1s ease-in-out infinite; }
+    @keyframes hypo-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+
+    /* --- Header / footer regions --- */
+    .header, .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: calc(var(--base) * 0.6) calc(var(--base) * 1.2);
+      font-size: clamp(0.9rem, calc(var(--base) * 1.2), 3rem);
+      opacity: 0.9;
+    }
+    .footer { font-variant-numeric: tabular-nums; }
+
+    .value-region {
+      display: grid;
+      place-items: center;
+      grid-auto-flow: column;
+      gap: calc(var(--base) * 0.6);
+      min-height: 0;
+    }
+
+    .glucose-value {
+      font-size: clamp(3rem, calc(var(--base) * 8), 22rem);
+      font-weight: 800;
+      line-height: 0.9;
+      font-variant-numeric: tabular-nums;
+      opacity: var(--stale-opacity, 1);
+      filter: saturate(var(--stale-sat, 1));
+      transition: none; /* rAF drives staleness; no CSS transition. */
+    }
+
+    .trend-arrow {
+      font-size: clamp(2rem, calc(var(--base) * 5), 14rem);
+      line-height: 0.9;
+    }
+    .unit-label {
+      font-size: clamp(0.8rem, calc(var(--base) * 1.4), 4rem);
+      opacity: 0.7;
+    }
+    .delta { font-variant-numeric: tabular-nums; }
+    .stale-label {
+      font-size: clamp(0.8rem, calc(var(--base) * 1.2), 3rem);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+
+    /* --- Context layouts (data-ctx) --- */
+    /* wall: header + big value + footer (name/zone top, trend/time bottom). */
+    [data-ctx="wall"] .clock { grid-template-rows: 1fr 6fr 2fr; }
+    /* phone: value + meta. */
+    [data-ctx="phone"] .clock { grid-template-rows: 5fr 2fr; }
+    [data-ctx="phone"] .header { display: none; }
+    /* small: only value + trend. */
+    [data-ctx="small"] .clock { grid-template-rows: 1fr; }
+    [data-ctx="small"] .header,
+    [data-ctx="small"] .footer { display: none; }
+    /* watch: only value + background color. */
+    [data-ctx="watch"] .clock { grid-template-rows: 1fr; }
+    [data-ctx="watch"] .header,
+    [data-ctx="watch"] .footer,
+    [data-ctx="watch"] .unit-label,
+    [data-ctx="watch"] .delta { display: none; }
+    [data-ctx="watch"] .trend-arrow { font-size: clamp(1.5rem, calc(var(--base) * 3), 6rem); }
+
+    /* --- E-Ink overrides: no opacity decay, no pulse, high contrast. --- */
+    [data-eink="true"] { animation: none !important; }
+    [data-eink="true"] .clock { transition: none !important; }
+    [data-eink="true"] .glucose-value {
+      opacity: 1 !important;
+      filter: none !important;
+    }
+    [data-eink="true"][data-zone] { background: #fff !important; color: #000 !important; }
+    [data-eink="true"] .header,
+    [data-eink="true"] .footer { opacity: 1; }
+
+    .visually-hidden {
+      position: absolute;
+      width: 1px; height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body data-zone="in_range">
+  <div class="clock" id="clock">
+    <div class="header">
+      <span class="patient" id="patient"></span>
+      <span class="zone-text" id="zone-text"></span>
+    </div>
+    <div class="value-region">
+      <span class="glucose-value" id="value">--</span>
+      <span class="trend-arrow" id="trend" aria-hidden="true"></span>
+    </div>
+    <div class="footer">
+      <span class="unit-label" id="unit"></span>
+      <span class="delta" id="delta"></span>
+      <span class="stale-label" id="stale"></span>
+      <span class="time" id="time"></span>
+    </div>
+  </div>
+
+  <!-- ARIA live regions: assertive for urgent zones, polite for zone changes. -->
+  <div class="visually-hidden" id="aria-assertive" aria-live="assertive" role="alert"></div>
+  <div class="visually-hidden" id="aria-polite" aria-live="polite"></div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      // Defensive default so the page still renders if config injection failed.
+      var CFG = window.CLOCK_CONFIG || {
+        unit: "mgdl", lo: 70, hi: 180, patientLabel: null,
+        pollMs: 60000, eink: false, dark: null
+      };
+
+      // --- Element handles ---
+      var body = document.body;
+      var elValue = document.getElementById("value");
+      var elTrend = document.getElementById("trend");
+      var elUnit = document.getElementById("unit");
+      var elDelta = document.getElementById("delta");
+      var elTime = document.getElementById("time");
+      var elStale = document.getElementById("stale");
+      var elPatient = document.getElementById("patient");
+      var elZoneText = document.getElementById("zone-text");
+      var ariaAssertive = document.getElementById("aria-assertive");
+      var ariaPolite = document.getElementById("aria-polite");
+
+      // --- 1. Context detection — synchronous, before first paint. ---
+      function detectContext() {
+        var w = window.innerWidth, h = window.innerHeight;
+        var short = Math.min(w, h), long = Math.max(w, h);
+        if (short < 200) return "watch";
+        if (short < 400) return "small";
+        if (long > 900) return "wall";
+        return "phone";
+      }
+      body.dataset.ctx = detectContext();
+      body.dataset.eink = CFG.eink ? "true" : "false";
+
+      // Forced color scheme (dark: null = auto, 0 = light, 1 = dark).
+      if (CFG.dark === 0) { document.documentElement.style.colorScheme = "light"; }
+      else if (CFG.dark === 1) { document.documentElement.style.colorScheme = "dark"; }
+
+      // Re-evaluate context on resize/orientation change.
+      window.addEventListener("resize", function () {
+        body.dataset.ctx = detectContext();
+      });
+
+      // --- Trend arrows by label ---
+      var TREND_ARROWS = {
+        rising_fast: "⇈",   // up up
+        rising: "↗",        // up-right
+        stable: "→",        // right
+        falling: "↘",       // down-right
+        falling_fast: "⇊"   // down down
+      };
+
+      // --- Unit conversion (display only; server sends mg/dL values). ---
+      function toDisplay(mgdl) {
+        if (CFG.unit === "mmol") return (mgdl / 18.0).toFixed(1);
+        return String(Math.round(mgdl));
+      }
+      function unitLabel() {
+        return CFG.unit === "mmol" ? "mmol/L" : "mg/dL";
+      }
+
+      // --- State tracking for ARIA tiers ---
+      var lastZone = null;
+      var lastReadingTs = 0;
+
+      // --- 5. ARIA announcements (3 tiers) ---
+      function announce(state) {
+        var label = toDisplay(state.value) + " " + unitLabel() + ", " + state.zone.replace("_", " ");
+        // Tier 1: hypo / very_high — assertive (interrupts).
+        if (state.zone === "hypo" || state.zone === "very_high") {
+          ariaAssertive.textContent = label + ", urgent";
+          return;
+        }
+        // Tier 2: zone change — polite.
+        if (state.zone !== lastZone && lastZone !== null) {
+          ariaPolite.textContent = label;
+          return;
+        }
+        // Tier 3: routine — update the label only, no live-region trigger.
+        elValue.setAttribute("aria-label", label);
+      }
+
+      // --- Apply a state snapshot (from hydrate() or SSE). ---
+      function applyState(state) {
+        if (!state || typeof state.value !== "number") return;
+
+        body.dataset.zone = state.zone;
+        elValue.textContent = toDisplay(state.value);
+        elTrend.textContent = TREND_ARROWS[state.trend_label] || "";
+        elUnit.textContent = unitLabel();
+        elZoneText.textContent = state.zone.replace("_", " ");
+
+        if (typeof state.delta === "number") {
+          var d = state.delta;
+          var sign = d > 0 ? "+" : "";
+          var dv = CFG.unit === "mmol" ? (d / 18.0).toFixed(1) : Math.round(d);
+          elDelta.textContent = sign + dv;
+        } else {
+          elDelta.textContent = "";
+        }
+
+        if (CFG.patientLabel) { elPatient.textContent = CFG.patientLabel; }
+
+        if (typeof state.timestamp_ms === "number") {
+          lastReadingTs = state.timestamp_ms;
+          var t = new Date(state.timestamp_ms);
+          elTime.textContent = t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        } else {
+          lastReadingTs = Date.now();
+        }
+
+        announce(state);
+        lastZone = state.zone;
+      }
+
+      // --- 2. Initial hydration fetch (relative URL for Ingress). ---
+      function hydrate() {
+        fetch("state", { headers: { "Cache-Control": "no-cache" } })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (s) { if (s) applyState(s); })
+          .catch(function () { /* offline until first SSE event */ });
+      }
+
+      // --- 3. SSE stream (relative URL for Ingress). ---
+      function connectSse() {
+        var src = new EventSource("events");
+        src.addEventListener("reading", function (e) {
+          try { applyState(JSON.parse(e.data)); } catch (_) { /* ignore */ }
+        });
+        // EventSource auto-reconnects on error; nothing to do here.
+      }
+
+      // --- 4. Semantic staleness decay via rAF. ---
+      function stalenessLoop() {
+        var age = Date.now() - lastReadingTs;
+        if (CFG.eink) {
+          // E-Ink: no opacity decay; show a text label instead.
+          if (age > CFG.pollMs * 1.5) {
+            var mins = Math.floor(age / 60000);
+            var secs = Math.floor((age % 60000) / 1000);
+            elStale.textContent = "STALE " + mins + "m" + secs + "s";
+          } else {
+            elStale.textContent = "";
+          }
+        } else {
+          var norm = Math.min(age / (CFG.pollMs * 5), 1);
+          document.documentElement.style.setProperty("--stale-opacity", 1 - norm * 0.6);
+          document.documentElement.style.setProperty("--stale-sat", 1 - norm * 0.8);
+        }
+        requestAnimationFrame(stalenessLoop);
+      }
+
+      // --- Boot ---
+      elUnit.textContent = unitLabel();
+      if (CFG.patientLabel) { elPatient.textContent = CFG.patientLabel; }
+      hydrate();
+      connectSse();
+      requestAnimationFrame(stalenessLoop);
+    })();
+  </script>
+</body>
+</html>
