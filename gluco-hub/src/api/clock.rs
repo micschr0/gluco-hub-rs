@@ -615,6 +615,54 @@ mod tests {
         assert!(cfg_pos < head_close, "config must precede </head>");
     }
 
+    /// `GET /clock` content-type + query-reflected config. The existing
+    /// `clock_html_injects_config_and_no_store` test covers a different param
+    /// set and does not assert `Content-Type`; this locks the HTML media type
+    /// and the spec's `?lo=80&hi=200&unit=mmol&eink=1` reflection.
+    #[tokio::test]
+    async fn clock_html_sets_text_html_content_type_and_reflects_query() {
+        use crate::api::router_with_state;
+        use axum::body::Body;
+        use axum::http::{Request, header};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let app = router_with_state(test_state(None));
+        let resp = app
+            .oneshot(
+                Request::get("/clock?lo=80&hi=200&unit=mmol&eink=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let content_type = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .expect("Content-Type header present");
+        assert!(
+            content_type.starts_with("text/html"),
+            "Content-Type must be text/html, got: {content_type}"
+        );
+        assert_eq!(
+            resp.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store"),
+        );
+
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("window.CLOCK_CONFIG"));
+        assert!(body.contains("lo:80"), "lo must reflect query: {body}");
+        assert!(body.contains("hi:200"), "hi must reflect query: {body}");
+        assert!(body.contains("\"mmol\""), "unit must reflect query");
+        assert!(body.contains("eink:true"), "eink must reflect query");
+    }
+
     #[tokio::test]
     async fn sse_emits_reading_event() {
         use crate::api::router_with_state;
@@ -795,7 +843,132 @@ mod tests {
         assert_eq!(arr[HISTORY_CAP - 1]["ts"], (total - 1) as i64);
     }
 
+    /// SSE field-set lock: a `ClockReadingEvent` published directly on
+    /// `clock_tx` must arrive as a `reading` frame whose `data:` line is the
+    /// full event JSON — every field the Clock View client reads
+    /// (`value`, `unit`, `trend`, `trend_label`, `delta`, `timestamp_ms`,
+    /// `zone`). Complements `sse_emits_reading_event`, which only spot-checks
+    /// value + delta; this asserts the complete contract by parsing the JSON.
+    #[tokio::test]
+    async fn sse_reading_event_carries_full_json_field_set() {
+        use crate::api::router_with_state;
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = test_state(None);
+        let tx = state.clock_tx.clone();
+        let app = router_with_state(state);
+
+        let resp = app
+            .oneshot(Request::get("/clock/events").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Publish the event directly (not via build_reading_event) so the
+        // asserted field values are exactly what the poll loop would send.
+        let _ = tx.send(ClockReadingEvent {
+            value: 142.0,
+            unit: "mmol".to_string(),
+            trend: 6,
+            trend_label: "rising".to_string(),
+            delta: Some(22.0),
+            timestamp_ms: 1_700_000_000_000,
+            zone: "in_range".to_string(),
+        });
+
+        let mut body = resp.into_body().into_data_stream();
+        let chunk = read_first_chunk(&mut body).await;
+        assert!(chunk.contains("event: reading"), "got: {chunk}");
+
+        let json = parse_sse_data(&chunk);
+        assert_eq!(json["value"], 142.0);
+        assert_eq!(json["unit"], "mmol");
+        assert_eq!(json["trend"], 6);
+        assert_eq!(json["trend_label"], "rising");
+        assert_eq!(json["delta"], 22.0);
+        assert_eq!(json["timestamp_ms"], 1_700_000_000_000i64);
+        assert_eq!(json["zone"], "in_range");
+    }
+
+    /// E-ink throttle: with `X-Gluco-Eink: 1`, a reading whose |delta| from
+    /// the last emitted value is <= 1.0 (and within the 300 s heartbeat
+    /// window) is suppressed, while a |delta| > 1.0 passes through.
+    ///
+    /// Drives the live `clock_events_sse` handler so the assertion exercises
+    /// the real header parsing + stream wiring, not just the combinator:
+    ///   1. first reading (120.0)  -> always emitted (no prior value)
+    ///   2. +0.5 (120.5)           -> suppressed (small change, fresh)
+    ///   3. +5.0 over #1 (125.0)   -> emitted (big change)
+    /// Because #2 is suppressed, the SECOND `reading` frame the client sees
+    /// must be 125.0, never 120.5.
+    #[tokio::test]
+    async fn sse_eink_throttle_suppresses_small_delta_passes_large() {
+        use crate::api::router_with_state;
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = test_state(None);
+        let tx = state.clock_tx.clone();
+        let app = router_with_state(state);
+
+        let resp = app
+            .oneshot(
+                Request::get("/clock/events")
+                    .header("X-Gluco-Eink", "1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let mk = |v: f64| ClockReadingEvent {
+            value: v,
+            unit: "mgdl".to_string(),
+            trend: 4,
+            trend_label: "stable".to_string(),
+            delta: None,
+            timestamp_ms: 1_700_000_000_000,
+            zone: "in_range".to_string(),
+        };
+
+        let mut body = resp.into_body().into_data_stream();
+
+        // #1 establishes the baseline — first reading always emits.
+        let _ = tx.send(mk(120.0));
+        let first = read_first_chunk(&mut body).await;
+        assert!(
+            parse_sse_data(&first)["value"] == 120.0,
+            "first reading must emit: {first}"
+        );
+
+        // #2 (+0.5) must be suppressed; #3 (+5.0) must pass. Send both before
+        // reading so the next emitted frame is unambiguously #3.
+        let _ = tx.send(mk(120.5)); // suppressed: |0.5| <= 1.0, fresh
+        let _ = tx.send(mk(125.0)); // emitted: |5.0| > 1.0
+        let second = read_first_chunk(&mut body).await;
+        let json = parse_sse_data(&second);
+        assert_eq!(
+            json["value"], 125.0,
+            "small-delta reading must be skipped; next emit is the big change: {second}"
+        );
+    }
+
     // --- test helpers ---
+
+    /// Extract the JSON object from an SSE frame's `data:` line.
+    fn parse_sse_data(chunk: &str) -> serde_json::Value {
+        let data_line = chunk
+            .lines()
+            .find_map(|l| l.strip_prefix("data:"))
+            .unwrap_or_else(|| panic!("no data line in SSE chunk: {chunk}"))
+            .trim();
+        serde_json::from_str(data_line)
+            .unwrap_or_else(|e| panic!("data line is not JSON ({e}): {data_line}"))
+    }
 
     fn test_state(cache: Option<gluco_hub_core::ReadingCache>) -> AppState {
         use crate::poll_status::PollStatus;
