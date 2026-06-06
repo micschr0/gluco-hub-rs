@@ -207,8 +207,12 @@ impl NightscoutClient {
                 Ok(build_req().header("api-secret", header).send().await?)
             }
             Auth::Token { jwt, .. } => {
-                let token = match jwt.read().await.as_ref() {
-                    Some(t) => t.clone(),
+                // Clone out of the guard and drop it on the same line:
+                // `refresh_jwt` takes the write lock, so holding the read
+                // guard across that call would self-deadlock.
+                let cached = jwt.read().await.clone();
+                let token = match cached {
+                    Some(t) => t,
                     None => self.refresh_jwt().await?,
                 };
                 let resp = build_req()
