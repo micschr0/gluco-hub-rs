@@ -5,7 +5,7 @@
 //! These run the full LibreLink Up → cache → Nightscout flow against a
 //! single in-process `wiremock` server that hosts every endpoint the
 //! bridge talks to: `/llu/auth/login`, `/llu/connections`,
-//! `/llu/connections/{patient_id}/graph`, and `/api/v3/entries`. They
+//! `/llu/connections/{patient_id}/graph`, and `/api/v1/entries`. They
 //! prove that:
 //!
 //! 1. The four call sequence happens in the right order.
@@ -106,10 +106,10 @@ async fn mount_llu(server: &MockServer) {
 
 async fn mount_nightscout(server: &MockServer) {
     // sha1("e2e-secret") = 631a0d6c3813ee3a11e19b0a37a10ad75bbe8a0c
-    // The sink calls `GET /api/v3/entries?count=1` first to read the
+    // The sink calls `GET /api/v1/entries?count=1` first to read the
     // high-water mark; a 404 means "no prior entries, post everything".
     Mock::given(method("GET"))
-        .and(path("/api/v3/entries"))
+        .and(path("/api/v1/entries.json"))
         .and(header(
             "api-secret",
             "631a0d6c3813ee3a11e19b0a37a10ad75bbe8a0c",
@@ -118,7 +118,7 @@ async fn mount_nightscout(server: &MockServer) {
         .mount(server)
         .await;
     Mock::given(method("POST"))
-        .and(path("/api/v3/entries"))
+        .and(path("/api/v1/entries"))
         .and(header(
             "api-secret",
             "631a0d6c3813ee3a11e19b0a37a10ad75bbe8a0c",
@@ -191,22 +191,22 @@ async fn full_pipeline_pulls_from_llu_and_pushes_to_nightscout() {
     // Dedup adds a GET hit before the POST; assert each verb separately.
     let entries_get = requests
         .iter()
-        .filter(|r| r.method.as_str() == "GET" && r.url.path() == "/api/v3/entries")
+        .filter(|r| r.method.as_str() == "GET" && r.url.path() == "/api/v1/entries.json")
         .count();
     let entries_post = requests
         .iter()
-        .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v3/entries")
+        .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v1/entries")
         .count();
     assert_eq!(logins, 1, "exactly one /auth/login");
     assert_eq!(connections, 1, "exactly one /connections");
     assert_eq!(graphs, 1, "exactly one /graph");
-    assert_eq!(entries_get, 1, "exactly one GET /api/v3/entries (dedup)");
-    assert_eq!(entries_post, 1, "exactly one POST /api/v3/entries");
+    assert_eq!(entries_get, 1, "exactly one GET /api/v1/entries (dedup)");
+    assert_eq!(entries_post, 1, "exactly one POST /api/v1/entries");
 
     // --- Inspect the NS request body in detail.
     let ns_req = requests
         .iter()
-        .find(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v3/entries")
+        .find(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v1/entries")
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&ns_req.body).expect("ns body json");
     let arr = body.as_array().expect("array");
@@ -242,7 +242,7 @@ async fn full_pipeline_survives_nightscout_502_and_keeps_cache_fresh() {
     let server = MockServer::start().await;
     mount_llu(&server).await;
     Mock::given(method("POST"))
-        .and(path("/api/v3/entries"))
+        .and(path("/api/v1/entries"))
         .respond_with(ResponseTemplate::new(502))
         .mount(&server)
         .await;
@@ -355,15 +355,15 @@ mod dlq_e2e {
         }
     }
 
-    /// Mount the read-side `GET /api/v3/entries` (always 404 = "NS empty,
+    /// Mount the read-side `GET /api/v1/entries` (always 404 = "NS empty,
     /// post everything"). Tests mount the POST mock separately so each
     /// test can control success/failure on its own.
     async fn mount_ns_get_empty(server: &MockServer) {
         Mock::given(method("GET"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries.json"))
             .and(header("api-secret", API_SECRET_SHA1))
             .respond_with(ResponseTemplate::new(404))
-            .named("GET /api/v3/entries always-404")
+            .named("GET /api/v1/entries always-404")
             .mount(server)
             .await;
     }
@@ -410,7 +410,7 @@ mod dlq_e2e {
 
         // ── Cycle 1: NS outage. `mount_as_scoped` so we can drop it. ─
         let outage = Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .and(header("api-secret", API_SECRET_SHA1))
             .respond_with(ResponseTemplate::new(502))
             .named("cycle-1 NS 502 outage")
@@ -445,7 +445,7 @@ mod dlq_e2e {
         // ── Cycle 2: NS recovers (drop the 502 scoped mock first). ───
         drop(outage);
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .and(header("api-secret", API_SECRET_SHA1))
             .respond_with(ResponseTemplate::new(201))
             .mount(&server)
@@ -470,7 +470,7 @@ mod dlq_e2e {
         let requests = server.received_requests().await.unwrap();
         let posts: Vec<_> = requests
             .iter()
-            .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v3/entries")
+            .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v1/entries")
             .collect();
         // NS retries 502 internally via `NightscoutClient::post_entries`
         // (MAX_POST_RETRIES = 2 → 1 initial + 2 retries = 3 attempts).
@@ -517,7 +517,7 @@ mod dlq_e2e {
 
         // ── Phase 1: build stack, fail, drop ─────────────────────────
         let outage = Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .and(header("api-secret", API_SECRET_SHA1))
             .respond_with(ResponseTemplate::new(502))
             .named("phase-1 NS 502 outage")
@@ -551,7 +551,7 @@ mod dlq_e2e {
         // ── Phase 2: NS recovers, fresh stack drains the queue ───────
         drop(outage);
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .and(header("api-secret", API_SECRET_SHA1))
             .respond_with(ResponseTemplate::new(201))
             .mount(&server)
@@ -591,7 +591,7 @@ mod dlq_e2e {
             .iter()
             .find(|r| {
                 r.method.as_str() == "POST"
-                    && r.url.path() == "/api/v3/entries"
+                    && r.url.path() == "/api/v1/entries"
                     && serde_json::from_slice::<serde_json::Value>(&r.body)
                         .ok()
                         .and_then(|v| v.as_array().cloned())
@@ -627,7 +627,7 @@ mod dlq_e2e {
         let server = MockServer::start().await;
         mount_ns_get_empty(&server).await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .and(header("api-secret", API_SECRET_SHA1))
             .respond_with(ResponseTemplate::new(502))
             .named("extended-outage NS 502")
