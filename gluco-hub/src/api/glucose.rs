@@ -69,8 +69,7 @@ mod tests {
     #[tokio::test]
     async fn returns_503_when_cache_empty() {
         let handle = crate::metrics::init_recorder().expect("recorder");
-        let (tx, rx) =
-            tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
+        let (tx, rx) = tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
         let state = AppState {
             cache: ReadingCache::new(),
             metrics_handle: handle,
@@ -100,8 +99,7 @@ mod tests {
             trend: Trend::Flat,
         }]);
         let handle = crate::metrics::init_recorder().expect("recorder");
-        let (tx, rx) =
-            tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
+        let (tx, rx) = tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
         let app = router_with_state(AppState {
             cache: cache.clone(),
             metrics_handle: handle,

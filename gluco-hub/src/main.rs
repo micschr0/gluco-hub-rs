@@ -217,12 +217,10 @@ async fn serve(cfg: config::Config) -> Result<()> {
         auth_enabled = bearer_token.is_some(),
         "http config",
     );
-    let (poll_status_tx, poll_status_rx) = tokio::sync::watch::channel(
-        poll_status::PollStatus {
-            poll_interval_secs: cfg.poller.interval_secs,
-            ..Default::default()
-        },
-    );
+    let (poll_status_tx, poll_status_rx) = tokio::sync::watch::channel(poll_status::PollStatus {
+        poll_interval_secs: cfg.poller.interval_secs,
+        ..Default::default()
+    });
     let poll_status_tx = std::sync::Arc::new(poll_status_tx);
     let state = api::AppState {
         cache: cache.clone(),
