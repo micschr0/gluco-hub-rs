@@ -123,8 +123,7 @@ mod tests {
 
     fn state(bearer: Option<&str>) -> AppState {
         let handle = crate::metrics::init_recorder().expect("recorder");
-        let (tx, rx) =
-            tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
+        let (tx, rx) = tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
         let (clock_tx, _clock_rx) = broadcast::channel(16);
         AppState {
             cache: ReadingCache::new(),

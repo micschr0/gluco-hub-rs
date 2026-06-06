@@ -127,11 +127,7 @@ mod tests {
         });
         let app = router_with_state(state);
         let resp = app
-            .oneshot(
-                Request::get("/api/v1/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -151,11 +147,7 @@ mod tests {
         });
         let app = router_with_state(state);
         let resp = app
-            .oneshot(
-                Request::get("/api/v1/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -182,11 +174,7 @@ mod tests {
         let state = make_state(PollStatus::default());
         let app = router_with_state(state);
         let resp = app
-            .oneshot(
-                Request::get("/api/v1/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/api/v1/status").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
