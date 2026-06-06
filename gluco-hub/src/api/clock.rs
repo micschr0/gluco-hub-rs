@@ -721,7 +721,10 @@ mod tests {
         {
             let buf = h.lock().unwrap();
             assert_eq!(buf.len(), HISTORY_CAP);
-            assert_eq!(buf.front().copied(), Some(HistoryPoint { ts: 0, mgdl: 0.0 }));
+            assert_eq!(
+                buf.front().copied(),
+                Some(HistoryPoint { ts: 0, mgdl: 0.0 })
+            );
             let last = (HISTORY_CAP - 1) as i64;
             assert_eq!(
                 buf.back().copied(),
@@ -737,10 +740,7 @@ mod tests {
         assert_eq!(buf.len(), HISTORY_CAP, "cap is enforced, not exceeded");
         assert_eq!(
             buf.front().copied(),
-            Some(HistoryPoint {
-                ts: 1,
-                mgdl: 1.0
-            }),
+            Some(HistoryPoint { ts: 1, mgdl: 1.0 }),
             "oldest point was evicted"
         );
         assert_eq!(
