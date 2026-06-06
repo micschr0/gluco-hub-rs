@@ -1,0 +1,7 @@
+node_modules/
+artifacts/report/
+artifacts/*.png
+artifacts/*.webm
+# Playwright browser binaries are installed globally by CI / developer setup
+# — never committed
+.playwright/

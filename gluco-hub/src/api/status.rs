@@ -105,12 +105,15 @@ mod tests {
         // Keep tx alive for the duration of the test via the state itself —
         // AppState holds the Sender so the channel is not prematurely closed.
         let handle = crate::metrics::init_recorder().expect("recorder");
+        let (clock_tx, _clock_rx) = tokio::sync::broadcast::channel(16);
         AppState {
             cache: gluco_hub_core::ReadingCache::new(),
             metrics_handle: handle,
             bearer_token: None,
             poll_status_tx: std::sync::Arc::new(tx),
             poll_status_rx: rx,
+            clock_tx: std::sync::Arc::new(clock_tx),
+            clock_history: crate::api::new_history(),
         }
     }
 

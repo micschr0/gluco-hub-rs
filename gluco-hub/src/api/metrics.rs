@@ -29,12 +29,15 @@ mod tests {
     async fn metrics_returns_prometheus_text() {
         let handle = crate::metrics::init_recorder().expect("recorder");
         let (tx, rx) = tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
+        let (clock_tx, _clock_rx) = tokio::sync::broadcast::channel(16);
         let state = AppState {
             cache: ReadingCache::new(),
             metrics_handle: handle,
             bearer_token: None,
             poll_status_tx: std::sync::Arc::new(tx),
             poll_status_rx: rx,
+            clock_tx: std::sync::Arc::new(clock_tx),
+            clock_history: crate::api::new_history(),
         };
         let app = router_with_state(state);
         let resp = app
