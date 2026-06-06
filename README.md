@@ -199,6 +199,7 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 | `<prefix>/glucose` |    No    | `{"v":1,"ts":<unix-ms>,"mgdl":<float>,"mmol":<float>,"trend":"Flat","source":"llu","patient":"…"}` |
 | `<prefix>/_health` |   Yes    | `{"online":true,"v":1}` · LWT: `{"online":false,"v":1}`                                          |
 | `<prefix>/_stats`  |   Yes    | `{"v":1,"uptime_secs":…,"publishes_total":…,"connects_total":…, …}` — refreshed every `stats_interval_secs` |
+| `<prefix>/_patients` |  Yes   | `[{"id":"<uuid>","display_name":"Anna M.","is_active":true}, …]` — refreshed after each successful LLU `list_connections()` |
 
 `<prefix>` is the `topic_prefix` value from `[sink.mqtt]`. Set `include_patient_id = false` to drop the `patient` field on shared brokers. The schema is versioned via the `v` field — see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full payload contracts.
 

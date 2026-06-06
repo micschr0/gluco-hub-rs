@@ -684,3 +684,341 @@ mod dlq_e2e {
         );
     }
 }
+
+// ─── B1 `_patients` E2E (wiremock LLU → MQTT stub broker) ─────────────────
+//
+// Exercises the real Sprint-B1 path end-to-end without Docker:
+//   wiremock LLU (login + /llu/connections with >=2 connections)
+//     -> `LluSource::subscribe_connections` watch channel
+//     -> `crate::connection_summaries` (PHI abbreviation + is_active)
+//     -> `MqttSink::publish_patients` against an in-process MQTT v5 stub
+//        broker (the agreed Docker-free broker harness, same pattern as
+//        the `sinks::mqtt::sink` tests).
+//
+// Gated on `sink-mqtt` because `publish_patients` / `PatientSummary` /
+// `connection_summaries` only compile with the MQTT sink. The module's
+// outer `#[cfg]` (in main.rs) already guarantees `source-llu`.
+#[cfg(feature = "sink-mqtt")]
+mod patients_e2e {
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use bytes::BytesMut;
+    use futures::{SinkExt as _, StreamExt as _};
+    use gluco_hub_core::{PatientId, Source, SourceId};
+    use rumqttc::v5::mqttbytes::v5::{
+        Codec, ConnAck, ConnectReturnCode, Packet, PingResp, PubAck, Publish as PublishPkt,
+    };
+    use secrecy::SecretString;
+    use serde_json::Value;
+    use tokio::net::TcpListener;
+    use tokio::sync::mpsc;
+    use tokio_util::codec::Framed;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::config::{MqttGlucoseUnit, MqttQos, MqttSinkConfig};
+    use crate::sinks::mqtt::MqttSink;
+    use crate::sources::llu::Region;
+    use crate::sources::llu::auth::{LluAuthClient, LluCredentials};
+    use crate::sources::llu::source::{ConnectionSelection, LluSource};
+
+    /// LLU login fixture — token valid far in the future so the source
+    /// reuses it across the connections + graph calls.
+    fn login_body() -> Value {
+        serde_json::json!({
+            "status": 0,
+            "data": {
+                "authTicket": {
+                    "token": "tok-b1",
+                    "expires": 9_999_999_999u64,
+                    "duration": 3600u64
+                },
+                "user": { "id": "user-b1" }
+            }
+        })
+    }
+
+    /// Two connections — `patient-active` (the pinned/active one) and
+    /// `patient-other`. Full surnames are present in the LLU JSON; the
+    /// PHI-safe summary must abbreviate them to "First L.".
+    fn connections_body() -> Value {
+        serde_json::json!({
+            "status": 0,
+            "data": [
+                {
+                    "id": "conn-active",
+                    "patientId": "patient-active",
+                    "firstName": "Anna",
+                    "lastName": "Müller",
+                    "glucoseMeasurement": {
+                        "Timestamp": "3/26/2024 4:38:38 PM",
+                        "ValueInMgPerDl": 142.0,
+                        "TrendArrow": 3
+                    }
+                },
+                {
+                    "id": "conn-other",
+                    "patientId": "patient-other",
+                    "firstName": "Ben",
+                    "lastName": "Smith",
+                    "glucoseMeasurement": {
+                        "Timestamp": "3/26/2024 4:38:38 PM",
+                        "ValueInMgPerDl": 99.0,
+                        "TrendArrow": 3
+                    }
+                }
+            ]
+        })
+    }
+
+    fn graph_body() -> Value {
+        serde_json::json!({
+            "status": 0,
+            "data": {
+                "connection": { "id": "conn-active", "patientId": "patient-active" },
+                "activeSensors": [],
+                "graphData": [
+                    { "Timestamp": "3/26/2024 4:33:38 PM", "ValueInMgPerDl": 138.0, "TrendArrow": 3 },
+                    { "Timestamp": "3/26/2024 4:38:38 PM", "ValueInMgPerDl": 142.0, "TrendArrow": 3 }
+                ]
+            }
+        })
+    }
+
+    async fn mount_llu(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/llu/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(login_body()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/llu/connections"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(connections_body()))
+            .mount(server)
+            .await;
+        // The active patient is `patient-active`; only its graph is fetched.
+        Mock::given(method("GET"))
+            .and(path("/llu/connections/patient-active/graph"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(graph_body()))
+            .mount(server)
+            .await;
+    }
+
+    // ── In-process MQTT v5 stub broker ───────────────────────────────────
+    //
+    // Same Docker-free harness shape proven in the `sinks::mqtt::sink`
+    // tests: a single-connection broker built on `Framed<TcpStream, Codec>`
+    // that CONNACKs, ACKs QoS-1 PUBLISHes, answers PINGREQ, and forwards
+    // every received PUBLISH to a channel for assertions. Duplicated here
+    // (rather than imported) because the original lives in a private
+    // `#[cfg(test)]` module of `sink.rs` and is not exported.
+    async fn start_stub_broker() -> (u16, mpsc::Receiver<PublishPkt>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let (tx, rx) = mpsc::channel(64);
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut framed = Framed::new(
+                stream,
+                Codec {
+                    max_incoming_size: Some(1024 * 1024),
+                    max_outgoing_size: Some(1024 * 1024),
+                },
+            );
+
+            while let Some(item) = framed.next().await {
+                match item {
+                    Ok(Packet::Connect(_, _, _)) => {
+                        let connack = ConnAck {
+                            session_present: false,
+                            code: ConnectReturnCode::Success,
+                            properties: None,
+                        };
+                        if framed.send(Packet::ConnAck(connack)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Packet::Publish(p)) => {
+                        let pkid = p.pkid;
+                        let qos = p.qos;
+                        let _ = tx.send(p).await;
+                        if matches!(qos, rumqttc::v5::mqttbytes::QoS::AtLeastOnce) {
+                            let ack = PubAck::new(pkid, None);
+                            if framed.send(Packet::PubAck(ack)).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Packet::PingReq(_)) => {
+                        if framed.send(Packet::PingResp(PingResp)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Packet::Disconnect(_)) => break,
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            let _ = framed.close().await;
+            let _ = BytesMut::new();
+        });
+
+        (port, rx)
+    }
+
+    /// Wait for the next PUBLISH whose topic matches `expected_topic`,
+    /// draining intervening publishes. `None` if the broker channel closes
+    /// first; panics on timeout.
+    async fn wait_for_topic(
+        rx: &mut mpsc::Receiver<PublishPkt>,
+        expected_topic: &str,
+        deadline: Duration,
+    ) -> Option<PublishPkt> {
+        let started = Instant::now();
+        loop {
+            let remaining = deadline.checked_sub(started.elapsed()).unwrap_or_default();
+            let recv = tokio::time::timeout(remaining, rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {expected_topic}"));
+            let p = recv?;
+            let topic = std::str::from_utf8(&p.topic)
+                .expect("utf8 topic")
+                .to_string();
+            if topic == expected_topic {
+                return Some(p);
+            }
+        }
+    }
+
+    fn mqtt_cfg(port: u16, prefix: &str) -> MqttSinkConfig {
+        MqttSinkConfig {
+            broker_host: "127.0.0.1".into(),
+            broker_port: port,
+            client_id: "b1-test-client".into(),
+            username: None,
+            password: None,
+            topic_prefix: prefix.into(),
+            qos: MqttQos::AtLeastOnce,
+            keep_alive_secs: 30,
+            session_expiry_secs: 0,
+            tls: false,
+            include_patient_id: true,
+            stats_interval_secs: 60,
+            discovery_enabled: false,
+            discovery_prefix: "homeassistant".into(),
+            device_name: None,
+            discovery_unit: MqttGlucoseUnit::default(),
+        }
+    }
+
+    /// Full B1 path: an LLU auth + connections fetch drives the
+    /// `subscribe_connections` watch channel, the derived PHI-safe
+    /// summaries carry the right `display_name` / `is_active` / count, and
+    /// the same summaries reach the broker on a retained QoS-1 `_patients`
+    /// JSON array.
+    ///
+    /// `patient-active` is pinned via `ConnectionSelection::ByPatientId`, so
+    /// it (and only it) must be marked `is_active = true` — matching the
+    /// connection the reading pipeline actually polls.
+    #[tokio::test]
+    async fn wiremock_llu_to_retained_patients_publish() {
+        let server = MockServer::start().await;
+        mount_llu(&server).await;
+
+        // --- Real LluSource pointed at wiremock, pinned to patient-active.
+        let llu = LluAuthClient::new()
+            .expect("client")
+            .with_base_url(server.uri());
+        let mut source = LluSource::new(
+            SourceId::new("llu").unwrap(),
+            llu,
+            LluCredentials {
+                email: "patient@example.com".to_string(),
+                password: SecretString::from("hunter2"),
+                region: Region::Eu,
+            },
+            ConnectionSelection::ByPatientId(PatientId::new("patient-active").unwrap()),
+            chrono_tz::Tz::UTC,
+        );
+
+        // Subscribe BEFORE the fetch so the watch channel captures the
+        // connections list the moment `/llu/connections` returns.
+        let mut rx = source.subscribe_connections();
+        let selection = source.selection().clone();
+
+        // --- Drive the connections fetch via the public Source API.
+        let readings = source.fetch_latest().await.expect("fetch_latest");
+        assert_eq!(readings.len(), 2, "graphData yields two readings");
+
+        // --- The watch channel must now hold the full 2-connection list.
+        rx.changed().await.expect("connections watch must fire");
+        let connections = rx.borrow_and_update().clone();
+        assert_eq!(connections.len(), 2, "both connections emitted on watch");
+        let ids: Vec<&str> = connections.iter().map(|c| c.patient_id.as_str()).collect();
+        assert_eq!(ids, vec!["patient-active", "patient-other"]);
+
+        // --- Derive PHI-safe summaries through the production mapper.
+        let summaries = crate::connection_summaries(&connections, &selection);
+        assert_eq!(summaries.len(), 2, "one summary per connection");
+
+        let active = summaries
+            .iter()
+            .find(|s| s.id == "patient-active")
+            .expect("active summary present");
+        assert_eq!(active.display_name, "Anna M.", "PHI-abbreviated name");
+        assert!(active.is_active, "pinned patient must be is_active = true");
+
+        let other = summaries
+            .iter()
+            .find(|s| s.id == "patient-other")
+            .expect("other summary present");
+        assert_eq!(other.display_name, "Ben S.");
+        assert!(
+            !other.is_active,
+            "non-pinned patient must be is_active = false"
+        );
+        assert_eq!(
+            summaries.iter().filter(|s| s.is_active).count(),
+            1,
+            "exactly one active patient"
+        );
+        // PHI guard: no full surname may appear in the wire form.
+        let summaries_json = serde_json::to_string(&summaries).unwrap();
+        assert!(
+            !summaries_json.contains("Müller") && !summaries_json.contains("Smith"),
+            "full surnames must never be serialised: {summaries_json}"
+        );
+
+        // --- Broker-level: the same summaries reach `<prefix>/_patients`
+        //     retained, QoS 1, as a JSON array, on the real MqttSink path.
+        let (port, mut broker_rx) = start_stub_broker().await;
+        let sink = MqttSink::new(&mqtt_cfg(port, "b1"), None).expect("build mqtt sink");
+        // Drain the connect-time `_health` publish so it doesn't shadow ours.
+        let _ = wait_for_topic(&mut broker_rx, "b1/_health", Duration::from_secs(3)).await;
+
+        sink.publish_patients("b1", &summaries)
+            .await
+            .expect("publish_patients must succeed");
+
+        let pkt = wait_for_topic(&mut broker_rx, "b1/_patients", Duration::from_secs(3))
+            .await
+            .expect("_patients publish must arrive");
+        assert!(pkt.retain, "_patients must be retained");
+        assert!(
+            matches!(pkt.qos, rumqttc::v5::mqttbytes::QoS::AtLeastOnce),
+            "_patients must be QoS 1"
+        );
+        let body: Value = serde_json::from_slice(&pkt.payload).expect("json body");
+        let arr = body.as_array().expect("payload is a JSON array");
+        assert_eq!(arr.len(), 2, "two patient summaries on the wire");
+        // Order is preserved from the connections list (active first).
+        assert_eq!(arr[0]["id"], Value::String("patient-active".into()));
+        assert_eq!(arr[0]["display_name"], Value::String("Anna M.".into()));
+        assert_eq!(arr[0]["is_active"], Value::Bool(true));
+        assert_eq!(arr[1]["id"], Value::String("patient-other".into()));
+        assert_eq!(arr[1]["display_name"], Value::String("Ben S.".into()));
+        assert_eq!(arr[1]["is_active"], Value::Bool(false));
+    }
+}

@@ -222,7 +222,8 @@ async fn serve(cfg: config::Config) -> Result<()> {
         bearer_token,
     };
 
-    let sinks = build_sinks(&cfg)?;
+    let built_sinks = build_sinks(&cfg)?;
+    let sinks = built_sinks.routed;
     info!(sink_count = sinks.len(), "sinks configured");
     if sinks.is_empty() && !cfg.http.enabled {
         warn!(
@@ -236,11 +237,28 @@ async fn serve(cfg: config::Config) -> Result<()> {
         );
     }
 
-    if let Some(source) = build_default_source(&cfg)? {
+    if let Some(built_source) = build_default_source(&cfg)? {
         let interval = Duration::from_secs(cfg.poller.interval_secs);
         let cache_for_poller = cache.clone();
         let sinks_for_poller = sinks.clone();
         let heartbeat_path = Some(cfg.state.dir.join(".alive"));
+
+        // Wire the retained `_patients` MQTT publisher: it watches the LLU
+        // connections channel and republishes a PHI-safe summary after every
+        // successful `list_connections()`. Only active when both an LLU
+        // source and an MQTT sink are configured.
+        #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+        if let (Some(wiring), Some(mqtt)) = (built_source.connections, built_sinks.mqtt) {
+            let topic_prefix = cfg
+                .sink
+                .mqtt
+                .as_ref()
+                .map(|m| m.topic_prefix.clone())
+                .unwrap_or_default();
+            spawn_patients_publisher(mqtt, topic_prefix, wiring.rx, wiring.selection);
+        }
+
+        let source = built_source.source;
         tokio::spawn(async move {
             poll_loop(
                 source,
@@ -285,11 +303,30 @@ fn resolve_bearer_token(cfg: &config::Config) -> Option<secrecy::SecretString> {
     cfg.http.bearer_token.clone()
 }
 
+/// Wiring exposed by an LLU source for the `_patients` MQTT publisher: a
+/// receiver that fires the full connection list after every successful
+/// `list_connections()`, plus the source's selection policy so the
+/// publisher can mark the same connection `is_active` the poller fetches.
+#[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+struct ConnectionsWiring {
+    rx: tokio::sync::watch::Receiver<Vec<sources::llu::wire::Connection>>,
+    selection: sources::llu::source::ConnectionSelection,
+}
+
+/// Outcome of `build_default_source`: the erased source for the poll loop
+/// plus, for an LLU source with MQTT compiled in, the connections wiring
+/// the `_patients` publisher subscribes to.
+struct BuiltSource {
+    source: Arc<dyn Source>,
+    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+    connections: Option<ConnectionsWiring>,
+}
+
 /// Build the source to drive the poller. Priority order:
 /// 1. `source-llu` feature + `[source.llu]` block configured → LLU.
 /// 2. `mock-source` feature → MockSource fixture.
 /// 3. Otherwise, no source (HTTP API stays up; data endpoints serve 503).
-fn build_default_source(cfg: &config::Config) -> Result<Option<Arc<dyn Source>>> {
+fn build_default_source(cfg: &config::Config) -> Result<Option<BuiltSource>> {
     // Mark `cfg` used in every feature combination, including the
     // no-default-features build where neither branch below compiles.
     let _ = cfg;
@@ -300,9 +337,25 @@ fn build_default_source(cfg: &config::Config) -> Result<Option<Arc<dyn Source>>>
     )]
     let mut source: Option<Arc<dyn Source>> = None;
 
+    // Only set on the LLU path with MQTT compiled in; stays `None`
+    // otherwise so the publisher is simply never wired.
+    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+    #[cfg_attr(not(feature = "source-llu"), allow(unused_mut))]
+    let mut connections: Option<ConnectionsWiring> = None;
+
     #[cfg(feature = "source-llu")]
     if let Some(llu) = cfg.source.llu.as_ref() {
-        source = Some(build_llu_source(llu).context("build LLU source")?);
+        // Build unwrapped so we can attach the connections watch channel
+        // before erasing to `Arc<dyn Source>`.
+        #[cfg_attr(not(feature = "sink-mqtt"), allow(unused_mut))]
+        let mut llu_source = build_llu_source_unwrapped(llu).context("build LLU source")?;
+        #[cfg(feature = "sink-mqtt")]
+        {
+            let rx = llu_source.subscribe_connections();
+            let selection = llu_source.selection().clone();
+            connections = Some(ConnectionsWiring { rx, selection });
+        }
+        source = Some(Arc::new(llu_source));
     }
 
     #[cfg(feature = "mock-source")]
@@ -312,7 +365,11 @@ fn build_default_source(cfg: &config::Config) -> Result<Option<Arc<dyn Source>>>
         source = Some(Arc::new(mock));
     }
 
-    Ok(source)
+    Ok(source.map(|source| BuiltSource {
+        source,
+        #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+        connections,
+    }))
 }
 
 /// Resolve `[source.llu]` into a wired `LluAuthClient` + `LluCredentials`
@@ -370,8 +427,13 @@ fn resolve_source_tz(llu: &config::LluSourceConfig) -> Result<chrono_tz::Tz> {
         })
 }
 
+/// Build an `LluSource` without wrapping it in `Arc<dyn Source>`, giving
+/// the caller a chance to attach additional wiring (e.g. the connections
+/// watch channel for the `_patients` MQTT publisher) before erasure.
 #[cfg(feature = "source-llu")]
-fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
+fn build_llu_source_unwrapped(
+    llu: &config::LluSourceConfig,
+) -> Result<sources::llu::source::LluSource> {
     use chrono_tz::Tz;
     use gluco_hub_core::{PatientId, SourceId};
     use sources::llu::source::{ConnectionSelection, LluSource};
@@ -394,9 +456,7 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
         source_tz = %source_tz,
         "llu source configured"
     );
-    Ok(Arc::new(LluSource::new(
-        id, client, creds, selection, source_tz,
-    )))
+    Ok(LluSource::new(id, client, creds, selection, source_tz))
 }
 
 /// One-shot LLU probe. Logs in, lists connections, fetches one graph,
@@ -715,17 +775,38 @@ fn extract_error_code(message: &str) -> String {
     "UNKNOWN".to_string()
 }
 
+/// Outcome of `build_sinks`: the layered sink chain plus, when the MQTT
+/// sink is compiled in *and* configured, a concrete `Arc<MqttSink>` handle.
+/// The handle lets the caller call MQTT-specific methods (e.g.
+/// `publish_patients`) on the *same* sink instance the reading pipeline
+/// uses, without opening a second broker connection.
+struct BuiltSinks {
+    routed: Vec<Arc<sink_router::SinkRouter>>,
+    // Only carried when the `_patients` publisher can consume it, i.e. when
+    // an LLU source is also compiled in. Avoids an unused-field warning in
+    // sink-mqtt-only builds.
+    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+    mqtt: Option<Arc<sinks::mqtt::MqttSink>>,
+}
+
 /// Build the configured sinks, each layered as
 /// `SinkRouter (watermark)` → `DlqSink (persistence)` → real sink.
 /// Order is config-driven; future sinks (webhook, …) slot in as
 /// additional entries.
-fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>> {
+fn build_sinks(cfg: &config::Config) -> Result<BuiltSinks> {
     let _ = cfg;
     #[cfg_attr(
         not(any(feature = "sink-nightscout", feature = "sink-mqtt")),
         allow(unused_mut)
     )]
     let mut sinks: Vec<Arc<dyn Sink>> = Vec::new();
+
+    // Concrete MQTT handle, retained only when the `_patients` publisher
+    // can consume it (LLU source also compiled in). In sink-mqtt-only
+    // builds the sink is still built and pushed below — we just don't keep
+    // a second handle around.
+    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+    let mut mqtt_handle: Option<Arc<sinks::mqtt::MqttSink>> = None;
 
     #[cfg(feature = "sink-nightscout")]
     if let Some(ns) = cfg.sink.nightscout.as_ref() {
@@ -734,7 +815,21 @@ fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>
 
     #[cfg(feature = "sink-mqtt")]
     if let Some(mqtt) = cfg.sink.mqtt.as_ref() {
-        sinks.push(build_mqtt_sink(mqtt).context("build MQTT sink")?);
+        // Build the concrete sink once and share it: a clone goes down the
+        // `Sink` trait path (glucose readings), and — when an LLU source is
+        // present — the original handle is retained so the `_patients`
+        // publisher can call `publish_patients` on the very same broker
+        // connection.
+        let sink = build_mqtt_sink_arc(mqtt).context("build MQTT sink")?;
+        sinks.push(Arc::clone(&sink) as Arc<dyn Sink>);
+        #[cfg(feature = "source-llu")]
+        {
+            mqtt_handle = Some(sink);
+        }
+        #[cfg(not(feature = "source-llu"))]
+        {
+            let _ = sink;
+        }
     }
 
     let routed: Vec<Arc<sink_router::SinkRouter>> = if cfg.dlq.enabled {
@@ -762,13 +857,18 @@ fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>
             .collect()
     };
 
-    Ok(routed)
+    Ok(BuiltSinks {
+        routed,
+        #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+        mqtt: mqtt_handle,
+    })
 }
 
+/// Build the MQTT sink and return it as `Arc<MqttSink>` so the caller can
+/// share it between the `Sink` trait path (glucose readings) and direct
+/// method calls (e.g. `publish_patients`).
 #[cfg(feature = "sink-mqtt")]
-fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
-    use sinks::mqtt::MqttSink;
-
+fn build_mqtt_sink_arc(cfg: &config::MqttSinkConfig) -> Result<Arc<sinks::mqtt::MqttSink>> {
     let password = cfg.password.clone();
 
     info!(
@@ -780,8 +880,88 @@ fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
         "mqtt sink configured"
     );
 
-    let sink = MqttSink::new(cfg, password).map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(Arc::new(sink))
+    sinks::mqtt::MqttSink::new(cfg, password)
+        .map(Arc::new)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Map a raw LLU connections list into PHI-safe `PatientSummary` records.
+///
+/// PHI rule: only `id`, an abbreviated display name (first name + last
+/// initial), and `is_active` ever leave this function — never a full
+/// surname or birthdate. `is_active` is `true` for exactly the connection
+/// the poll loop fetches, as resolved by the source's `selection`.
+#[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+fn connection_summaries(
+    connections: &[sources::llu::wire::Connection],
+    selection: &sources::llu::source::ConnectionSelection,
+) -> Vec<sinks::mqtt::wire::PatientSummary> {
+    let active_id = selection.resolve_active_id(connections);
+    connections
+        .iter()
+        .map(|c| {
+            sinks::mqtt::wire::PatientSummary::new(
+                c.patient_id.clone(),
+                c.first_name.as_deref(),
+                c.last_name.as_deref(),
+                active_id.as_deref() == Some(c.patient_id.as_str()),
+            )
+        })
+        .collect()
+}
+
+/// Spawn the retained `_patients` MQTT publisher.
+///
+/// Subscribes to the LLU connections watch channel and, after every
+/// successful `list_connections()`, republishes a PHI-safe summary array
+/// to `<topic_prefix>/_patients` (retained, QoS 1) so consumers can
+/// discover patient UUIDs without a UI.
+///
+/// Failure handling: a publish error is logged and the loop continues —
+/// a transient broker hiccup must never take down patient discovery (and
+/// it runs in its own task, so it can never stall the poll loop). The task
+/// ends only when the source — and thus the watch sender — is dropped.
+#[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+fn spawn_patients_publisher(
+    mqtt: Arc<sinks::mqtt::MqttSink>,
+    topic_prefix: String,
+    mut rx: tokio::sync::watch::Receiver<Vec<sources::llu::wire::Connection>>,
+    selection: sources::llu::source::ConnectionSelection,
+) {
+    tokio::spawn(async move {
+        info!(
+            topic = %format!("{topic_prefix}/_patients"),
+            "mqtt _patients publisher started"
+        );
+        // `changed()` returns Err only when the sender is dropped — that is
+        // the normal shutdown path, so we exit the loop quietly.
+        while rx.changed().await.is_ok() {
+            // Clone out of the borrow guard before any await so we never
+            // hold the watch lock across the publish.
+            let connections = rx.borrow_and_update().clone();
+            // The initial channel value is an empty Vec; skip publishing an
+            // empty list before the first real fetch lands.
+            if connections.is_empty() {
+                continue;
+            }
+            let summaries = connection_summaries(&connections, &selection);
+            match mqtt.publish_patients(&topic_prefix, &summaries).await {
+                Ok(()) => {
+                    info!(count = summaries.len(), "published retained _patients");
+                }
+                Err(e) => {
+                    // Log and continue — patient discovery is best-effort and
+                    // must not crash on a transient broker failure.
+                    warn!(
+                        error_code = %e.code(),
+                        error = %e,
+                        "failed to publish _patients; will retry on next connections update"
+                    );
+                }
+            }
+        }
+        info!("mqtt _patients publisher stopped (connections channel closed)");
+    });
 }
 
 #[cfg(feature = "sink-nightscout")]
