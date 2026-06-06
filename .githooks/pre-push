@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+# Heavier lint gate before code leaves your machine. Formatting is already
+# enforced on commit; here we run clippy with warnings-as-errors so red
+# lints never reach a PR. Installed via `task setup`.
+# Bypass in a pinch with `git push --no-verify`.
+if ! cargo clippy --all-targets -- -D warnings; then
+	echo >&2
+	echo "✗ clippy reported warnings." >&2
+	echo "  Fix them (or run 'task lint') before pushing." >&2
+	exit 1
+fi

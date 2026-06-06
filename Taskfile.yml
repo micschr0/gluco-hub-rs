@@ -6,6 +6,12 @@ tasks:
     cmds:
       - task --list
 
+  setup:
+    desc: One-time dev setup — install git hooks (fmt on commit, clippy on push)
+    cmds:
+      - git config core.hooksPath .githooks
+      - echo "✓ git hooks installed (core.hooksPath → .githooks)"
+
   build:
     desc: Build (debug)
     cmd: cargo build
