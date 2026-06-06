@@ -35,6 +35,69 @@ pub struct HealthPayload {
     pub v: u8,
 }
 
+/// PHI-safe patient record published retained to `<prefix>/_patients`.
+///
+/// `display_name` is abbreviated to "First L." (first name + first
+/// initial of the last name followed by a dot) so no full surname is
+/// ever emitted on the broker. The format is stable — consumers should
+/// treat it as opaque display text, not as a parseable identifier.
+#[derive(Debug, Serialize, PartialEq, Clone)]
+pub struct PatientSummary {
+    pub id: String,
+    pub display_name: String,
+    pub is_active: bool,
+}
+
+impl PatientSummary {
+    /// Build a `PatientSummary` from raw LLU name parts.
+    ///
+    /// PHI abbreviation rule: `display_name = "First L."` where `L` is
+    /// `last_name[..1]`. When either component is absent or empty the
+    /// corresponding part is omitted gracefully:
+    /// - no first name → last initial only (e.g. `"S."`)
+    /// - no last name  → first name only  (e.g. `"Alice"`)
+    /// - both absent   → fallback to `id`
+    pub fn new(
+        id: impl Into<String>,
+        first_name: Option<&str>,
+        last_name: Option<&str>,
+        is_active: bool,
+    ) -> Self {
+        let id = id.into();
+        let display_name = build_display_name(first_name, last_name, &id);
+        Self {
+            id,
+            display_name,
+            is_active,
+        }
+    }
+}
+
+/// Abbreviate name parts into a PHI-safe display string.
+///
+/// Format: `"{first} {L}."` where `{L}` is the first Unicode scalar
+/// value (char) of `last_name`.
+pub(crate) fn build_display_name(
+    first_name: Option<&str>,
+    last_name: Option<&str>,
+    fallback_id: &str,
+) -> String {
+    let first = first_name.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() { None } else { Some(t) }
+    });
+    let last_initial: Option<String> = last_name.and_then(|s| {
+        let t = s.trim();
+        t.chars().next().map(|c| format!("{c}."))
+    });
+    match (first, last_initial) {
+        (Some(f), Some(li)) => format!("{f} {li}"),
+        (Some(f), None) => f.to_string(),
+        (None, Some(li)) => li,
+        (None, None) => fallback_id.to_string(),
+    }
+}
+
 /// `v: 1` stats payload published retained to `<prefix>/_stats`.
 ///
 /// All counters are monotonic over the lifetime of the sink process.
@@ -214,6 +277,84 @@ mod tests {
             !json.contains("last_connect_ts_ms"),
             "last_connect_ts_ms must be absent: {json}"
         );
+    }
+
+    #[test]
+    fn patient_summary_display_name_abbreviates_surname() {
+        // Spec example: first="Anna", last="Müller" → "Anna M.".
+        let s = PatientSummary::new("uuid-1", Some("Anna"), Some("Müller"), true);
+        assert_eq!(s.display_name, "Anna M.");
+        assert_eq!(s.id, "uuid-1");
+        assert!(s.is_active);
+    }
+
+    #[test]
+    fn patient_summary_serialises_to_phi_safe_json() {
+        let s = PatientSummary::new("uuid-1", Some("Anna"), Some("Müller"), true);
+        let json = serde_json::to_string(&s).unwrap();
+        // Exact field set: id, display_name, is_active — nothing else.
+        assert_eq!(
+            json,
+            r#"{"id":"uuid-1","display_name":"Anna M.","is_active":true}"#
+        );
+        // PHI guard: the full surname must never appear on the wire.
+        assert!(
+            !json.contains("Müller"),
+            "full surname must not be serialised: {json}"
+        );
+    }
+
+    #[test]
+    fn patient_summary_array_serialises_as_json_array() {
+        let arr = vec![
+            PatientSummary::new("a", Some("Anna"), Some("Müller"), true),
+            PatientSummary::new("b", Some("Ben"), Some("Smith"), false),
+        ];
+        let json = serde_json::to_string(&arr).unwrap();
+        assert!(json.starts_with('['), "must be a JSON array: {json}");
+        assert!(json.contains(r#""display_name":"Anna M.""#));
+        assert!(json.contains(r#""display_name":"Ben S.""#));
+        assert!(json.contains(r#""is_active":true"#));
+        assert!(json.contains(r#""is_active":false"#));
+    }
+
+    #[test]
+    fn build_display_name_handles_missing_or_empty_parts() {
+        // Empty last name must NOT panic (`&last_name[..1]` would) — it
+        // gracefully degrades to the first name only.
+        assert_eq!(build_display_name(Some("Anna"), Some(""), "id"), "Anna");
+        // Whitespace-only is treated as empty.
+        assert_eq!(build_display_name(Some("Anna"), Some("   "), "id"), "Anna");
+        // No first name → last initial only.
+        assert_eq!(build_display_name(None, Some("Smith"), "id"), "S.");
+        assert_eq!(build_display_name(Some(""), Some("Smith"), "id"), "S.");
+        // No last name → first name only.
+        assert_eq!(build_display_name(Some("Anna"), None, "id"), "Anna");
+        // Neither present → fall back to the id so the entry is still
+        // identifiable.
+        assert_eq!(
+            build_display_name(None, None, "uuid-fallback"),
+            "uuid-fallback"
+        );
+        assert_eq!(build_display_name(Some(""), Some(""), "uuid-x"), "uuid-x");
+    }
+
+    #[test]
+    fn build_display_name_uses_first_unicode_scalar_for_initial() {
+        // A multibyte surname initial must use the first char, never a
+        // byte slice (`[..1]` would split mid-codepoint and panic).
+        assert_eq!(
+            build_display_name(Some("Émile"), Some("Über"), "id"),
+            "Émile Ü."
+        );
+    }
+
+    #[test]
+    fn patient_summary_new_with_empty_last_name_does_not_panic() {
+        // Direct guard against the `&last_name[..1]` panic the spec calls out.
+        let s = PatientSummary::new("uuid-9", Some("Solo"), Some(""), false);
+        assert_eq!(s.display_name, "Solo");
+        assert_eq!(s.id, "uuid-9");
     }
 
     #[test]

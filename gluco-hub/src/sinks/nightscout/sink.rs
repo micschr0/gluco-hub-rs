@@ -9,7 +9,7 @@
 //! types.
 //!
 //! Pre-upload dedup: each push first reads Nightscout's most recent
-//! entry timestamp via `GET /api/v3/entries?count=1` and drops every
+//! entry timestamp via `GET /api/v1/entries.json?count=1` and drops every
 //! reading whose `timestamp` is at or before that high-water mark. NS
 //! still dedupes
 //! server-side by `date+type`, but doing it here saves bandwidth and
@@ -123,12 +123,12 @@ mod tests {
         NightscoutSink::new(client)
     }
 
-    /// Mount a 404 on `GET /api/v3/entries` so `fetch_last_entry_date`
+    /// Mount a 404 on `GET /api/v1/entries.json` so `fetch_last_entry_date`
     /// returns `Ok(None)` (registry-empty path) — keeps the POST-side
     /// tests focused without exercising dedup logic in every case.
     async fn mount_empty_last_entry(server: &MockServer) {
         Mock::given(method("GET"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries.json"))
             .respond_with(ResponseTemplate::new(404))
             .mount(server)
             .await;
@@ -139,7 +139,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_empty_last_entry(&server).await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(201))
             .mount(&server)
             .await;
@@ -154,7 +154,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_empty_last_entry(&server).await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(502))
             .mount(&server)
             .await;
@@ -173,7 +173,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_empty_last_entry(&server).await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(401))
             .mount(&server)
             .await;
@@ -204,14 +204,14 @@ mod tests {
             .unwrap()
             .timestamp_millis();
         Mock::given(method("GET"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries.json"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": [{ "date": mid_ms }]
             })))
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(201))
             .mount(&server)
             .await;
@@ -229,7 +229,7 @@ mod tests {
             .await
             .expect("requests")
             .into_iter()
-            .find(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v3/entries")
+            .find(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v1/entries")
             .expect("POST happened");
         let body: serde_json::Value = serde_json::from_slice(&req.body).expect("json");
         let arr = body.as_array().expect("array");
@@ -246,7 +246,7 @@ mod tests {
             .unwrap()
             .timestamp_millis();
         Mock::given(method("GET"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries.json"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": [{ "date": future_ms }]
             })))
@@ -264,7 +264,7 @@ mod tests {
             .await
             .expect("requests")
             .into_iter()
-            .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v3/entries")
+            .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v1/entries")
             .count();
         assert_eq!(posts, 0, "no POST when every reading is already known");
     }
@@ -273,12 +273,12 @@ mod tests {
     async fn last_entry_fetch_500_falls_back_to_post_all() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries.json"))
             .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(201))
             .mount(&server)
             .await;

@@ -36,6 +36,7 @@ use crate::config::{MqttQos, MqttSinkConfig};
 use super::error::{MqttError, classify_client_error, classify_connection_error};
 use super::stats::MqttStatsState;
 use super::wire;
+use super::wire::PatientSummary;
 
 /// Reconnect backoff bounds. Initial 1 s doubles up to `MAX` between
 /// failed `EventLoop::poll()` calls — rumqttc itself does not space
@@ -141,6 +142,34 @@ impl MqttSink {
             _poll_task: poll_task,
             _stats_task: stats_task,
         })
+    }
+
+    /// Publish a retained QoS-1 `_patients` message to
+    /// `<topic_prefix>/_patients` with the given patient summaries.
+    ///
+    /// Called by the poll loop after each successful `list_connections()`
+    /// so subscribers always see an up-to-date, retained patient list.
+    /// Serialisation errors are returned as `MqttError::Payload`; client
+    /// send errors are classified and returned as the relevant `MqttError`
+    /// variant.
+    pub async fn publish_patients(
+        &self,
+        topic_prefix: &str,
+        patients: &[PatientSummary],
+    ) -> Result<(), MqttError> {
+        let bytes = serde_json::to_vec(patients).map_err(|e| MqttError::Payload {
+            message: format!("serialise _patients: {e}"),
+        })?;
+        let topic = format!("{topic_prefix}/_patients");
+        self.client
+            .publish(
+                topic,
+                QoS::AtLeastOnce,
+                /* retain = */ true,
+                Bytes::from(bytes),
+            )
+            .await
+            .map_err(classify_client_error)
     }
 }
 
@@ -682,6 +711,43 @@ mod tests {
         assert_eq!(body["trend"], Value::String("Flat".into()));
         assert_eq!(body["source"], Value::String("llu".into()));
         assert_eq!(body["patient"], Value::String("p1".into()));
+    }
+
+    #[tokio::test]
+    async fn publish_patients_emits_retained_qos1_json_array() {
+        use super::PatientSummary;
+
+        let (port, mut rx) = start_stub_broker().await;
+        let sink = MqttSink::new(&cfg(port, "test", 60), None).expect("build sink");
+
+        // Drain the connect-time _health publish so it doesn't shadow ours.
+        let _ = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3)).await;
+
+        let patients = vec![
+            PatientSummary::new("uuid-1", Some("Anna"), Some("Müller"), true),
+            PatientSummary::new("uuid-2", Some("Ben"), Some("Smith"), false),
+        ];
+        sink.publish_patients("test", &patients)
+            .await
+            .expect("publish_patients must succeed");
+
+        let p = wait_for_topic(&mut rx, "test/_patients", Duration::from_secs(3))
+            .await
+            .expect("_patients publish must arrive");
+        assert!(p.retain, "_patients publish must be retained");
+        assert!(
+            matches!(p.qos, rumqttc::v5::mqttbytes::QoS::AtLeastOnce),
+            "_patients must be QoS 1"
+        );
+        let body: Value = serde_json::from_slice(&p.payload).expect("json body");
+        let arr = body.as_array().expect("payload is a JSON array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["id"], Value::String("uuid-1".into()));
+        assert_eq!(arr[0]["display_name"], Value::String("Anna M.".into()));
+        assert_eq!(arr[0]["is_active"], Value::Bool(true));
+        assert_eq!(arr[1]["id"], Value::String("uuid-2".into()));
+        assert_eq!(arr[1]["display_name"], Value::String("Ben S.".into()));
+        assert_eq!(arr[1]["is_active"], Value::Bool(false));
     }
 
     #[tokio::test]
