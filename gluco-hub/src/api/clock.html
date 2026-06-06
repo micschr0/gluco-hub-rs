@@ -1,0 +1,1615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1C1C1E">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Glucose</title>
+  <style>
+    /* -----------------------------------------------------------------------
+     * Design tokens
+     * All layout measurements derive from --base (a single viewport unit).
+     * All colors derive from --zone-* custom properties set by JS on <html>.
+     * No pixel values in layout logic.
+     * ----------------------------------------------------------------------- */
+    :root {
+      --base: min(4vw, 4vh);
+
+      /* Zone palette */
+      --color-hypo:      #FF2D55;
+      --color-low:       #FF9500;
+      --color-inrange:   #30D158;
+      --color-high:      #FFD60A;
+      --color-veryhigh:  #FF6B35;
+
+      /* Text on colored backgrounds (WCAG AA) */
+      --text-on-hypo:    #FFFFFF;  /* 3.94:1 at large text — passes AA large */
+      --text-on-low:     #1C1C1E;  /* 5.8:1  — passes AA all sizes */
+      --text-on-high:    #1C1C1E;  /* 11.2:1 — passes AAA */
+      --text-on-veryhigh:#FFFFFF;  /* 3.5:1  — passes AA large */
+
+      --bg-default:      #1C1C1E;
+      --text-default:    #F2F2F7;
+      --text-muted:      #8E8E93;
+
+      /* Staleness decay (updated by JS via rAF) */
+      --stale-opacity: 1;
+      --stale-sat:     1;
+    }
+
+    /* -----------------------------------------------------------------------
+     * Reset + base
+     * ----------------------------------------------------------------------- */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      height: 100%;
+      overflow: hidden;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
+
+    body {
+      height: 100dvh;
+      width: 100dvw;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background-color: var(--bg-default);
+      color: var(--text-default);
+      display: grid;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+      /* Transition only background — value transitions are handled separately */
+      transition: background-color 1.2s ease, color 0.6s ease;
+    }
+
+    /* -----------------------------------------------------------------------
+     * Grid layout — driven by data-ctx attribute set by detectContext()
+     * ----------------------------------------------------------------------- */
+    body[data-ctx="wall"],
+    body[data-ctx="phone"],
+    body[data-ctx="eink"] {
+      grid-template-areas:
+        "name"
+        "value"
+        "meta";
+      grid-template-rows: 1fr 6fr 2fr;
+      grid-template-columns: 1fr;
+    }
+
+    body[data-ctx="phone"] {
+      grid-template-rows: 1fr 5fr 1.5fr;
+    }
+
+    body[data-ctx="small"] {
+      grid-template-areas:
+        "value"
+        "meta";
+      grid-template-rows: 5fr 1fr;
+      grid-template-columns: 1fr;
+    }
+
+    body[data-ctx="watch"] {
+      grid-template-areas: "value";
+      grid-template-rows: 1fr;
+      grid-template-columns: 1fr;
+    }
+
+    /* -----------------------------------------------------------------------
+     * Grid areas
+     * ----------------------------------------------------------------------- */
+    .area-name {
+      grid-area: name;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: calc(var(--base) * 0.5);
+    }
+
+    .area-value {
+      grid-area: value;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: calc(var(--base) * 0.6);
+      flex-wrap: nowrap;
+      min-width: 0;
+      padding: calc(var(--base) * 0.25) calc(var(--base) * 0.5);
+    }
+
+    .area-meta {
+      grid-area: meta;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: calc(var(--base) * 1);
+      flex-wrap: wrap;
+      padding: calc(var(--base) * 0.4) calc(var(--base) * 1);
+    }
+
+    /* Hide elements that have no area in this context */
+    body[data-ctx="small"] .area-name,
+    body[data-ctx="watch"] .area-name,
+    body[data-ctx="watch"] .area-meta {
+      display: none;
+    }
+
+    /* -----------------------------------------------------------------------
+     * Typography — all sizes from --base, never px
+     * ----------------------------------------------------------------------- */
+    .patient-name {
+      font-size: clamp(0.75rem, calc(var(--base) * 1.4), 2rem);
+      font-weight: 300;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.7;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 80vw;
+    }
+
+    .glucose-value {
+      font-size: clamp(3rem, calc(var(--base) * 8), 22rem);
+      font-weight: 200;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+      line-height: 1;
+      opacity: var(--stale-opacity);
+      filter: saturate(var(--stale-sat));
+      /* 2s ease smooths the rAF ticks into a continuous visual decay */
+      transition: opacity 2s ease, filter 2s ease, color 1.2s ease;
+    }
+
+    body[data-ctx="watch"] .glucose-value {
+      font-size: clamp(3rem, calc(var(--base) * 10), 22rem);
+    }
+
+    .trend-arrow {
+      font-size: clamp(1.5rem, calc(var(--base) * 4), 12rem);
+      line-height: 1;
+      opacity: var(--stale-opacity);
+      filter: saturate(var(--stale-sat));
+      transition: opacity 2s ease, filter 2s ease;
+      /* Prevent arrow from shrinking the value on small screens */
+      flex-shrink: 0;
+    }
+
+    .glucose-unit {
+      font-size: clamp(0.6rem, calc(var(--base) * 1.1), 1.8rem);
+      font-weight: 300;
+      opacity: 0.65;
+      align-self: flex-end;
+      padding-bottom: calc(var(--base) * 0.5);
+    }
+
+    body[data-ctx="watch"] .glucose-unit {
+      display: none;
+    }
+
+    .meta-delta {
+      font-size: clamp(0.65rem, calc(var(--base) * 1.3), 2rem);
+      font-variant-numeric: tabular-nums;
+      font-weight: 400;
+    }
+
+    .meta-age {
+      font-size: clamp(0.6rem, calc(var(--base) * 1.1), 1.6rem);
+      font-weight: 300;
+      opacity: 0.6;
+    }
+
+    /* E-Ink stale label — replaces rAF opacity decay */
+    .stale-label {
+      display: none;
+      font-size: clamp(0.55rem, calc(var(--base) * 1), 1.4rem);
+      font-family: "Courier New", Courier, monospace;
+      letter-spacing: 0.05em;
+      opacity: 0.75;
+    }
+
+    body[data-ctx="eink"] .stale-label {
+      display: inline;
+    }
+
+    /* E-Ink: border replaces background color for LOW/HYPO */
+    body[data-ctx="eink"] {
+      --eink-border: none;
+    }
+
+    body[data-ctx="eink"].zone-hypo,
+    body[data-ctx="eink"].zone-low {
+      background-color: var(--bg-default) !important;
+    }
+
+    body[data-ctx="eink"] .area-value {
+      border: 0px solid var(--text-default);
+      border-width: var(--eink-border-width, 0);
+      border-radius: calc(var(--base) * 0.4);
+    }
+
+    /* -----------------------------------------------------------------------
+     * Zone color system — background + text color per zone
+     * Applied via .zone-* class on body (set by JS)
+     * ----------------------------------------------------------------------- */
+    body.zone-hypo {
+      background-color: var(--color-hypo);
+      color: var(--text-on-hypo);
+    }
+
+    body.zone-low {
+      background-color: var(--color-low);
+      color: var(--text-on-low);
+    }
+
+    /* zone-inrange uses the default dark background; value text is green */
+    body.zone-inrange {
+      background-color: var(--bg-default);
+      color: var(--text-default);
+    }
+    body.zone-inrange .glucose-value {
+      color: var(--color-inrange);
+    }
+
+    body.zone-high {
+      background-color: var(--bg-default);
+      color: var(--text-default);
+    }
+    body.zone-high .glucose-value {
+      color: var(--color-high);
+    }
+
+    body.zone-veryhigh {
+      background-color: var(--bg-default);
+      color: var(--text-default);
+    }
+    body.zone-veryhigh .glucose-value {
+      color: var(--color-veryhigh);
+    }
+
+    /* Muted text tracks zone color on colored backgrounds */
+    body.zone-hypo .patient-name,
+    body.zone-hypo .meta-age,
+    body.zone-hypo .glucose-unit {
+      color: var(--text-on-hypo);
+      opacity: 0.75;
+    }
+
+    body.zone-low .patient-name,
+    body.zone-low .meta-age,
+    body.zone-low .glucose-unit {
+      color: var(--text-on-low);
+      opacity: 0.75;
+    }
+
+    /* -----------------------------------------------------------------------
+     * HYPO blink animation — the only animation in the design.
+     * Used only for zone-hypo when trend is DOWN (set by JS toggling .is-falling).
+     * requestAnimationFrame staleness decay is suppressed so the blink is clear.
+     * ----------------------------------------------------------------------- */
+    @keyframes hypo-blink {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0.2; }
+    }
+
+    body.zone-hypo.is-falling .glucose-value {
+      animation: hypo-blink 1s step-end infinite;
+      /* Override the rAF-driven opacity so blink takes precedence */
+      opacity: 1 !important;
+    }
+
+    /* -----------------------------------------------------------------------
+     * Reduced-motion: disable all animations and transitions.
+     * The staleness decay still runs but without the smooth transition.
+     * ----------------------------------------------------------------------- */
+    @media (prefers-reduced-motion: reduce) {
+      body {
+        transition: none;
+      }
+      .glucose-value,
+      .trend-arrow {
+        transition: none;
+        animation: none !important;
+      }
+    }
+
+    /* -----------------------------------------------------------------------
+     * E-Ink monochrome overrides (data-preset="eink" on <html>)
+     * Replaces all color with black/white only.
+     * ----------------------------------------------------------------------- */
+    html[data-preset="eink"] body {
+      --color-hypo:     #000000;
+      --color-low:      #000000;
+      --color-inrange:  #000000;
+      --color-high:     #000000;
+      --color-veryhigh: #000000;
+      --bg-default:     #FFFFFF;
+      --text-default:   #000000;
+      --text-muted:     #444444;
+      background-color: #FFFFFF;
+      color: #000000;
+      transition: none;
+    }
+
+    html[data-preset="eink"] .glucose-value,
+    html[data-preset="eink"] .trend-arrow {
+      /* No rAF opacity decay on e-ink */
+      opacity: 1 !important;
+      filter: none !important;
+      transition: none;
+      animation: none !important;
+    }
+
+    html[data-preset="eink"] body.zone-hypo,
+    html[data-preset="eink"] body.zone-low {
+      background-color: #FFFFFF;
+      --eink-border-width: 0.4vmin;
+    }
+
+    html[data-preset="eink"] body.zone-inrange .glucose-value,
+    html[data-preset="eink"] body.zone-high .glucose-value,
+    html[data-preset="eink"] body.zone-veryhigh .glucose-value {
+      color: #000000;
+    }
+
+    /* -----------------------------------------------------------------------
+     * Offline / pending state
+     * ----------------------------------------------------------------------- */
+    .state-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: calc(var(--base) * 1);
+      z-index: 100;
+    }
+
+    .state-overlay.visible {
+      display: flex;
+    }
+
+    .state-overlay-text {
+      font-size: clamp(1rem, calc(var(--base) * 2), 4rem);
+      font-weight: 300;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #F2F2F7;
+      opacity: 0.85;
+    }
+
+    .reconnect-dot {
+      width: clamp(8px, calc(var(--base) * 0.6), 20px);
+      height: clamp(8px, calc(var(--base) * 0.6), 20px);
+      border-radius: 50%;
+      background: #F2F2F7;
+      opacity: 0;
+      animation: dot-pulse 1.4s ease-in-out infinite;
+    }
+
+    .reconnect-dot:nth-child(2) { animation-delay: 0.2s; }
+    .reconnect-dot:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes dot-pulse {
+      0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+      40%           { opacity: 1;   transform: scale(1.1); }
+    }
+
+    /* -----------------------------------------------------------------------
+     * Tap-to-detail overlay (Sparkline)
+     * ----------------------------------------------------------------------- */
+    .detail-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.82);
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      padding: calc(var(--base) * 1.5);
+    }
+
+    .detail-overlay.visible {
+      display: flex;
+      flex-direction: column;
+      gap: calc(var(--base) * 0.8);
+    }
+
+    .sparkline-card {
+      background: #2C2C2E;
+      border-radius: calc(var(--base) * 0.8);
+      padding: calc(var(--base) * 1) calc(var(--base) * 1.2);
+      max-width: 90vw;
+      width: clamp(280px, 80vw, 640px);
+    }
+
+    .sparkline-svg {
+      width: 100%;
+      height: clamp(80px, 20vh, 200px);
+      display: block;
+    }
+
+    .detail-stats {
+      display: flex;
+      gap: calc(var(--base) * 1.5);
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-top: calc(var(--base) * 0.6);
+    }
+
+    .detail-stat {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: calc(var(--base) * 0.2);
+    }
+
+    .detail-stat-label {
+      font-size: clamp(0.5rem, calc(var(--base) * 0.9), 1.2rem);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      opacity: 0.55;
+      color: #F2F2F7;
+    }
+
+    .detail-stat-value {
+      font-size: clamp(0.8rem, calc(var(--base) * 1.6), 2.4rem);
+      font-variant-numeric: tabular-nums;
+      font-weight: 500;
+      color: #F2F2F7;
+    }
+
+    /* Auto-dismiss countdown bar */
+    .dismiss-bar {
+      height: 3px;
+      background: rgba(255, 255, 255, 0.18);
+      border-radius: 2px;
+      overflow: hidden;
+      width: clamp(280px, 80vw, 640px);
+      max-width: 90vw;
+    }
+
+    .dismiss-bar-fill {
+      height: 100%;
+      background: rgba(255, 255, 255, 0.55);
+      width: 100%;
+      transform-origin: left;
+      /* animation started programmatically */
+    }
+
+    @keyframes dismiss-shrink {
+      from { transform: scaleX(1); }
+      to   { transform: scaleX(0); }
+    }
+
+    /* -----------------------------------------------------------------------
+     * Long-press settings panel
+     * ----------------------------------------------------------------------- */
+    .settings-panel {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.88);
+      align-items: center;
+      justify-content: center;
+      z-index: 300;
+    }
+
+    .settings-panel.visible {
+      display: flex;
+    }
+
+    .settings-card {
+      background: #2C2C2E;
+      border-radius: calc(var(--base) * 0.8);
+      padding: calc(var(--base) * 1.5) calc(var(--base) * 2);
+      min-width: clamp(220px, 60vw, 380px);
+      display: flex;
+      flex-direction: column;
+      gap: calc(var(--base) * 1);
+    }
+
+    .settings-title {
+      font-size: clamp(0.75rem, calc(var(--base) * 1.3), 1.8rem);
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #F2F2F7;
+      opacity: 0.75;
+    }
+
+    .settings-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: calc(var(--base) * 1);
+      padding: calc(var(--base) * 0.4) 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .settings-row:last-of-type {
+      border-bottom: none;
+    }
+
+    .settings-label {
+      font-size: clamp(0.75rem, calc(var(--base) * 1.2), 1.6rem);
+      color: #F2F2F7;
+    }
+
+    .settings-btn {
+      font-size: clamp(0.7rem, calc(var(--base) * 1.1), 1.4rem);
+      background: rgba(255, 255, 255, 0.12);
+      border: none;
+      border-radius: calc(var(--base) * 0.3);
+      color: #F2F2F7;
+      padding: calc(var(--base) * 0.3) calc(var(--base) * 0.7);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .settings-btn.active {
+      background: #30D158;
+      color: #000000;
+    }
+
+    .settings-close {
+      align-self: center;
+      margin-top: calc(var(--base) * 0.4);
+      font-size: clamp(0.7rem, calc(var(--base) * 1.1), 1.4rem);
+      background: rgba(255, 255, 255, 0.08);
+      border: none;
+      border-radius: calc(var(--base) * 0.3);
+      color: #F2F2F7;
+      padding: calc(var(--base) * 0.4) calc(var(--base) * 1.2);
+      cursor: pointer;
+      letter-spacing: 0.06em;
+    }
+
+    /* PIN input used in kiosk mode */
+    .pin-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.92);
+      align-items: center;
+      justify-content: center;
+      z-index: 400;
+    }
+
+    .pin-overlay.visible {
+      display: flex;
+    }
+
+    .pin-card {
+      background: #2C2C2E;
+      border-radius: calc(var(--base) * 0.8);
+      padding: calc(var(--base) * 1.5) calc(var(--base) * 2);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: calc(var(--base) * 1);
+    }
+
+    .pin-title {
+      font-size: clamp(0.8rem, calc(var(--base) * 1.3), 1.8rem);
+      color: #F2F2F7;
+      opacity: 0.75;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .pin-dots {
+      display: flex;
+      gap: calc(var(--base) * 0.8);
+    }
+
+    .pin-dot {
+      width: clamp(10px, calc(var(--base) * 1), 24px);
+      height: clamp(10px, calc(var(--base) * 1), 24px);
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.4);
+    }
+
+    .pin-dot.filled {
+      background: #F2F2F7;
+      border-color: #F2F2F7;
+    }
+
+    .pin-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: calc(var(--base) * 0.5);
+    }
+
+    .pin-key {
+      font-size: clamp(1rem, calc(var(--base) * 1.8), 2.8rem);
+      font-weight: 300;
+      background: rgba(255, 255, 255, 0.08);
+      border: none;
+      border-radius: calc(var(--base) * 0.4);
+      color: #F2F2F7;
+      width: clamp(44px, calc(var(--base) * 3.5), 80px);
+      height: clamp(44px, calc(var(--base) * 3.5), 80px);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .pin-key:active { background: rgba(255, 255, 255, 0.22); }
+
+    .pin-error {
+      font-size: clamp(0.6rem, calc(var(--base) * 0.9), 1.2rem);
+      color: var(--color-hypo);
+      min-height: 1.5em;
+      letter-spacing: 0.04em;
+    }
+
+    /* -----------------------------------------------------------------------
+     * Screen-reader-only utility (survives forced-colors mode)
+     * ----------------------------------------------------------------------- */
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+  </style>
+</head>
+<body data-ctx="wall">
+
+  <!-- -----------------------------------------------------------------------
+   Grid area: patient name
+  ------------------------------------------------------------------------ -->
+  <div class="area-name" aria-label="Patient name">
+    <span class="patient-name" id="patient-name" aria-hidden="true"></span>
+  </div>
+
+  <!-- -----------------------------------------------------------------------
+   Grid area: primary glucose value + trend arrow
+  ------------------------------------------------------------------------ -->
+  <div class="area-value" role="main">
+    <output
+      class="glucose-value"
+      id="sgv"
+      aria-live="off"
+      aria-label="Glucose value"
+    >--</output>
+    <span class="trend-arrow" id="trend-arrow" aria-hidden="true" title="">--</span>
+    <span class="glucose-unit" id="glucose-unit" aria-hidden="true">mg/dL</span>
+  </div>
+
+  <!-- -----------------------------------------------------------------------
+   Grid area: delta, age, optional stale label
+  ------------------------------------------------------------------------ -->
+  <div class="area-meta" aria-label="Reading metadata">
+    <span class="meta-delta" id="delta" aria-hidden="true"></span>
+    <span class="meta-age"   id="age"   aria-hidden="true"></span>
+    <span class="stale-label" id="stale-label" aria-hidden="true"></span>
+  </div>
+
+  <!-- -----------------------------------------------------------------------
+   Offline / reconnecting state overlay
+  ------------------------------------------------------------------------ -->
+  <div class="state-overlay" id="state-overlay" role="status" aria-live="polite">
+    <span class="state-overlay-text" id="state-text">Connecting</span>
+    <div style="display:flex;gap:calc(var(--base)*0.5)">
+      <div class="reconnect-dot"></div>
+      <div class="reconnect-dot"></div>
+      <div class="reconnect-dot"></div>
+    </div>
+  </div>
+
+  <!-- -----------------------------------------------------------------------
+   Tap-to-sparkline overlay
+  ------------------------------------------------------------------------ -->
+  <div class="detail-overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-label="Glucose history">
+    <div class="sparkline-card">
+      <svg class="sparkline-svg" id="sparkline-svg" viewBox="0 0 400 120" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <div class="detail-stats" id="detail-stats"></div>
+    </div>
+    <div class="dismiss-bar" aria-hidden="true">
+      <div class="dismiss-bar-fill" id="dismiss-bar-fill"></div>
+    </div>
+  </div>
+
+  <!-- -----------------------------------------------------------------------
+   Settings panel (long-press)
+  ------------------------------------------------------------------------ -->
+  <div class="settings-panel" id="settings-panel" role="dialog" aria-modal="true" aria-label="Display settings">
+    <div class="settings-card">
+      <div class="settings-title">Display</div>
+
+      <div class="settings-row">
+        <span class="settings-label">Unit</span>
+        <div style="display:flex;gap:calc(var(--base)*0.4)">
+          <button class="settings-btn" id="btn-mgdl" onclick="setUnit('mgdl')">mg/dL</button>
+          <button class="settings-btn" id="btn-mmol" onclick="setUnit('mmol')">mmol/L</button>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <span class="settings-label">Theme</span>
+        <div style="display:flex;gap:calc(var(--base)*0.4)">
+          <button class="settings-btn" id="btn-dark"  onclick="setTheme('dark')">Dark</button>
+          <button class="settings-btn" id="btn-light" onclick="setTheme('light')">Light</button>
+          <button class="settings-btn" id="btn-auto"  onclick="setTheme('auto')">Auto</button>
+        </div>
+      </div>
+
+      <button class="settings-close" onclick="closeSettings()">Close</button>
+    </div>
+  </div>
+
+  <!-- PIN overlay (kiosk mode) -->
+  <div class="pin-overlay" id="pin-overlay" role="dialog" aria-modal="true" aria-label="PIN required">
+    <div class="pin-card">
+      <div class="pin-title">Enter PIN</div>
+      <div class="pin-dots" id="pin-dots"></div>
+      <div class="pin-grid" id="pin-grid"></div>
+      <div class="pin-error" id="pin-error" role="alert"></div>
+    </div>
+  </div>
+
+  <!-- -----------------------------------------------------------------------
+   ARIA live regions — announced to screen readers but not visible
+  ------------------------------------------------------------------------ -->
+  <div id="live-polite"   role="status"  aria-live="polite"   aria-atomic="true" class="sr-only"></div>
+  <div id="live-assertive" role="alert"  aria-live="assertive" aria-atomic="true" class="sr-only"></div>
+
+  <!-- -----------------------------------------------------------------------
+   Application JavaScript
+  ------------------------------------------------------------------------ -->
+  <script>
+  'use strict';
+
+  // -------------------------------------------------------------------------
+  // Configuration — merged from URL params, server embed, and localStorage
+  // -------------------------------------------------------------------------
+
+  // The Rust server embeds config here before serving the file:
+  //   window.CLOCK_CONFIG = { unit, lo, hi, patientLabel, pollMs, eink, dark };
+  // `patientLabel` is null unless an abbreviated label is configured (never a
+  // full name — PHI). Numeric thresholds are always mg/dL.
+  const SERVER_CONFIG = window.CLOCK_CONFIG || {};
+
+  const params = new URLSearchParams(location.search);
+
+  // ---------------------------------------------------------------------------
+  // Ingress-correct base URL resolution
+  // ---------------------------------------------------------------------------
+  // The page is served at `<ingress_prefix>/clock` with NO guaranteed trailing
+  // slash. A bare relative fetch('clock/state') would resolve against the
+  // current path and could land on the wrong sibling, and an absolute
+  // '/clock/state' would drop the ingress prefix entirely. We derive the
+  // ingress base by stripping a trailing `/clock` (with optional trailing
+  // slash) off location.pathname, then build every API URL from it. This works
+  // whether the prefix is '' (direct), '/api/hassio_ingress/<token>' (HA
+  // Ingress), or any reverse-proxy mount point.
+  const CLOCK_BASE = (function () {
+    // e.g. '/api/hassio_ingress/abc/clock'  ->  '/api/hassio_ingress/abc/'
+    //      '/clock/'                          ->  '/'
+    //      '/clock'                           ->  '/'
+    let p = location.pathname.replace(/\/clock\/?$/, '');
+    // Guarantee exactly one trailing slash so concatenation is unambiguous.
+    if (!p.endsWith('/')) p += '/';
+    return p;
+  })();
+
+  // Build an absolute URL for a clock API sub-path, ingress-prefix-aware.
+  // `subPath` is relative with no leading slash, e.g. 'clock/state'.
+  function clockUrl(subPath) {
+    return new URL(CLOCK_BASE + subPath, location.origin);
+  }
+
+  const CFG = {
+    // Display unit: URL param > localStorage > server config > default mgdl
+    unit:   params.get('unit')
+          || localStorage.getItem('gluco_unit')
+          || SERVER_CONFIG.unit
+          || 'mgdl',
+
+    // Thresholds in mg/dL (always stored as mg/dL internally)
+    lo:     Number(params.get('lo'))  || SERVER_CONFIG.lo  || 70,
+    hi:     Number(params.get('hi'))  || SERVER_CONFIG.hi  || 180,
+
+    // Poll interval used for staleness decay (server embeds real value)
+    pollMs: SERVER_CONFIG.pollMs || 60_000,
+
+    // Abbreviated patient label (e.g. "Anna M."); null when not configured.
+    // Never a full name — the server guarantees this is PHI-safe.
+    patientLabel: SERVER_CONFIG.patientLabel || null,
+
+    // Layout overrides
+    isEink:  params.has('eink') || params.get('preset') === 'eink',
+    forceCtx: params.get('preset')
+           && !['eink'].includes(params.get('preset'))
+           ? params.get('preset')
+           : null,
+
+    // Kiosk mode
+    kioskMode: params.has('kiosk'),
+    kioskPin:  params.get('pin') || null,
+
+    // Dark/light override (normally driven by prefers-color-scheme)
+    darkOverride: params.has('dark') ? params.get('dark') !== '0' : null,
+
+    // Theme from localStorage (set by settings panel)
+    savedTheme: localStorage.getItem('gluco_theme') || 'auto',
+  };
+
+  // Apply e-ink preset before first paint to avoid flash
+  if (CFG.isEink) {
+    document.documentElement.dataset.preset = 'eink';
+  }
+
+  // -------------------------------------------------------------------------
+  // Theme application
+  // -------------------------------------------------------------------------
+
+  function applyTheme(theme) {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const useDark = theme === 'dark'
+      || (theme === 'auto' && (CFG.darkOverride !== null ? CFG.darkOverride : prefersDark));
+    document.documentElement.dataset.theme = useDark ? 'dark' : 'light';
+    // Our palette is dark-first; light theme swaps token values
+    if (!useDark && !CFG.isEink) {
+      document.documentElement.style.setProperty('--bg-default', '#F2F2F7');
+      document.documentElement.style.setProperty('--text-default', '#1C1C1E');
+    } else {
+      document.documentElement.style.removeProperty('--bg-default');
+      document.documentElement.style.removeProperty('--text-default');
+    }
+  }
+
+  applyTheme(CFG.savedTheme);
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (CFG.savedTheme === 'auto') applyTheme('auto');
+  });
+
+  // -------------------------------------------------------------------------
+  // Display context detection
+  // -------------------------------------------------------------------------
+
+  function detectContext() {
+    // E-ink cannot self-identify — URL parameter is the only reliable signal
+    if (CFG.isEink) return 'eink';
+    // Honour forced preset if valid
+    if (CFG.forceCtx && ['wall', 'phone', 'small', 'watch'].includes(CFG.forceCtx)) {
+      return CFG.forceCtx;
+    }
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const short = Math.min(vw, vh);
+    const long  = Math.max(vw, vh);
+    if (short < 200)          return 'watch';
+    if (short < 400)          return 'small';
+    if (long > 900)           return 'wall';
+    return 'phone';
+  }
+
+  function applyContext() {
+    const ctx = detectContext();
+    document.body.dataset.ctx = ctx;
+    // Send X-Gluco-Eink hint to server when reconnecting SSE
+    if (ctx === 'eink') {
+      document.documentElement.dataset.preset = 'eink';
+    }
+  }
+
+  applyContext();
+
+  // Patient label comes from server config (PHI-safe abbreviation), not from
+  // the reading payload. Set it once; the reading stream never carries a name.
+  if (CFG.patientLabel) {
+    document.getElementById('patient-name').textContent = CFG.patientLabel;
+  }
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(applyContext, 150);
+  });
+  window.addEventListener('orientationchange', () => {
+    setTimeout(applyContext, 200);
+  });
+
+  // -------------------------------------------------------------------------
+  // Trend arrow mapping (Unicode arrows, accessible via title on the container)
+  // -------------------------------------------------------------------------
+
+  const TREND_ARROWS = {
+    DoubleDown:    { char: '⇊', label: 'Falling rapidly' },   // ⇊
+    SingleDown:    { char: '↓', label: 'Falling' },            // ↓
+    FortyFiveDown: { char: '↘', label: 'Falling slowly' },     // ↘
+    Flat:          { char: '→', label: 'Stable' },             // →
+    FortyFiveUp:   { char: '↗', label: 'Rising slowly' },      // ↗
+    SingleUp:      { char: '↑', label: 'Rising' },             // ↑
+    DoubleUp:      { char: '⇈', label: 'Rising rapidly' },     // ⇈
+    NotComputable: { char: '?', label: 'Trend not computable' },
+    OutOfRange:    { char: '?', label: 'Out of range' },
+  };
+
+  // Trends that are "falling" (triggers blink on HYPO)
+  const FALLING_TRENDS = new Set(['DoubleDown', 'SingleDown', 'FortyFiveDown']);
+
+  // The server encodes trend as a LibreLink-style number 1..7 (1 = falling
+  // fast, 4 = stable, 7 = rising fast) — see trend_to_num_label in clock.rs.
+  // Map it back onto the arrow keys above. Unknown / out-of-range numbers fall
+  // through to a neutral stable arrow.
+  const NUM_TO_TREND_KEY = {
+    7: 'DoubleUp',
+    6: 'SingleUp',
+    5: 'FortyFiveUp',
+    4: 'Flat',
+    3: 'FortyFiveDown',
+    2: 'SingleDown',
+    1: 'DoubleDown',
+  };
+
+  function trendKeyFromNum(n) {
+    return NUM_TO_TREND_KEY[n] || 'Flat';
+  }
+
+  // -------------------------------------------------------------------------
+  // Wire-shape normalisation
+  // -------------------------------------------------------------------------
+  // The server's `reading` SSE event and `/clock/state` snapshot share the
+  // ClockReadingEvent/ClockStateDto shape:
+  //   { value, unit, trend (1..7), trend_label, delta, timestamp_ms, zone }
+  // The display code below works in an internal shape:
+  //   { mgdl, trend (arrow key), ts, delta }
+  // Normalise here so applyReading() stays presentation-only. Returns null for
+  // anything that isn't a usable reading.
+  function normalizeReading(data) {
+    if (!data || typeof data.value !== 'number') return null;
+    return {
+      mgdl:  data.value,
+      trend: trendKeyFromNum(data.trend),
+      ts:    typeof data.timestamp_ms === 'number' ? data.timestamp_ms : Date.now(),
+      delta: typeof data.delta === 'number' ? data.delta : null,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Zone classification
+  // -------------------------------------------------------------------------
+
+  function classifyZone(mgdl) {
+    if (mgdl < 54)  return 'hypo';
+    if (mgdl < 70)  return 'low';
+    if (mgdl <= 180) return 'inrange';
+    if (mgdl <= 250) return 'high';
+    return 'veryhigh';
+  }
+
+  // -------------------------------------------------------------------------
+  // Unit conversion
+  // -------------------------------------------------------------------------
+
+  function mgdlToMmol(v) { return (v / 18.018).toFixed(1); }
+
+  function formatValue(mgdl, unit) {
+    return unit === 'mmol' ? mgdlToMmol(mgdl) : String(mgdl);
+  }
+
+  function formatDelta(deltaMgdl, unit) {
+    if (deltaMgdl == null) return '';
+    const sign = deltaMgdl >= 0 ? '+' : '';
+    if (unit === 'mmol') {
+      return sign + (deltaMgdl / 18.018).toFixed(1);
+    }
+    return sign + String(deltaMgdl);
+  }
+
+  // -------------------------------------------------------------------------
+  // Age formatter (relative time)
+  // -------------------------------------------------------------------------
+
+  function formatAge(ts) {
+    const secs = Math.floor((Date.now() - ts) / 1000);
+    if (secs < 60) return `${secs}s ago`;
+    const mins = Math.floor(secs / 60);
+    return `${mins}m ago`;
+  }
+
+  function formatAgeEink(ts) {
+    const secs = Math.floor((Date.now() - ts) / 1000);
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    const isStale = secs > CFG.pollMs / 1000 * 2;
+    if (!isStale) return '';
+    return `STALE ${m}m${s.toString().padStart(2, '0')}s`;
+  }
+
+  // -------------------------------------------------------------------------
+  // Staleness decay via requestAnimationFrame
+  // -------------------------------------------------------------------------
+
+  let lastReadingTs = 0;
+
+  function stalenessLoop() {
+    if (!CFG.isEink) {
+      const age = Date.now() - lastReadingTs;
+      const norm = lastReadingTs === 0 ? 0 : Math.min(age / (CFG.pollMs * 5), 1);
+      const opacity = 1 - norm * 0.6;
+      const sat     = 1 - norm * 0.8;
+      document.documentElement.style.setProperty('--stale-opacity', opacity.toFixed(3));
+      document.documentElement.style.setProperty('--stale-sat',     sat.toFixed(3));
+    }
+    requestAnimationFrame(stalenessLoop);
+  }
+
+  // Start rAF loop only on color displays
+  if (!CFG.isEink) {
+    requestAnimationFrame(stalenessLoop);
+  }
+
+  // Update e-ink stale label on a 10-second interval instead
+  let einkAgeInterval = null;
+  if (CFG.isEink) {
+    einkAgeInterval = setInterval(() => {
+      if (lastReadingTs === 0) return;
+      const staleEl = document.getElementById('stale-label');
+      const ageEl   = document.getElementById('age');
+      const stale   = formatAgeEink(lastReadingTs);
+      staleEl.textContent = stale;
+      if (ageEl) ageEl.textContent = formatAge(lastReadingTs);
+    }, 10_000);
+  }
+
+  // -------------------------------------------------------------------------
+  // History ring buffer for sparkline
+  // -------------------------------------------------------------------------
+
+  const HISTORY_MAX = 180; // 3h at 1min intervals
+  const history = []; // [{ ts, mgdl }]
+
+  function pushHistory(ts, mgdl) {
+    history.push({ ts, mgdl });
+    if (history.length > HISTORY_MAX) history.shift();
+  }
+
+  // Seed from the clock/history endpoint (best-effort, non-blocking). The
+  // server returns an array of { ts, mgdl } points (oldest first).
+  fetch(clockUrl('clock/history'))
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!Array.isArray(data)) return;
+      data.forEach(pt => {
+        if (typeof pt.ts === 'number' && typeof pt.mgdl === 'number') {
+          pushHistory(pt.ts, pt.mgdl);
+        }
+      });
+    })
+    .catch(() => {}); // history is optional; swallow errors silently
+
+  // -------------------------------------------------------------------------
+  // ARIA announcement logic
+  // -------------------------------------------------------------------------
+
+  let prevMgdl = null;
+  let prevZone  = null;
+
+  function announceUpdate(mgdl, zone, trend, ts) {
+    const trendInfo  = TREND_ARROWS[trend] || { label: '' };
+    const delta      = prevMgdl !== null ? mgdl - prevMgdl : null;
+    const deltaAbs   = delta !== null ? Math.abs(delta) : 0;
+    const zoneChange = zone !== prevZone;
+    const unit       = CFG.unit;
+    const displayVal = formatValue(mgdl, unit);
+    const unitLabel  = unit === 'mmol' ? 'millimoles per litre' : 'milligrams per decilitre';
+    const ageLabel   = formatAge(ts);
+
+    const sentence = `${displayVal} ${unitLabel}. ${trendInfo.label}. Reading ${ageLabel}.`;
+
+    const isCritical = zone === 'hypo' || zone === 'veryhigh';
+    const isSignificant = zoneChange || deltaAbs >= 5;
+
+    if (isCritical) {
+      const alert = zone === 'hypo'
+        ? `Alert. Low glucose. ${displayVal} ${unitLabel}. ${trendInfo.label}. Reading ${ageLabel}.`
+        : `Alert. High glucose. ${displayVal} ${unitLabel}. ${trendInfo.label}. Reading ${ageLabel}.`;
+      document.getElementById('live-assertive').textContent = alert;
+    } else if (isSignificant) {
+      document.getElementById('live-polite').textContent = sentence;
+    }
+    // Minor update: update document title and SGV text but no live region
+  }
+
+  // -------------------------------------------------------------------------
+  // DOM update — applies a complete reading to the display
+  // -------------------------------------------------------------------------
+
+  function applyReading(reading) {
+    const { mgdl, trend, ts, delta } = reading;
+
+    lastReadingTs = ts;
+    const zone    = classifyZone(mgdl);
+    const isFalling = FALLING_TRENDS.has(trend);
+
+    // Update body zone class
+    document.body.classList.remove('zone-hypo', 'zone-low', 'zone-inrange', 'zone-high', 'zone-veryhigh');
+    document.body.classList.add(`zone-${zone}`);
+    document.body.classList.toggle('is-falling', isFalling);
+
+    // E-ink: border for LOW/HYPO
+    if (CFG.isEink) {
+      const needsBorder = zone === 'hypo' || zone === 'low';
+      document.documentElement.style.setProperty(
+        '--eink-border-width',
+        needsBorder ? '0.4vmin' : '0'
+      );
+    }
+
+    // Glucose value
+    const sgvEl = document.getElementById('sgv');
+    sgvEl.textContent = formatValue(mgdl, CFG.unit);
+
+    // Trend arrow
+    const arrowInfo  = TREND_ARROWS[trend] || { char: '?', label: 'Unknown' };
+    const arrowEl    = document.getElementById('trend-arrow');
+    arrowEl.textContent = arrowInfo.char;
+    arrowEl.title = arrowInfo.label;
+
+    // Unit label
+    document.getElementById('glucose-unit').textContent =
+      CFG.unit === 'mmol' ? 'mmol/L' : 'mg/dL';
+
+    // Delta
+    const deltaEl = document.getElementById('delta');
+    deltaEl.textContent = delta != null ? formatDelta(delta, CFG.unit) : '';
+
+    // Age
+    document.getElementById('age').textContent = formatAge(ts);
+
+    // (Patient name is set once from server config, not per reading — the
+    //  reading stream carries no name, by design, to keep PHI off the wire.)
+
+    // E-ink stale label (immediate update)
+    if (CFG.isEink) {
+      document.getElementById('stale-label').textContent = formatAgeEink(ts);
+    }
+
+    // Document title
+    document.title = `${formatValue(mgdl, CFG.unit)} ${arrowInfo.char}`;
+
+    // Push to history
+    pushHistory(ts, mgdl);
+
+    // Accessibility announcement
+    announceUpdate(mgdl, zone, trend, ts);
+    prevMgdl = mgdl;
+    prevZone = zone;
+  }
+
+  // -------------------------------------------------------------------------
+  // SSE connection with automatic reconnect
+  // -------------------------------------------------------------------------
+
+  let evtSource     = null;
+  let reconnectMs   = 2_000;
+  let reconnectTid  = null;
+  let pendingTimer  = null; // e-ink debounce
+  let pendingPayload = null;
+
+  function showOverlay(text) {
+    const el = document.getElementById('state-overlay');
+    document.getElementById('state-text').textContent = text;
+    el.classList.add('visible');
+  }
+
+  function hideOverlay() {
+    document.getElementById('state-overlay').classList.remove('visible');
+  }
+
+  function connectSSE() {
+    if (evtSource) {
+      evtSource.close();
+      evtSource = null;
+    }
+
+    const url = clockUrl('clock/events');
+    if (CFG.isEink) url.searchParams.set('eink', '1');
+
+    const es = new EventSource(url.toString());
+    evtSource = es;
+
+    es.addEventListener('reading', (e) => {
+      reconnectMs = 2_000; // reset backoff on successful data
+      hideOverlay();
+
+      let raw;
+      try { raw = JSON.parse(e.data); } catch { return; }
+      const data = normalizeReading(raw);
+      if (!data) return;
+
+      if (CFG.isEink) {
+        // Debounce burst updates: wait 500ms before committing to DOM
+        clearTimeout(pendingTimer);
+        pendingPayload = data;
+        pendingTimer = setTimeout(() => {
+          if (pendingPayload) applyReading(pendingPayload);
+          pendingPayload = null;
+        }, 500);
+      } else {
+        applyReading(data);
+      }
+    });
+
+    es.addEventListener('keepalive', () => {
+      // Connection alive — just reset reconnect backoff
+      reconnectMs = 2_000;
+    });
+
+    es.onerror = () => {
+      es.close();
+      evtSource = null;
+      showOverlay('Reconnecting');
+      reconnectTid = setTimeout(() => {
+        reconnectMs = Math.min(reconnectMs * 1.5, 30_000);
+        connectSSE();
+      }, reconnectMs);
+    };
+  }
+
+  // Initial connection — fetch snapshot first, then open SSE
+  (async function init() {
+    showOverlay('Connecting');
+
+    // Best-effort initial state fetch (avoids blank display until first SSE
+    // event). Normalises the server snapshot shape to the internal reading.
+    try {
+      const r = await fetch(clockUrl('clock/state'));
+      if (r.ok) {
+        const data = normalizeReading(await r.json());
+        if (data) {
+          hideOverlay();
+          applyReading(data);
+        }
+      }
+    } catch (_) {}
+
+    connectSSE();
+  })();
+
+  // -------------------------------------------------------------------------
+  // Age label refresh (updates "2m ago" text every 30s on non-eink)
+  // -------------------------------------------------------------------------
+  if (!CFG.isEink) {
+    setInterval(() => {
+      if (lastReadingTs === 0) return;
+      document.getElementById('age').textContent = formatAge(lastReadingTs);
+    }, 30_000);
+  }
+
+  // -------------------------------------------------------------------------
+  // Sparkline rendering (SVG, clientside from history buffer)
+  // -------------------------------------------------------------------------
+
+  const SPARKLINE_W = 400;
+  const SPARKLINE_H = 120;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  function renderSparkline() {
+    const svg = document.getElementById('sparkline-svg');
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (history.length < 2) {
+      const txt = document.createElementNS(SVG_NS, 'text');
+      txt.setAttribute('x', '50%');
+      txt.setAttribute('y', '50%');
+      txt.setAttribute('text-anchor', 'middle');
+      txt.setAttribute('dominant-baseline', 'middle');
+      txt.setAttribute('fill', 'rgba(255,255,255,0.4)');
+      txt.setAttribute('font-size', '14');
+      txt.textContent = 'No history yet';
+      svg.appendChild(txt);
+      return;
+    }
+
+    const vals = history.map(p => p.mgdl);
+    const minV = Math.min(...vals, CFG.lo * 0.9);
+    const maxV = Math.max(...vals, CFG.hi * 1.1);
+    const range = maxV - minV || 1;
+    const pad = 6;
+
+    const toX = (i)  => pad + (i / (history.length - 1)) * (SPARKLINE_W - pad * 2);
+    const toY = (mg) => pad + (1 - (mg - minV) / range) * (SPARKLINE_H - pad * 2);
+
+    // Range band
+    const band = document.createElementNS(SVG_NS, 'rect');
+    band.setAttribute('x', String(pad));
+    band.setAttribute('y', String(toY(CFG.hi)));
+    band.setAttribute('width', String(SPARKLINE_W - pad * 2));
+    band.setAttribute('height', String(toY(CFG.lo) - toY(CFG.hi)));
+    band.setAttribute('fill', 'rgba(48,209,88,0.12)');
+    svg.appendChild(band);
+
+    // Hi/lo threshold lines
+    [
+      { mg: CFG.hi, color: 'rgba(255,214,10,0.55)' },
+      { mg: CFG.lo, color: 'rgba(255,149,0,0.55)' },
+    ].forEach(({ mg, color }) => {
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('x1', String(pad));
+      line.setAttribute('x2', String(SPARKLINE_W - pad));
+      line.setAttribute('y1', String(toY(mg)));
+      line.setAttribute('y2', String(toY(mg)));
+      line.setAttribute('stroke', color);
+      line.setAttribute('stroke-width', '1');
+      line.setAttribute('stroke-dasharray', '4 3');
+      svg.appendChild(line);
+    });
+
+    // Polyline path
+    const points = history.map((p, i) => `${toX(i)},${toY(p.mgdl)}`).join(' ');
+    const poly = document.createElementNS(SVG_NS, 'polyline');
+    poly.setAttribute('points', points);
+    poly.setAttribute('fill', 'none');
+    poly.setAttribute('stroke', 'rgba(242,242,247,0.75)');
+    poly.setAttribute('stroke-width', '2');
+    poly.setAttribute('stroke-linejoin', 'round');
+    poly.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(poly);
+
+    // Current value dot
+    if (history.length > 0) {
+      const last = history[history.length - 1];
+      const dot  = document.createElementNS(SVG_NS, 'circle');
+      dot.setAttribute('cx', String(toX(history.length - 1)));
+      dot.setAttribute('cy', String(toY(last.mgdl)));
+      dot.setAttribute('r', '4');
+      dot.setAttribute('fill', '#F2F2F7');
+      svg.appendChild(dot);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Tap / long-press / swipe interaction
+  // -------------------------------------------------------------------------
+
+  let dismissTimer   = null;
+  let longPressTimer = null;
+  let touchStartX    = 0;
+  let touchStartY    = 0;
+  let touchStartTs   = 0;
+  const LONG_PRESS_MS  = CFG.kioskMode ? 3_000 : 600;
+  const SWIPE_MIN_PX   = 40;
+  const DETAIL_DISMISS_MS = 12_000;
+
+  function openDetail() {
+    renderSparkline();
+
+    // Populate stats
+    const stats = document.getElementById('detail-stats');
+    stats.innerHTML = '';
+    if (lastReadingTs > 0) {
+      const last = history[history.length - 1];
+      const addStat = (label, value) => {
+        const div = document.createElement('div');
+        div.className = 'detail-stat';
+        div.innerHTML = `<span class="detail-stat-label">${label}</span><span class="detail-stat-value">${value}</span>`;
+        stats.appendChild(div);
+      };
+      if (last) addStat('Current', `${formatValue(last.mgdl, CFG.unit)} ${CFG.unit === 'mmol' ? 'mmol' : 'mg/dL'}`);
+      addStat('Age', formatAge(lastReadingTs));
+      if (history.length >= 2) {
+        const delta = history[history.length - 1].mgdl - history[history.length - 2].mgdl;
+        addStat('Delta', formatDelta(delta, CFG.unit));
+      }
+    }
+
+    document.getElementById('detail-overlay').classList.add('visible');
+    // Start dismiss countdown animation
+    const fill = document.getElementById('dismiss-bar-fill');
+    fill.style.animation = 'none';
+    // Force reflow
+    void fill.offsetWidth;
+    fill.style.animation = `dismiss-shrink ${DETAIL_DISMISS_MS}ms linear forwards`;
+
+    clearTimeout(dismissTimer);
+    dismissTimer = setTimeout(closeDetail, DETAIL_DISMISS_MS);
+  }
+
+  function closeDetail() {
+    clearTimeout(dismissTimer);
+    document.getElementById('detail-overlay').classList.remove('visible');
+  }
+
+  function openSettings() {
+    // Sync button states
+    document.getElementById('btn-mgdl').classList.toggle('active', CFG.unit === 'mgdl');
+    document.getElementById('btn-mmol').classList.toggle('active', CFG.unit === 'mmol');
+    document.getElementById('btn-dark').classList.toggle('active',  CFG.savedTheme === 'dark');
+    document.getElementById('btn-light').classList.toggle('active', CFG.savedTheme === 'light');
+    document.getElementById('btn-auto').classList.toggle('active',  CFG.savedTheme === 'auto');
+    document.getElementById('settings-panel').classList.add('visible');
+  }
+
+  function closeSettings() {
+    document.getElementById('settings-panel').classList.remove('visible');
+  }
+
+  // Settings actions (called from HTML onclick)
+  window.setUnit = function(unit) {
+    CFG.unit = unit;
+    localStorage.setItem('gluco_unit', unit);
+    // Re-render current value if available
+    if (lastReadingTs > 0 && history.length > 0) {
+      const last = history[history.length - 1];
+      document.getElementById('sgv').textContent = formatValue(last.mgdl, unit);
+      document.getElementById('glucose-unit').textContent = unit === 'mmol' ? 'mmol/L' : 'mg/dL';
+    }
+    document.getElementById('btn-mgdl').classList.toggle('active', unit === 'mgdl');
+    document.getElementById('btn-mmol').classList.toggle('active', unit === 'mmol');
+  };
+
+  window.setTheme = function(theme) {
+    CFG.savedTheme = theme;
+    localStorage.setItem('gluco_theme', theme);
+    applyTheme(theme);
+    document.getElementById('btn-dark').classList.toggle('active',  theme === 'dark');
+    document.getElementById('btn-light').classList.toggle('active', theme === 'light');
+    document.getElementById('btn-auto').classList.toggle('active',  theme === 'auto');
+  };
+
+  // PIN overlay
+  let pinBuffer = '';
+
+  function buildPinUI(maxLen) {
+    const dotsEl = document.getElementById('pin-dots');
+    const gridEl = document.getElementById('pin-grid');
+    dotsEl.innerHTML = '';
+    gridEl.innerHTML = '';
+    pinBuffer = '';
+    for (let i = 0; i < maxLen; i++) {
+      const d = document.createElement('div');
+      d.className = 'pin-dot';
+      d.id = `pin-dot-${i}`;
+      dotsEl.appendChild(d);
+    }
+    const keys = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
+    keys.forEach(k => {
+      const btn = document.createElement('button');
+      btn.className = 'pin-key';
+      btn.textContent = k;
+      if (!k) {
+        btn.style.visibility = 'hidden';
+      } else {
+        btn.onclick = () => pinKeyPress(k, maxLen);
+      }
+      gridEl.appendChild(btn);
+    });
+  }
+
+  function pinKeyPress(key, maxLen) {
+    const errorEl = document.getElementById('pin-error');
+    errorEl.textContent = '';
+    if (key === '⌫') { // backspace
+      if (pinBuffer.length > 0) {
+        pinBuffer = pinBuffer.slice(0, -1);
+        document.getElementById(`pin-dot-${pinBuffer.length}`).classList.remove('filled');
+      }
+      return;
+    }
+    if (pinBuffer.length >= maxLen) return;
+    pinBuffer += key;
+    document.getElementById(`pin-dot-${pinBuffer.length - 1}`).classList.add('filled');
+    if (pinBuffer.length === maxLen) {
+      if (pinBuffer === CFG.kioskPin) {
+        document.getElementById('pin-overlay').classList.remove('visible');
+        openSettings();
+      } else {
+        errorEl.textContent = 'Incorrect PIN';
+        // Clear after a short delay
+        setTimeout(() => {
+          pinBuffer = '';
+          for (let i = 0; i < maxLen; i++) {
+            const d = document.getElementById(`pin-dot-${i}`);
+            if (d) d.classList.remove('filled');
+          }
+          errorEl.textContent = '';
+        }, 800);
+        if (navigator.vibrate) navigator.vibrate([50, 50, 50]);
+      }
+    }
+  }
+
+  function openPinPrompt() {
+    const maxLen = CFG.kioskPin ? CFG.kioskPin.length : 4;
+    buildPinUI(maxLen);
+    document.getElementById('pin-overlay').classList.add('visible');
+  }
+
+  // Touch handlers
+  document.body.addEventListener('touchstart', (e) => {
+    touchStartX  = e.touches[0].clientX;
+    touchStartY  = e.touches[0].clientY;
+    touchStartTs = Date.now();
+
+    // Start long-press timer
+    clearTimeout(longPressTimer);
+    longPressTimer = setTimeout(() => {
+      if (navigator.vibrate) navigator.vibrate([10, 50, 10]);
+      if (CFG.kioskMode && CFG.kioskPin) {
+        openPinPrompt();
+      } else {
+        openSettings();
+      }
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  document.body.addEventListener('touchend', (e) => {
+    clearTimeout(longPressTimer);
+    const dx  = e.changedTouches[0].clientX - touchStartX;
+    const dy  = e.changedTouches[0].clientY - touchStartY;
+    const dur = Date.now() - touchStartTs;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist > SWIPE_MIN_PX && dur < 250) {
+      // Swipe gesture — currently used for detail close
+      if (document.getElementById('detail-overlay').classList.contains('visible')) {
+        closeDetail();
+      }
+      return;
+    }
+
+    if (dur < 500 && dist < 15) {
+      // Tap
+      const detailVisible = document.getElementById('detail-overlay').classList.contains('visible');
+      if (detailVisible) {
+        closeDetail();
+        return;
+      }
+      const settingsVisible = document.getElementById('settings-panel').classList.contains('visible');
+      if (settingsVisible) {
+        // Tap inside settings card is handled by its own buttons; tap outside closes
+        closeSettings();
+        return;
+      }
+      if (!CFG.kioskMode) {
+        openDetail();
+      }
+    }
+  }, { passive: true });
+
+  document.body.addEventListener('touchmove', () => {
+    clearTimeout(longPressTimer);
+  }, { passive: true });
+
+  // Mouse fallback (desktop testing)
+  document.body.addEventListener('click', (e) => {
+    // Only activate if not inside an overlay
+    if (e.target.closest('.detail-overlay, .settings-panel, .pin-overlay, .state-overlay')) return;
+    if (!CFG.kioskMode && !document.getElementById('detail-overlay').classList.contains('visible')) {
+      openDetail();
+    } else {
+      closeDetail();
+    }
+  });
+
+  // Close overlays on Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeDetail();
+      closeSettings();
+      document.getElementById('pin-overlay').classList.remove('visible');
+    }
+  });
+  </script>
+</body>
+</html>

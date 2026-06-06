@@ -1,0 +1,15 @@
+{
+  "name": "gluco-hub-clock-e2e",
+  "version": "1.0.0",
+  "description": "E2E tests for the Clock View UI (clock.html)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "npx playwright test",
+    "test:unit": "node clockUrl.unit.test.mjs",
+    "mock": "node mock-server.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

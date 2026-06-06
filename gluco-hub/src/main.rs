@@ -14,6 +14,7 @@ pub mod api;
 pub mod config;
 pub mod dlq;
 pub mod metrics;
+pub mod poll_status;
 pub mod sink_router;
 pub mod sinks;
 pub mod sources;
@@ -52,7 +53,7 @@ enum Command {
     #[cfg(feature = "source-llu")]
     Dryrun,
     /// One-shot Nightscout connectivity probe: read-only
-    /// `GET /api/v3/entries?count=1`. Confirms the api-secret hashes
+    /// `GET /api/v1/entries.json?count=1`. Confirms the api-secret hashes
     /// correctly and the NS host is reachable, WITHOUT writing any
     /// entry. Counterpart of `dryrun` for the sink side.
     #[cfg(feature = "sink-nightscout")]
@@ -216,13 +217,34 @@ async fn serve(cfg: config::Config) -> Result<()> {
         auth_enabled = bearer_token.is_some(),
         "http config",
     );
+    let (poll_status_tx, poll_status_rx) = tokio::sync::watch::channel(poll_status::PollStatus {
+        poll_interval_secs: cfg.poller.interval_secs,
+        ..Default::default()
+    });
+    let poll_status_tx = std::sync::Arc::new(poll_status_tx);
+    // Broadcast channel for the Clock View SSE stream. Held in AppState so it
+    // stays open with zero subscribers; the poll loop publishes a
+    // `ClockReadingEvent` after each successful reading. A small buffer is
+    // enough — slow SSE clients resync on the next reading rather than
+    // replaying history.
+    let (clock_tx, _clock_rx) = tokio::sync::broadcast::channel(16);
+    let clock_tx = std::sync::Arc::new(clock_tx);
+    // Bounded readings history backing the Clock View sparkline
+    // (`GET /clock/history`). Shared with the poll loop, which pushes one point
+    // per successful reading.
+    let clock_history = api::new_history();
     let state = api::AppState {
         cache: cache.clone(),
         metrics_handle,
         bearer_token,
+        poll_status_tx: poll_status_tx.clone(),
+        poll_status_rx,
+        clock_tx: clock_tx.clone(),
+        clock_history: clock_history.clone(),
     };
 
-    let sinks = build_sinks(&cfg)?;
+    let built_sinks = build_sinks(&cfg)?;
+    let sinks = built_sinks.routed;
     info!(sink_count = sinks.len(), "sinks configured");
     if sinks.is_empty() && !cfg.http.enabled {
         warn!(
@@ -236,11 +258,33 @@ async fn serve(cfg: config::Config) -> Result<()> {
         );
     }
 
-    if let Some(source) = build_default_source(&cfg)? {
+    if let Some(built_source) = build_default_source(&cfg)? {
         let interval = Duration::from_secs(cfg.poller.interval_secs);
         let cache_for_poller = cache.clone();
         let sinks_for_poller = sinks.clone();
         let heartbeat_path = Some(cfg.state.dir.join(".alive"));
+
+        // Wire the retained `_patients` MQTT publisher: it watches the LLU
+        // connections channel and republishes a PHI-safe summary after every
+        // successful `list_connections()`. Only active when both an LLU
+        // source and an MQTT sink are configured.
+        #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+        if let (Some(wiring), Some(mqtt)) = (built_source.connections, built_sinks.mqtt) {
+            let topic_prefix = cfg
+                .sink
+                .mqtt
+                .as_ref()
+                .map(|m| m.topic_prefix.clone())
+                .unwrap_or_default();
+            spawn_patients_publisher(mqtt, topic_prefix, wiring.rx, wiring.selection);
+        }
+
+        let source = built_source.source;
+        let poll_status_tx_for_poller = poll_status_tx.clone();
+        let clock_sink_for_poller = api::ClockSink {
+            tx: clock_tx.clone(),
+            history: clock_history.clone(),
+        };
         tokio::spawn(async move {
             poll_loop(
                 source,
@@ -248,6 +292,8 @@ async fn serve(cfg: config::Config) -> Result<()> {
                 sinks_for_poller,
                 interval,
                 heartbeat_path,
+                poll_status_tx_for_poller,
+                clock_sink_for_poller,
             )
             .await;
         });
@@ -285,11 +331,30 @@ fn resolve_bearer_token(cfg: &config::Config) -> Option<secrecy::SecretString> {
     cfg.http.bearer_token.clone()
 }
 
+/// Wiring exposed by an LLU source for the `_patients` MQTT publisher: a
+/// receiver that fires the full connection list after every successful
+/// `list_connections()`, plus the source's selection policy so the
+/// publisher can mark the same connection `is_active` the poller fetches.
+#[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+struct ConnectionsWiring {
+    rx: tokio::sync::watch::Receiver<Vec<sources::llu::wire::Connection>>,
+    selection: sources::llu::source::ConnectionSelection,
+}
+
+/// Outcome of `build_default_source`: the erased source for the poll loop
+/// plus, for an LLU source with MQTT compiled in, the connections wiring
+/// the `_patients` publisher subscribes to.
+struct BuiltSource {
+    source: Arc<dyn Source>,
+    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+    connections: Option<ConnectionsWiring>,
+}
+
 /// Build the source to drive the poller. Priority order:
 /// 1. `source-llu` feature + `[source.llu]` block configured → LLU.
 /// 2. `mock-source` feature → MockSource fixture.
 /// 3. Otherwise, no source (HTTP API stays up; data endpoints serve 503).
-fn build_default_source(cfg: &config::Config) -> Result<Option<Arc<dyn Source>>> {
+fn build_default_source(cfg: &config::Config) -> Result<Option<BuiltSource>> {
     // Mark `cfg` used in every feature combination, including the
     // no-default-features build where neither branch below compiles.
     let _ = cfg;
@@ -300,9 +365,25 @@ fn build_default_source(cfg: &config::Config) -> Result<Option<Arc<dyn Source>>>
     )]
     let mut source: Option<Arc<dyn Source>> = None;
 
+    // Only set on the LLU path with MQTT compiled in; stays `None`
+    // otherwise so the publisher is simply never wired.
+    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+    #[cfg_attr(not(feature = "source-llu"), allow(unused_mut))]
+    let mut connections: Option<ConnectionsWiring> = None;
+
     #[cfg(feature = "source-llu")]
     if let Some(llu) = cfg.source.llu.as_ref() {
-        source = Some(build_llu_source(llu).context("build LLU source")?);
+        // Build unwrapped so we can attach the connections watch channel
+        // before erasing to `Arc<dyn Source>`.
+        #[cfg_attr(not(feature = "sink-mqtt"), allow(unused_mut))]
+        let mut llu_source = build_llu_source_unwrapped(llu).context("build LLU source")?;
+        #[cfg(feature = "sink-mqtt")]
+        {
+            let rx = llu_source.subscribe_connections();
+            let selection = llu_source.selection().clone();
+            connections = Some(ConnectionsWiring { rx, selection });
+        }
+        source = Some(Arc::new(llu_source));
     }
 
     #[cfg(feature = "mock-source")]
@@ -312,7 +393,11 @@ fn build_default_source(cfg: &config::Config) -> Result<Option<Arc<dyn Source>>>
         source = Some(Arc::new(mock));
     }
 
-    Ok(source)
+    Ok(source.map(|source| BuiltSource {
+        source,
+        #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+        connections,
+    }))
 }
 
 /// Resolve `[source.llu]` into a wired `LluAuthClient` + `LluCredentials`
@@ -370,8 +455,13 @@ fn resolve_source_tz(llu: &config::LluSourceConfig) -> Result<chrono_tz::Tz> {
         })
 }
 
+/// Build an `LluSource` without wrapping it in `Arc<dyn Source>`, giving
+/// the caller a chance to attach additional wiring (e.g. the connections
+/// watch channel for the `_patients` MQTT publisher) before erasure.
 #[cfg(feature = "source-llu")]
-fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
+fn build_llu_source_unwrapped(
+    llu: &config::LluSourceConfig,
+) -> Result<sources::llu::source::LluSource> {
     use chrono_tz::Tz;
     use gluco_hub_core::{PatientId, SourceId};
     use sources::llu::source::{ConnectionSelection, LluSource};
@@ -394,9 +484,7 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
         source_tz = %source_tz,
         "llu source configured"
     );
-    Ok(Arc::new(LluSource::new(
-        id, client, creds, selection, source_tz,
-    )))
+    Ok(LluSource::new(id, client, creds, selection, source_tz))
 }
 
 /// One-shot LLU probe. Logs in, lists connections, fetches one graph,
@@ -465,7 +553,7 @@ async fn dryrun(cfg: &config::Config) -> Result<()> {
     Ok(())
 }
 
-/// One-shot NS read-only probe. Runs `GET /api/v3/entries?count=1`
+/// One-shot NS read-only probe. Runs `GET /api/v1/entries.json?count=1`
 /// against the configured NS instance, prints a JSON summary on
 /// stdout. Never writes — by design.
 #[cfg(feature = "sink-nightscout")]
@@ -481,7 +569,7 @@ async fn nsdryrun(cfg: &config::Config) -> Result<()> {
     let client = NightscoutClient::new(ns.base_url.clone(), ns.api_secret.clone())
         .context("build nightscout client")?;
 
-    info!(base_url = %ns.base_url, "ns dryrun: probing /api/v3/entries");
+    info!(base_url = %ns.base_url, "ns dryrun: probing /api/v1/entries.json");
     let last_ms = client.fetch_last_entry_date().await?;
     let now_ms = chrono::Utc::now().timestamp_millis();
     let age_secs = last_ms.map(|d| (now_ms - d) / 1_000);
@@ -526,13 +614,32 @@ async fn poll_loop(
     sinks: Vec<Arc<sink_router::SinkRouter>>,
     interval: Duration,
     heartbeat_path: Option<PathBuf>,
+    poll_status_tx: std::sync::Arc<tokio::sync::watch::Sender<poll_status::PollStatus>>,
+    clock_sink: api::ClockSink,
 ) {
     let source_id = source.id().as_str().to_string();
     let sink_timeout = sink_push_timeout(interval);
+    let poll_interval_secs = interval.as_secs();
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // Track across iterations so partial updates preserve previous values.
+    // `last_successful_reading_at` stays `None` until the first successful
+    // fetch; `last_poll_attempt_at` is set unconditionally each iteration.
+    let mut last_poll_attempt_at: Option<chrono::DateTime<chrono::Utc>>;
+    let mut last_successful_reading_at: Option<chrono::DateTime<chrono::Utc>> = None;
+
+    // Previous glucose value (mg/dL), retained across iterations so the Clock
+    // View SSE event can carry a delta. The single-slot `ReadingCache` keeps
+    // no history, so this is the only place a delta can be derived.
+    let mut prev_glucose_mgdl: Option<f64> = None;
+
     loop {
         ticker.tick().await;
+
+        // Record attempt timestamp before the fetch.
+        last_poll_attempt_at = Some(chrono::Utc::now());
+
         let fetch_result = tokio::time::timeout(sink_timeout, source.fetch_latest()).await;
         match fetch_result {
             Err(_elapsed) => {
@@ -577,7 +684,7 @@ async fn poll_loop(
                         (chrono::Utc::now() - r.timestamp).num_seconds(),
                     )
                 });
-                if let Some(latest) = newest {
+                if let Some(latest) = newest.as_ref() {
                     ::metrics::gauge!(
                         metrics::GAUGE_GLUCOSE,
                         "patient_id" => latest.patient_id.as_str().to_string(),
@@ -597,11 +704,59 @@ async fn poll_loop(
                     None => info!(source_id = %source_id, count, "cache updated (empty batch)"),
                 }
 
+                // Only advance last_successful_reading_at when the batch
+                // was non-empty — an empty Ok(vec![]) means the source
+                // responded but had no measurements to report.
+                if !batch.is_empty() {
+                    last_successful_reading_at = Some(chrono::Utc::now());
+                }
+
+                // Publish the newest reading to Clock View SSE subscribers.
+                // The delta is computed against the previous iteration's value
+                // (the cache holds a single slot, so it has no history). The
+                // broadcast event uses the Clock View defaults (mg/dL, lo=70,
+                // hi=180); the client re-zones against its own CLOCK_CONFIG and
+                // `/clock/state` re-derives the zone from query params.
+                if let Some(latest) = newest.as_ref() {
+                    let value_mgdl = latest.glucose.get();
+                    let event = api::build_reading_event(
+                        value_mgdl,
+                        latest.trend,
+                        latest.timestamp.timestamp_millis(),
+                        prev_glucose_mgdl,
+                        "mgdl",
+                        70.0,
+                        180.0,
+                    );
+                    // Publish to Clock View: broadcast the SSE event AND append
+                    // to the bounded sparkline history, so the live value and
+                    // the chart share one source of truth. No subscribers is an
+                    // expected, harmless case (channel held open by AppState).
+                    clock_sink.publish(event);
+                    prev_glucose_mgdl = Some(value_mgdl);
+                }
+
                 if !sinks.is_empty() {
                     fan_out_to_sinks(&sinks, &batch, sink_timeout).await;
                 }
             }
         }
+
+        // `tokio::time::Interval` does not expose the next deadline directly.
+        // Use the configured interval as the best-effort estimate; the HTTP
+        // handler interprets this as "approximately when the next poll fires".
+        let next_poll_in_secs = poll_interval_secs;
+
+        // Publish updated poll status. Errors are ignored — if all
+        // receivers have been dropped the write channel is logically closed,
+        // but that shouldn't happen in normal operation.
+        let _ = poll_status_tx.send(poll_status::PollStatus {
+            last_poll_attempt_at,
+            last_successful_reading_at,
+            next_poll_in_secs,
+            poll_interval_secs,
+        });
+
         if let Some(path) = heartbeat_path.as_deref()
             && let Err(e) = write_heartbeat(path)
         {
@@ -715,17 +870,38 @@ fn extract_error_code(message: &str) -> String {
     "UNKNOWN".to_string()
 }
 
+/// Outcome of `build_sinks`: the layered sink chain plus, when the MQTT
+/// sink is compiled in *and* configured, a concrete `Arc<MqttSink>` handle.
+/// The handle lets the caller call MQTT-specific methods (e.g.
+/// `publish_patients`) on the *same* sink instance the reading pipeline
+/// uses, without opening a second broker connection.
+struct BuiltSinks {
+    routed: Vec<Arc<sink_router::SinkRouter>>,
+    // Only carried when the `_patients` publisher can consume it, i.e. when
+    // an LLU source is also compiled in. Avoids an unused-field warning in
+    // sink-mqtt-only builds.
+    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+    mqtt: Option<Arc<sinks::mqtt::MqttSink>>,
+}
+
 /// Build the configured sinks, each layered as
 /// `SinkRouter (watermark)` → `DlqSink (persistence)` → real sink.
 /// Order is config-driven; future sinks (webhook, …) slot in as
 /// additional entries.
-fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>> {
+fn build_sinks(cfg: &config::Config) -> Result<BuiltSinks> {
     let _ = cfg;
     #[cfg_attr(
         not(any(feature = "sink-nightscout", feature = "sink-mqtt")),
         allow(unused_mut)
     )]
     let mut sinks: Vec<Arc<dyn Sink>> = Vec::new();
+
+    // Concrete MQTT handle, retained only when the `_patients` publisher
+    // can consume it (LLU source also compiled in). In sink-mqtt-only
+    // builds the sink is still built and pushed below — we just don't keep
+    // a second handle around.
+    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+    let mut mqtt_handle: Option<Arc<sinks::mqtt::MqttSink>> = None;
 
     #[cfg(feature = "sink-nightscout")]
     if let Some(ns) = cfg.sink.nightscout.as_ref() {
@@ -734,7 +910,21 @@ fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>
 
     #[cfg(feature = "sink-mqtt")]
     if let Some(mqtt) = cfg.sink.mqtt.as_ref() {
-        sinks.push(build_mqtt_sink(mqtt).context("build MQTT sink")?);
+        // Build the concrete sink once and share it: a clone goes down the
+        // `Sink` trait path (glucose readings), and — when an LLU source is
+        // present — the original handle is retained so the `_patients`
+        // publisher can call `publish_patients` on the very same broker
+        // connection.
+        let sink = build_mqtt_sink_arc(mqtt).context("build MQTT sink")?;
+        sinks.push(Arc::clone(&sink) as Arc<dyn Sink>);
+        #[cfg(feature = "source-llu")]
+        {
+            mqtt_handle = Some(sink);
+        }
+        #[cfg(not(feature = "source-llu"))]
+        {
+            let _ = sink;
+        }
     }
 
     let routed: Vec<Arc<sink_router::SinkRouter>> = if cfg.dlq.enabled {
@@ -762,13 +952,18 @@ fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>
             .collect()
     };
 
-    Ok(routed)
+    Ok(BuiltSinks {
+        routed,
+        #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+        mqtt: mqtt_handle,
+    })
 }
 
+/// Build the MQTT sink and return it as `Arc<MqttSink>` so the caller can
+/// share it between the `Sink` trait path (glucose readings) and direct
+/// method calls (e.g. `publish_patients`).
 #[cfg(feature = "sink-mqtt")]
-fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
-    use sinks::mqtt::MqttSink;
-
+fn build_mqtt_sink_arc(cfg: &config::MqttSinkConfig) -> Result<Arc<sinks::mqtt::MqttSink>> {
     let password = cfg.password.clone();
 
     info!(
@@ -780,8 +975,88 @@ fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
         "mqtt sink configured"
     );
 
-    let sink = MqttSink::new(cfg, password).map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(Arc::new(sink))
+    sinks::mqtt::MqttSink::new(cfg, password)
+        .map(Arc::new)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Map a raw LLU connections list into PHI-safe `PatientSummary` records.
+///
+/// PHI rule: only `id`, an abbreviated display name (first name + last
+/// initial), and `is_active` ever leave this function — never a full
+/// surname or birthdate. `is_active` is `true` for exactly the connection
+/// the poll loop fetches, as resolved by the source's `selection`.
+#[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+fn connection_summaries(
+    connections: &[sources::llu::wire::Connection],
+    selection: &sources::llu::source::ConnectionSelection,
+) -> Vec<sinks::mqtt::wire::PatientSummary> {
+    let active_id = selection.resolve_active_id(connections);
+    connections
+        .iter()
+        .map(|c| {
+            sinks::mqtt::wire::PatientSummary::new(
+                c.patient_id.clone(),
+                c.first_name.as_deref(),
+                c.last_name.as_deref(),
+                active_id.as_deref() == Some(c.patient_id.as_str()),
+            )
+        })
+        .collect()
+}
+
+/// Spawn the retained `_patients` MQTT publisher.
+///
+/// Subscribes to the LLU connections watch channel and, after every
+/// successful `list_connections()`, republishes a PHI-safe summary array
+/// to `<topic_prefix>/_patients` (retained, QoS 1) so consumers can
+/// discover patient UUIDs without a UI.
+///
+/// Failure handling: a publish error is logged and the loop continues —
+/// a transient broker hiccup must never take down patient discovery (and
+/// it runs in its own task, so it can never stall the poll loop). The task
+/// ends only when the source — and thus the watch sender — is dropped.
+#[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+fn spawn_patients_publisher(
+    mqtt: Arc<sinks::mqtt::MqttSink>,
+    topic_prefix: String,
+    mut rx: tokio::sync::watch::Receiver<Vec<sources::llu::wire::Connection>>,
+    selection: sources::llu::source::ConnectionSelection,
+) {
+    tokio::spawn(async move {
+        info!(
+            topic = %format!("{topic_prefix}/_patients"),
+            "mqtt _patients publisher started"
+        );
+        // `changed()` returns Err only when the sender is dropped — that is
+        // the normal shutdown path, so we exit the loop quietly.
+        while rx.changed().await.is_ok() {
+            // Clone out of the borrow guard before any await so we never
+            // hold the watch lock across the publish.
+            let connections = rx.borrow_and_update().clone();
+            // The initial channel value is an empty Vec; skip publishing an
+            // empty list before the first real fetch lands.
+            if connections.is_empty() {
+                continue;
+            }
+            let summaries = connection_summaries(&connections, &selection);
+            match mqtt.publish_patients(&topic_prefix, &summaries).await {
+                Ok(()) => {
+                    info!(count = summaries.len(), "published retained _patients");
+                }
+                Err(e) => {
+                    // Log and continue — patient discovery is best-effort and
+                    // must not crash on a transient broker failure.
+                    warn!(
+                        error_code = %e.code(),
+                        error = %e,
+                        "failed to publish _patients; will retry on next connections update"
+                    );
+                }
+            }
+        }
+        info!("mqtt _patients publisher stopped (connections channel closed)");
+    });
 }
 
 #[cfg(feature = "sink-nightscout")]
@@ -1065,6 +1340,12 @@ mod tests {
             id: SourceId::new("llu").unwrap(),
         });
         let cache = ReadingCache::new();
+        let (tx, _rx) = tokio::sync::watch::channel(poll_status::PollStatus::default());
+        let (clock_tx, _clock_rx) = tokio::sync::broadcast::channel(16);
+        let clock_sink = api::ClockSink {
+            tx: std::sync::Arc::new(clock_tx),
+            history: api::new_history(),
+        };
         let handle = tokio::spawn(poll_loop(
             source,
             cache,
@@ -1072,6 +1353,8 @@ mod tests {
             // 10 ms interval => first tick fires almost immediately
             Duration::from_millis(10),
             Some(heartbeat.clone()),
+            std::sync::Arc::new(tx),
+            clock_sink,
         ));
         // Poll for the file with a generous overall timeout so flaky CI
         // schedulers don't surface as test failures.

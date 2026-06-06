@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use chrono_tz::Tz;
 use gluco_hub_core::{CoreError, PatientId, Reading, Source, SourceId};
 use tokio::sync::Mutex;
+use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use super::auth::{LluAuthClient, LluCredentials, LluTokens};
@@ -43,6 +44,24 @@ impl ConnectionSelection {
             ConnectionSelection::ByPatientId(id) => format!("patient_id={}", id.as_str()),
         }
     }
+
+    /// Resolve which `patient_id` in `connections` is the *active* one for
+    /// this selection — the connection the poll loop actually fetches
+    /// readings from. Returns `None` when the list is empty or the pinned
+    /// `patient_id` is not present.
+    ///
+    /// Mirrors `LluSource::select_connection`'s choice so the `_patients`
+    /// MQTT summary marks the same connection `is_active = true` that the
+    /// reading pipeline polls.
+    pub fn resolve_active_id(&self, connections: &[Connection]) -> Option<String> {
+        match self {
+            ConnectionSelection::First => connections.first().map(|c| c.patient_id.clone()),
+            ConnectionSelection::ByPatientId(id) => connections
+                .iter()
+                .find(|c| c.patient_id == id.as_str())
+                .map(|c| c.patient_id.clone()),
+        }
+    }
 }
 
 /// Default tolerance for treating an `LluTokens` as expired before its
@@ -61,6 +80,11 @@ pub struct LluSource {
     source_tz: Tz,
     tokens: Arc<Mutex<Option<LluTokens>>>,
     expiry_skew: Duration,
+    /// Optional sender half of a watch channel that receives the full
+    /// connections list after every successful `/llu/connections` call.
+    /// Consumers (e.g. the MQTT sink) subscribe via `subscribe_connections`.
+    /// `None` when no subscriber is wired (default construction path).
+    connections_tx: Option<watch::Sender<Vec<Connection>>>,
 }
 
 impl LluSource {
@@ -79,7 +103,27 @@ impl LluSource {
             source_tz,
             tokens: Arc::new(Mutex::new(None)),
             expiry_skew: Duration::from_secs(DEFAULT_EXPIRY_SKEW_SECS),
+            connections_tx: None,
         }
+    }
+
+    /// Attach a watch channel so callers can subscribe to connection-list
+    /// updates. Returns a `Receiver` that fires after every successful
+    /// `/llu/connections` call. The initial value is an empty `Vec`.
+    ///
+    /// Only one subscriber is supported; call this before the source is
+    /// shared across tasks.
+    pub fn subscribe_connections(&mut self) -> watch::Receiver<Vec<Connection>> {
+        let (tx, rx) = watch::channel(Vec::new());
+        self.connections_tx = Some(tx);
+        rx
+    }
+
+    /// The connection-selection policy this source uses to pick which
+    /// patient it polls. Exposed so the `_patients` MQTT publisher can mark
+    /// the same connection `is_active` that the reading pipeline fetches.
+    pub fn selection(&self) -> &ConnectionSelection {
+        &self.selection
     }
 
     /// Returns valid tokens, logging in if none are cached or the cached
@@ -139,16 +183,25 @@ impl LluSource {
 
     async fn fetch_connections(&self) -> Result<Vec<Connection>, LluError> {
         let tokens = self.ensure_tokens().await?;
-        match self.client.connections(&tokens, self.creds.region).await {
-            Ok(v) => Ok(v),
+        let connections = match self.client.connections(&tokens, self.creds.region).await {
+            Ok(v) => v,
             Err(LluError::Unauthorized { .. }) => {
                 warn!("llu connections rejected token, re-logging in");
                 self.invalidate_tokens().await;
                 let tokens = self.ensure_tokens().await?;
-                self.client.connections(&tokens, self.creds.region).await
+                self.client.connections(&tokens, self.creds.region).await?
             }
-            Err(e) => Err(e),
+            Err(e) => return Err(e),
+        };
+        // Notify any subscriber (e.g. the MQTT _patients publisher).
+        // `send` only fails when all receivers have been dropped, which is
+        // harmless — log at debug so it doesn't spam the happy path.
+        if let Some(tx) = &self.connections_tx
+            && tx.send(connections.clone()).is_err()
+        {
+            debug!("llu connections_tx: no active receivers");
         }
+        Ok(connections)
     }
 
     async fn fetch_graph(
@@ -586,5 +639,44 @@ mod tests {
         );
         let readings = source.fetch_latest().await.expect("fetch");
         assert_eq!(readings.len(), 2);
+    }
+
+    /// Build a bare `Connection` with just a `patient_id`; the name and
+    /// measurement fields are irrelevant for selection.
+    fn conn(patient_id: &str) -> Connection {
+        Connection {
+            patient_id: patient_id.to_string(),
+            first_name: None,
+            last_name: None,
+            glucose_measurement: None,
+        }
+    }
+
+    #[test]
+    fn resolve_active_id_first_picks_head_of_list() {
+        let conns = vec![conn("patient-a"), conn("patient-b")];
+        assert_eq!(
+            ConnectionSelection::First.resolve_active_id(&conns),
+            Some("patient-a".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_active_id_first_on_empty_is_none() {
+        assert_eq!(ConnectionSelection::First.resolve_active_id(&[]), None);
+    }
+
+    #[test]
+    fn resolve_active_id_by_patient_id_matches_pinned_connection() {
+        let conns = vec![conn("patient-a"), conn("patient-b")];
+        let sel = ConnectionSelection::ByPatientId(PatientId::new("patient-b").unwrap());
+        assert_eq!(sel.resolve_active_id(&conns), Some("patient-b".to_string()));
+    }
+
+    #[test]
+    fn resolve_active_id_by_patient_id_absent_is_none() {
+        let conns = vec![conn("patient-a")];
+        let sel = ConnectionSelection::ByPatientId(PatientId::new("patient-z").unwrap());
+        assert_eq!(sel.resolve_active_id(&conns), None);
     }
 }

@@ -22,7 +22,7 @@ use secrecy::SecretString;
 use crate::sinks::nightscout::{NightscoutClient, NightscoutSink};
 
 use super::common::nightscout_container::{
-    API_SECRET, api_secret_sha1, fetch_entries_v3, start_nightscout_stack,
+    API_SECRET, api_secret_sha1, fetch_entries_v1, start_nightscout_stack,
 };
 use super::common::{reading, unique_id};
 
@@ -50,13 +50,10 @@ async fn push_persists_reading_in_real_mongo() {
     let ts = chrono::Utc::now().timestamp() - 60;
     sink.push(&[reading(ts, 138.0)]).await.expect("push");
 
-    let body = fetch_entries_v3(&stack, &api_secret_sha1(), 5)
+    let body = fetch_entries_v1(&stack, &api_secret_sha1(), 5)
         .await
         .expect("fetch back");
-    let result = body
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("result array");
+    let result = body.as_array().expect("result array");
     let entry = result
         .iter()
         .find(|e| e.get("device").and_then(|d| d.as_str()) == Some(device_id.as_str()))
@@ -84,13 +81,10 @@ async fn duplicate_pushes_deduplicate_in_mongo() {
         .await
         .expect("second push (should noop)");
 
-    let body = fetch_entries_v3(&stack, &api_secret_sha1(), 10)
+    let body = fetch_entries_v1(&stack, &api_secret_sha1(), 10)
         .await
         .expect("fetch");
-    let result = body
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("result array");
+    let result = body.as_array().expect("result array");
     let matches: Vec<&serde_json::Value> = result
         .iter()
         .filter(|e| e.get("device").and_then(|d| d.as_str()) == Some(device_id.as_str()))
@@ -141,13 +135,10 @@ async fn pushing_a_batch_of_three_persists_each_distinct_entry() {
         .collect();
     sink.push(&batch).await.expect("push batch of 3");
 
-    let body = fetch_entries_v3(&stack, &api_secret_sha1(), 10)
+    let body = fetch_entries_v1(&stack, &api_secret_sha1(), 10)
         .await
         .expect("fetch");
-    let result = body
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("result array");
+    let result = body.as_array().expect("result array");
     let count = result
         .iter()
         .filter(|e| e.get("device").and_then(|d| d.as_str()) == Some(device_id.as_str()))
