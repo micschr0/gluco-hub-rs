@@ -25,7 +25,7 @@ use crate::sinks::nightscout::{NightscoutClient, NightscoutSink};
 
 use super::common::mosquitto::{start_mosquitto, subscribe_to, wait_for_topic};
 use super::common::nightscout_container::{
-    API_SECRET, api_secret_sha1, fetch_entries_v3, start_nightscout_stack,
+    API_SECRET, api_secret_sha1, fetch_entries_v1, start_nightscout_stack,
 };
 use super::common::{reading, unique_id};
 
@@ -96,13 +96,10 @@ async fn one_reading_fans_out_to_both_ns_and_mqtt() {
     assert_eq!(body["mgdl"], 124.0);
 
     // -- Verify NS side.
-    let entries = fetch_entries_v3(&ns, &api_secret_sha1(), 5)
+    let entries = fetch_entries_v1(&ns, &api_secret_sha1(), 5)
         .await
         .expect("fetch entries");
-    let result = entries
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("result array");
+    let result = entries.as_array().expect("result array");
     let entry = result
         .iter()
         .find(|e| e.get("device").and_then(|d| d.as_str()) == Some(device_id.as_str()))
@@ -175,13 +172,10 @@ async fn watermark_drops_duplicates_across_both_sinks_in_steady_state() {
     assert_eq!(second_mq.filtered, 3);
 
     // NS still shows exactly 3 entries for this device.
-    let body = fetch_entries_v3(&ns, &api_secret_sha1(), 10)
+    let body = fetch_entries_v1(&ns, &api_secret_sha1(), 10)
         .await
         .expect("fetch");
-    let result = body
-        .get("result")
-        .and_then(|v| v.as_array())
-        .expect("result array");
+    let result = body.as_array().expect("result array");
     let mine = result
         .iter()
         .filter(|e| e.get("device").and_then(|d| d.as_str()) == Some(device_id.as_str()))

@@ -46,6 +46,17 @@ pub struct Connection {
     #[serde(rename = "patientId")]
     pub patient_id: String,
 
+    /// First name of the patient, as stored in LibreLink Up.
+    /// Optional because older API responses may omit it; never required
+    /// for routing — used only for the `_patients` MQTT summary.
+    #[serde(rename = "firstName", default)]
+    pub first_name: Option<String>,
+
+    /// Last name of the patient, as stored in LibreLink Up.
+    /// See `first_name` for omission policy.
+    #[serde(rename = "lastName", default)]
+    pub last_name: Option<String>,
+
     #[serde(rename = "glucoseMeasurement", default)]
     pub glucose_measurement: Option<GlucoseMeasurement>,
 }

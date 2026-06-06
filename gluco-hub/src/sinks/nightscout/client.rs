@@ -129,20 +129,21 @@ impl NightscoutClient {
     }
 
     fn entries_url(&self) -> String {
-        format!("{}/api/v3/entries", self.base_url)
+        format!("{}/api/v1/entries", self.base_url)
     }
 
-    /// `GET /api/v3/entries?count=1` — return the millisecond `date` of
+    /// `GET /api/v1/entries.json?count=1` — return the millisecond `date` of
     /// the newest entry already known to Nightscout, or `None` when the
     /// server has no entries yet.
     ///
-    /// NS v3 wraps the result list in either `{"result": [...]}` or a
-    /// bare top-level array depending on deployment age; both shapes are
-    /// accepted. A `404 Not Found` (some self-hosted NS instances expose
-    /// no `entries` collection until the first write) is treated as
-    /// "empty registry" and returns `Ok(None)` rather than an error.
+    /// NS v1 returns a bare JSON array; the `.json` suffix is required for
+    /// JSON content negotiation. Both the wrapped `{"result": [...]}` shape
+    /// and a bare top-level array are accepted for forward-compat. A
+    /// `404 Not Found` (some self-hosted NS instances expose no `entries`
+    /// collection until the first write) is treated as "empty registry" and
+    /// returns `Ok(None)` rather than an error.
     pub async fn fetch_last_entry_date(&self) -> Result<Option<i64>, NsError> {
-        let url = format!("{}?count=1", self.entries_url());
+        let url = format!("{}.json?count=1", self.entries_url());
         let resp = self
             .http
             .get(url)
@@ -193,7 +194,7 @@ impl NightscoutClient {
         Ok(entries.into_iter().filter_map(|e| e.date).max())
     }
 
-    /// `POST /api/v3/entries` with a JSON array of entries derived from
+    /// `POST /api/v1/entries` with a JSON array of entries derived from
     /// `readings`. An empty `readings` slice is a no-op.
     ///
     /// Status mapping (per attempt):
@@ -335,7 +336,7 @@ mod tests {
     async fn happy_path_posts_with_correct_header_and_body() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .and(header(
                 "api-secret",
                 "fe1bae27cb7c1fb823f496f286e78f1d2ae87734",
@@ -354,7 +355,7 @@ mod tests {
             .await
             .expect("requests")
             .into_iter()
-            .find(|r| r.url.path() == "/api/v3/entries")
+            .find(|r| r.url.path() == "/api/v1/entries")
             .expect("entries request");
         let body: serde_json::Value = serde_json::from_slice(&req.body).expect("json");
         let entry = body.get(0).expect("one entry");
@@ -369,7 +370,7 @@ mod tests {
     async fn maps_401_to_unauthorized() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(401))
             .mount(&server)
             .await;
@@ -384,7 +385,7 @@ mod tests {
     async fn maps_502_to_retryable_after_exhausting_retries() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(502))
             .mount(&server)
             .await;
@@ -408,13 +409,13 @@ mod tests {
     async fn retries_succeed_after_two_502s_then_201() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(502))
             .up_to_n_times(2)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(201))
             .mount(&server)
             .await;
@@ -436,7 +437,7 @@ mod tests {
     async fn non_retryable_400_is_not_retried() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(400))
             .mount(&server)
             .await;
@@ -459,7 +460,7 @@ mod tests {
     async fn maps_429_to_retryable() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(429))
             .mount(&server)
             .await;
