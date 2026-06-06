@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [main, develop]
+  # Run on every PR regardless of base branch so stacked feature→feature
+  # PRs get fmt/clippy/test/build too — formatting drift on an inner branch
+  # of a stack must not stay invisible until it retargets main. The heavy
+  # container `integration-tests` job below self-gates to base==main.
   pull_request:
-    branches: [main, develop]
 
 # Cancel superseded runs on the same branch / PR — but never on main,
 # so every push to main completes and primes the shared cache.

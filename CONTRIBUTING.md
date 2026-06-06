@@ -18,6 +18,12 @@ cargo build --all-features
 
 Optional: [go-task](https://taskfile.dev) — run `task` to list the shortcuts.
 
+Run `task setup` once to install the git hooks (`core.hooksPath` → `.githooks`):
+a **pre-commit** hook rejects unformatted Rust (`cargo fmt --all --check`) and a
+**pre-push** hook runs clippy with warnings-as-errors. They catch the same
+failures CI does, but on your machine before the push. Editors that honour
+`.editorconfig` / `.vscode/settings.json` also format Rust on save.
+
 ## Smoke-test before submitting
 
 No LibreLink Up credentials needed:

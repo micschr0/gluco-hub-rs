@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+# Fast formatting gate — keeps unformatted Rust out of every commit.
+# Installed via `task setup`, which points core.hooksPath at .githooks.
+# Bypass in a pinch with `git commit --no-verify`.
+if ! cargo fmt --all -- --check; then
+	echo >&2
+	echo "✗ rustfmt found unformatted code." >&2
+	echo "  Run 'task fmt' (or 'cargo fmt --all'), re-stage, and commit again." >&2
+	exit 1
+fi
