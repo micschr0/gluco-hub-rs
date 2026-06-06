@@ -52,7 +52,7 @@ enum Command {
     #[cfg(feature = "source-llu")]
     Dryrun,
     /// One-shot Nightscout connectivity probe: read-only
-    /// `GET /api/v3/entries?count=1`. Confirms the api-secret hashes
+    /// `GET /api/v1/entries.json?count=1`. Confirms the api-secret hashes
     /// correctly and the NS host is reachable, WITHOUT writing any
     /// entry. Counterpart of `dryrun` for the sink side.
     #[cfg(feature = "sink-nightscout")]
@@ -465,7 +465,7 @@ async fn dryrun(cfg: &config::Config) -> Result<()> {
     Ok(())
 }
 
-/// One-shot NS read-only probe. Runs `GET /api/v3/entries?count=1`
+/// One-shot NS read-only probe. Runs `GET /api/v1/entries.json?count=1`
 /// against the configured NS instance, prints a JSON summary on
 /// stdout. Never writes — by design.
 #[cfg(feature = "sink-nightscout")]
@@ -481,7 +481,7 @@ async fn nsdryrun(cfg: &config::Config) -> Result<()> {
     let client = NightscoutClient::new(ns.base_url.clone(), ns.api_secret.clone())
         .context("build nightscout client")?;
 
-    info!(base_url = %ns.base_url, "ns dryrun: probing /api/v3/entries");
+    info!(base_url = %ns.base_url, "ns dryrun: probing /api/v1/entries.json");
     let last_ms = client.fetch_last_entry_date().await?;
     let now_ms = chrono::Utc::now().timestamp_millis();
     let age_secs = last_ms.map(|d| (now_ms - d) / 1_000);

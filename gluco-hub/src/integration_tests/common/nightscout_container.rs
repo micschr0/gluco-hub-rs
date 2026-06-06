@@ -111,23 +111,15 @@ async fn wait_for_ns_ready(
 }
 
 /// Convenience helper for tests: read entries back from the running
-/// stack via the v3 API. Returns the parsed JSON `result` array (or
-/// the raw body on parse failure for diagnostic output).
-pub async fn fetch_entries_v3(
+/// stack via the v1 API. Returns the parsed JSON body as a bare array
+/// (NS v1 returns newest-first by default).
+pub async fn fetch_entries_v1(
     stack: &NightscoutStack,
     api_secret_sha1_hex: &str,
     count: u32,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
     let client = reqwest::Client::new();
-    // NS v3 expects `sort$desc=date` literally — the `$` is part of
-    // the API's bracket-style sort syntax, not URL-encoded. Build the
-    // query string by hand so `RequestBuilder::query()`'s Serialize
-    // path doesn't escape it.
-    let url = format!(
-        "{}/api/v3/entries?count={}&sort$desc=date",
-        stack.ns_url(),
-        count,
-    );
+    let url = format!("{}/api/v1/entries.json?count={}", stack.ns_url(), count,);
     let resp = client
         .get(url)
         .header("api-secret", api_secret_sha1_hex)
