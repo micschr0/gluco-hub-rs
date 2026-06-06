@@ -6,9 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Nightscout sink: token (JWT/Bearer) auth mode** — new `[sink.nightscout]
+  auth` field selects the credential. `auth = "token"` exchanges a Nightscout
+  access token (supplied via `GLUCO_HUB__SINK__NIGHTSCOUT__TOKEN`) for a JWT
+  through `GET /api/v2/authorization/request/<token>` and sends
+  `Authorization: Bearer <jwt>` against the **v3** entries API. The JWT is
+  minted on first use and cached; a `401` triggers exactly one refresh +
+  retry before surfacing as an error. `auth` defaults to `"api_secret"`, so
+  existing configs are unchanged.
+
 ### Changed
 
 - **Security reporting now goes through GitHub Private Vulnerability Reporting** — `SECURITY.md` no longer lists a maintainer email; sensitive reports use the in-platform [advisory form](https://github.com/micschr0/gluco-hub-rs/security/advisories/new) instead. Public bug reports still go to GitHub issues. Reduces address harvesting from the public repo and routes coordinated disclosure through GitHub's audit trail.
+
+### Fixed
+
+- **Nightscout `api_secret` auth now targets the v1 entries API (was v3)** —
+  modern Nightscout (cgm-remote-monitor ≥ 14.x) rejects the legacy
+  `api-secret: <sha1>` header on `/api/v3/entries` with `401`, so the sink
+  never authenticated against a real deployment. `auth = "api_secret"` now
+  posts to `/api/v1/entries`, which still honours the header. Operators who
+  want the modern v3 API should switch to `auth = "token"`. Fixes #24. New
+  error code `[NS006]` covers JWT-acquisition failures.
 
 ## [2026.516.0] - 2026-05-16
 

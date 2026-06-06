@@ -51,9 +51,9 @@ enum Command {
     /// actually work against the live API.
     #[cfg(feature = "source-llu")]
     Dryrun,
-    /// One-shot Nightscout connectivity probe: read-only
-    /// `GET /api/v3/entries?count=1`. Confirms the api-secret hashes
-    /// correctly and the NS host is reachable, WITHOUT writing any
+    /// One-shot Nightscout connectivity probe: read-only fetch of the
+    /// newest entry (v1 or v3, per `auth` mode). Confirms the credential
+    /// is accepted and the NS host is reachable, WITHOUT writing any
     /// entry. Counterpart of `dryrun` for the sink side.
     #[cfg(feature = "sink-nightscout")]
     NsDryrun,
@@ -465,23 +465,48 @@ async fn dryrun(cfg: &config::Config) -> Result<()> {
     Ok(())
 }
 
-/// One-shot NS read-only probe. Runs `GET /api/v3/entries?count=1`
-/// against the configured NS instance, prints a JSON summary on
-/// stdout. Never writes — by design.
+/// Build a `NightscoutClient` from config, selecting the credential by
+/// `auth` mode. `verify_secrets` has already guaranteed the relevant
+/// secret is present and non-empty, so the `ok_or_else` arms only fire
+/// if that invariant is ever broken.
 #[cfg(feature = "sink-nightscout")]
-async fn nsdryrun(cfg: &config::Config) -> Result<()> {
+fn ns_client_from_config(
+    ns: &config::NightscoutSinkConfig,
+) -> Result<sinks::nightscout::NightscoutClient> {
+    use config::NsAuthMode;
     use sinks::nightscout::NightscoutClient;
 
+    match ns.auth {
+        NsAuthMode::ApiSecret => {
+            let secret = ns.api_secret.clone().ok_or_else(|| {
+                anyhow::anyhow!("[CFG] auth=api_secret requires [sink.nightscout] api_secret")
+            })?;
+            NightscoutClient::new(ns.base_url.clone(), secret)
+        }
+        NsAuthMode::Token => {
+            let token = ns.token.clone().ok_or_else(|| {
+                anyhow::anyhow!("[CFG] auth=token requires [sink.nightscout] token")
+            })?;
+            NightscoutClient::with_access_token(ns.base_url.clone(), token)
+        }
+    }
+    .context("build nightscout client")
+}
+
+/// One-shot NS read-only probe. Reads the newest entry from the
+/// configured NS instance (v1 or v3, per `auth` mode), prints a JSON
+/// summary on stdout. Never writes — by design.
+#[cfg(feature = "sink-nightscout")]
+async fn nsdryrun(cfg: &config::Config) -> Result<()> {
     let ns = cfg.sink.nightscout.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
             "[CFG005] ns-dryrun requires [sink.nightscout] config or \
             GLUCO_HUB__SINK__NIGHTSCOUT__* env overrides"
         )
     })?;
-    let client = NightscoutClient::new(ns.base_url.clone(), ns.api_secret.clone())
-        .context("build nightscout client")?;
+    let client = ns_client_from_config(ns)?;
 
-    info!(base_url = %ns.base_url, "ns dryrun: probing /api/v3/entries");
+    info!(base_url = %ns.base_url, "ns dryrun: probing entries");
     let last_ms = client.fetch_last_entry_date().await?;
     let now_ms = chrono::Utc::now().timestamp_millis();
     let age_secs = last_ms.map(|d| (now_ms - d) / 1_000);
@@ -786,18 +811,19 @@ fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
 
 #[cfg(feature = "sink-nightscout")]
 fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Sink>> {
-    use sinks::nightscout::{NightscoutClient, NightscoutSink};
+    use sinks::nightscout::NightscoutSink;
 
     const DEFAULT_DEVICE: &str = "gluco-hub";
     const DEFAULT_APP: &str = "gluco-hub";
 
     let device = ns.device.as_deref().unwrap_or(DEFAULT_DEVICE);
     let app = ns.app.as_deref().unwrap_or(DEFAULT_APP);
-    let client = NightscoutClient::new(ns.base_url.clone(), ns.api_secret.clone())
-        .context("build Nightscout client")?
-        .with_device(device)
-        .with_app(app);
-    info!(base_url = %ns.base_url, device, app, "nightscout sink configured");
+    let client = ns_client_from_config(ns)?.with_device(device).with_app(app);
+    let auth = match ns.auth {
+        config::NsAuthMode::ApiSecret => "api_secret",
+        config::NsAuthMode::Token => "token",
+    };
+    info!(base_url = %ns.base_url, device, app, auth, "nightscout sink configured");
     Ok(Arc::new(NightscoutSink::new(client)))
 }
 

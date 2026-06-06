@@ -1,29 +1,37 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Nightscout v3 HTTP client.
+//! Nightscout HTTP client with two operator-selectable auth modes.
 //!
-//! Auth path: `api-secret: <sha1_hex(API_SECRET)>` — Nightscout v3
-//! continues to accept the legacy SHA-1 header for backward
-//! compatibility. The modern path is `Authorization: Bearer <jwt>` from
-//! `/api/v2/authorization/request/<accessToken>`.
+//! Modern Nightscout (cgm-remote-monitor ≥ 14.x) rejects the legacy
+//! `api-secret: <sha1_hex(secret)>` header on the **v3** API with `401`,
+//! even though the v1 API still honours it. Earlier versions of this
+//! client posted to `/api/v3/entries` with the SHA-1 header and therefore
+//! never authenticated against a real deployment (see issue #24). The two
+//! modes below each target the API version that actually accepts their
+//! credential:
 //!
-//! We deliberately ship the SHA-1 path for V1 because:
-//!
-//! - it works against every NS deployment we tested against (the JWT
-//!   path is opt-in on the NS side),
-//! - it adds zero round-trips per scrape, and
-//! - it is wiremock-testable without a JWT issuer.
-//!
-//! The JWT path is on the V2 roadmap as `NsAuth::Bearer`.
+//! - [`Auth::ApiSecret`] → `POST /api/v1/entries` with
+//!   `api-secret: <sha1_hex(secret)>`. The v1 API still accepts the
+//!   legacy header, so this is the zero-round-trip path for deployments
+//!   that only expose an API secret.
+//! - [`Auth::Token`] → `POST /api/v3/entries` with
+//!   `Authorization: Bearer <jwt>`. The JWT is minted on demand from an
+//!   access token via `GET /api/v2/authorization/request/<token>` and
+//!   cached until a request returns `401`, at which point it is refreshed
+//!   once and the request retried.
 //!
 //! SHA-1 here is a request-shape choice mandated by NS, not a security
-//! choice — actual transport security comes from the rustls-protected
-//! TLS connection to the NS host.
+//! choice — transport security comes from the rustls-protected TLS
+//! connection to the NS host. The access token and minted JWT are both
+//! wrapped in [`SecretString`] so neither leaks through `Debug` or logs.
+
+use std::sync::Arc;
 
 use gluco_hub_core::Reading;
 use secrecy::{ExposeSecret, SecretString};
 use sha1::{Digest, Sha1};
 use thiserror::Error;
+use tokio::sync::RwLock;
 use tracing::debug;
 
 use super::wire::{NsEntry, entry_from_reading};
@@ -36,7 +44,7 @@ pub enum NsError {
     #[error("[NS001] HTTP transport error: {0}")]
     Transport(String),
 
-    #[error("[NS002] Nightscout rejected api-secret: 401")]
+    #[error("[NS002] Nightscout rejected credentials: 401")]
     Unauthorized,
 
     #[error("[NS003] Nightscout returned non-success status: {status}")]
@@ -47,6 +55,9 @@ pub enum NsError {
 
     #[error("[NS005] invalid base URL: {reason}")]
     InvalidBaseUrl { reason: String },
+
+    #[error("[NS006] could not obtain Nightscout JWT: {reason}")]
+    Authorization { reason: String },
 }
 
 impl NsError {
@@ -62,6 +73,7 @@ impl NsError {
             NsError::Status { .. } => "NS003",
             NsError::Retryable { .. } => "NS004",
             NsError::InvalidBaseUrl { .. } => "NS005",
+            NsError::Authorization { .. } => "NS006",
         }
     }
 }
@@ -85,19 +97,59 @@ pub fn api_secret_header(secret: &SecretString) -> String {
     out
 }
 
+/// How the client authenticates, and—because the credential dictates the
+/// API version that accepts it—which entries endpoint it targets.
+#[derive(Debug, Clone)]
+enum Auth {
+    /// `api-secret: <sha1_hex>` against the v1 API.
+    ApiSecret { header: String },
+    /// `Authorization: Bearer <jwt>` against the v3 API. `jwt` is the
+    /// lazily-minted, refresh-on-401 cache shared across clones.
+    Token {
+        access_token: SecretString,
+        jwt: Arc<RwLock<Option<SecretString>>>,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct NightscoutClient {
     base_url: String,
-    secret: SecretString,
     http: reqwest::Client,
     device: Option<String>,
     app: Option<String>,
+    auth: Auth,
 }
 
 impl NightscoutClient {
+    /// Build a client that authenticates with the legacy `api-secret`
+    /// SHA-1 header against the **v1** entries API.
     pub fn new(base_url: impl Into<String>, secret: SecretString) -> Result<Self, NsError> {
-        let base_url = base_url.into();
-        let trimmed = base_url.trim_end_matches('/').to_string();
+        Self::build(
+            base_url,
+            Auth::ApiSecret {
+                header: api_secret_header(&secret),
+            },
+        )
+    }
+
+    /// Build a client that mints a JWT from `access_token` and
+    /// authenticates with `Authorization: Bearer` against the **v3**
+    /// entries API.
+    pub fn with_access_token(
+        base_url: impl Into<String>,
+        access_token: SecretString,
+    ) -> Result<Self, NsError> {
+        Self::build(
+            base_url,
+            Auth::Token {
+                access_token,
+                jwt: Arc::new(RwLock::new(None)),
+            },
+        )
+    }
+
+    fn build(base_url: impl Into<String>, auth: Auth) -> Result<Self, NsError> {
+        let trimmed = base_url.into().trim_end_matches('/').to_string();
         if trimmed.is_empty() {
             return Err(NsError::InvalidBaseUrl {
                 reason: "base_url is empty".into(),
@@ -109,10 +161,10 @@ impl NightscoutClient {
             .map_err(NsError::from)?;
         Ok(Self {
             base_url: trimmed,
-            secret,
             http,
             device: None,
             app: None,
+            auth,
         })
     }
 
@@ -128,27 +180,126 @@ impl NightscoutClient {
         self
     }
 
+    /// The entries collection URL for the auth mode's API version. Both
+    /// the dedup `GET` and the upload `POST` hit this same path; the
+    /// v1 API serves JSON for it when `Accept: application/json` is set.
     fn entries_url(&self) -> String {
-        format!("{}/api/v3/entries", self.base_url)
+        match self.auth {
+            Auth::ApiSecret { .. } => format!("{}/api/v1/entries", self.base_url),
+            Auth::Token { .. } => format!("{}/api/v3/entries", self.base_url),
+        }
     }
 
-    /// `GET /api/v3/entries?count=1` — return the millisecond `date` of
-    /// the newest entry already known to Nightscout, or `None` when the
-    /// server has no entries yet.
+    /// Send a request with the mode's credential attached. In token mode
+    /// a `401` triggers exactly one JWT refresh + retry (the cached JWT
+    /// has likely expired or been rotated); a second `401` propagates to
+    /// the caller, which maps it to [`NsError::Unauthorized`]. In
+    /// api-secret mode the response is returned verbatim.
     ///
-    /// NS v3 wraps the result list in either `{"result": [...]}` or a
-    /// bare top-level array depending on deployment age; both shapes are
-    /// accepted. A `404 Not Found` (some self-hosted NS instances expose
-    /// no `entries` collection until the first write) is treated as
-    /// "empty registry" and returns `Ok(None)` rather than an error.
-    pub async fn fetch_last_entry_date(&self) -> Result<Option<i64>, NsError> {
-        let url = format!("{}?count=1", self.entries_url());
+    /// `build_req` must be callable twice (it rebuilds the full request,
+    /// body included, for the retry).
+    async fn send_authed<F>(&self, build_req: F) -> Result<reqwest::Response, NsError>
+    where
+        F: Fn() -> reqwest::RequestBuilder,
+    {
+        match &self.auth {
+            Auth::ApiSecret { header } => {
+                Ok(build_req().header("api-secret", header).send().await?)
+            }
+            Auth::Token { jwt, .. } => {
+                let token = match jwt.read().await.as_ref() {
+                    Some(t) => t.clone(),
+                    None => self.refresh_jwt().await?,
+                };
+                let resp = build_req()
+                    .bearer_auth(token.expose_secret())
+                    .send()
+                    .await?;
+                if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+                    return Ok(resp);
+                }
+                let fresh = self.refresh_jwt().await?;
+                Ok(build_req()
+                    .bearer_auth(fresh.expose_secret())
+                    .send()
+                    .await?)
+            }
+        }
+    }
+
+    /// Exchange the access token for a fresh JWT via
+    /// `GET /api/v2/authorization/request/<token>` and cache it. The
+    /// access token sits in the URL path (NS's own convention), so this
+    /// URL is never logged.
+    async fn refresh_jwt(&self) -> Result<SecretString, NsError> {
+        let Auth::Token { access_token, jwt } = &self.auth else {
+            return Err(NsError::Authorization {
+                reason: "JWT refresh requested in api-secret mode".into(),
+            });
+        };
+        let url = format!(
+            "{}/api/v2/authorization/request/{}",
+            self.base_url,
+            access_token.expose_secret()
+        );
         let resp = self
             .http
             .get(url)
-            .header("api-secret", api_secret_header(&self.secret))
             .header(reqwest::header::ACCEPT, "application/json")
             .send()
+            .await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(NsError::Unauthorized);
+        }
+        if !status.is_success() {
+            let code = status.as_u16();
+            if code == 429 || (500..=599).contains(&code) {
+                return Err(NsError::Retryable { status: code });
+            }
+            return Err(NsError::Authorization {
+                reason: format!("authorization request returned {code}"),
+            });
+        }
+        #[derive(serde::Deserialize)]
+        struct AuthResp {
+            token: Option<String>,
+        }
+        let parsed: AuthResp = resp.json().await.map_err(|e| NsError::Authorization {
+            reason: format!("authorization response decode failed: {e}"),
+        })?;
+        let token =
+            parsed
+                .token
+                .filter(|t| !t.is_empty())
+                .ok_or_else(|| NsError::Authorization {
+                    reason: "authorization response missing token".into(),
+                })?;
+        let secret = SecretString::from(token);
+        *jwt.write().await = Some(secret.clone());
+        debug!("ns: obtained fresh JWT from access token");
+        Ok(secret)
+    }
+
+    /// `GET <entries>?count=1` — return the millisecond `date` of the
+    /// newest entry already known to Nightscout, or `None` when the
+    /// server has no entries yet.
+    ///
+    /// The result list arrives either wrapped as `{"result": [...]}` (v3)
+    /// or as a bare top-level array (v1); both shapes are accepted. A
+    /// `404 Not Found` (some self-hosted NS instances expose no `entries`
+    /// collection until the first write) is treated as "empty registry"
+    /// and returns `Ok(None)` rather than an error. A non-JSON body (e.g.
+    /// the v1 API falling back to its tab-separated format) also degrades
+    /// to `Ok(None)`, so dedup is skipped rather than the upload aborted.
+    pub async fn fetch_last_entry_date(&self) -> Result<Option<i64>, NsError> {
+        let url = format!("{}?count=1", self.entries_url());
+        let resp = self
+            .send_authed(|| {
+                self.http
+                    .get(&url)
+                    .header(reqwest::header::ACCEPT, "application/json")
+            })
             .await?;
 
         let status = resp.status();
@@ -171,8 +322,8 @@ impl NightscoutClient {
             return Ok(None);
         }
         // Try the wrapped shape first (newer NS); fall back to a bare
-        // array (older NS). When neither parses, treat as "no hint" and
-        // let the sink post everything — better than erroring and
+        // array (older NS / v1). When neither parses, treat as "no hint"
+        // and let the sink post everything — better than erroring and
         // skipping the upload entirely.
         #[derive(serde::Deserialize)]
         struct Wrapped {
@@ -193,12 +344,13 @@ impl NightscoutClient {
         Ok(entries.into_iter().filter_map(|e| e.date).max())
     }
 
-    /// `POST /api/v3/entries` with a JSON array of entries derived from
+    /// `POST <entries>` with a JSON array of entries derived from
     /// `readings`. An empty `readings` slice is a no-op.
     ///
     /// Status mapping (per attempt):
     /// - 2xx → `Ok(())`. Empty body on `201 Created` is normal.
-    /// - 401 → `NsError::Unauthorized` (terminal; no retry).
+    /// - 401 → `NsError::Unauthorized` (terminal; in token mode only
+    ///   after a JWT refresh + retry has also failed).
     /// - 429, 5xx → `NsError::Retryable { status }` — automatically
     ///   retried up to [`MAX_POST_RETRIES`] times with exponential
     ///   backoff (200 ms, 400 ms). The final failure surfaces with
@@ -247,13 +399,14 @@ impl NightscoutClient {
     }
 
     async fn try_post_entries(&self, body: &[NsEntry]) -> Result<(), NsError> {
+        let url = self.entries_url();
         let resp = self
-            .http
-            .post(self.entries_url())
-            .header("api-secret", api_secret_header(&self.secret))
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(body)
-            .send()
+            .send_authed(|| {
+                self.http
+                    .post(&url)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .json(body)
+            })
             .await?;
         let status = resp.status();
         if status.is_success() {
@@ -300,8 +453,28 @@ mod tests {
         }
     }
 
+    /// api-secret mode client (posts to the v1 entries API).
     fn client(server: &MockServer) -> NightscoutClient {
         NightscoutClient::new(server.uri(), SecretString::from("test-secret")).expect("client")
+    }
+
+    /// token mode client (mints a JWT, posts to the v3 entries API).
+    /// The access token's last path segment is what the auth-endpoint
+    /// mock matches on.
+    fn token_client(server: &MockServer) -> NightscoutClient {
+        NightscoutClient::with_access_token(server.uri(), SecretString::from("itest-ad3b1f9d"))
+            .expect("client")
+    }
+
+    /// Mount the JWT mint endpoint returning `jwt_value`.
+    async fn mount_jwt(server: &MockServer, jwt_value: &str) {
+        Mock::given(method("GET"))
+            .and(path("/api/v2/authorization/request/itest-ad3b1f9d"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "token": jwt_value })),
+            )
+            .mount(server)
+            .await;
     }
 
     #[test]
@@ -332,10 +505,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn happy_path_posts_with_correct_header_and_body() {
+    async fn api_secret_posts_to_v1_with_correct_header_and_body() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .and(header(
                 "api-secret",
                 "fe1bae27cb7c1fb823f496f286e78f1d2ae87734",
@@ -354,7 +527,7 @@ mod tests {
             .await
             .expect("requests")
             .into_iter()
-            .find(|r| r.url.path() == "/api/v3/entries")
+            .find(|r| r.url.path() == "/api/v1/entries")
             .expect("entries request");
         let body: serde_json::Value = serde_json::from_slice(&req.body).expect("json");
         let entry = body.get(0).expect("one entry");
@@ -366,10 +539,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn token_mode_mints_jwt_then_posts_with_bearer() {
+        let server = MockServer::start().await;
+        mount_jwt(&server, "jwt-abc").await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .and(header("authorization", "Bearer jwt-abc"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+
+        token_client(&server)
+            .post_entries(&[reading()])
+            .await
+            .expect("post");
+
+        // Exactly one auth round-trip, then the v3 POST.
+        let reqs = server.received_requests().await.expect("requests");
+        let auth_hits = reqs
+            .iter()
+            .filter(|r| r.url.path() == "/api/v2/authorization/request/itest-ad3b1f9d")
+            .count();
+        assert_eq!(auth_hits, 1, "one JWT mint");
+        assert!(
+            reqs.iter()
+                .any(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v3/entries"),
+            "v3 POST happened"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_mode_refreshes_jwt_on_401_then_succeeds() {
+        let server = MockServer::start().await;
+        // First mint → stale token; second mint → fresh token.
+        Mock::given(method("GET"))
+            .and(path("/api/v2/authorization/request/itest-ad3b1f9d"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "token": "stale" })),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/authorization/request/itest-ad3b1f9d"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "token": "fresh" })),
+            )
+            .mount(&server)
+            .await;
+        // Stale bearer → 401; fresh bearer → 201.
+        Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .and(header("authorization", "Bearer stale"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/entries"))
+            .and(header("authorization", "Bearer fresh"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+
+        token_client(&server)
+            .post_entries(&[reading()])
+            .await
+            .expect("post after refresh");
+    }
+
+    #[tokio::test]
+    async fn token_mode_auth_endpoint_401_maps_unauthorized() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/authorization/request/itest-ad3b1f9d"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let err = token_client(&server)
+            .post_entries(&[reading()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, NsError::Unauthorized));
+    }
+
+    #[tokio::test]
+    async fn token_mode_auth_response_without_token_maps_ns006() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/authorization/request/itest-ad3b1f9d"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        let err = token_client(&server)
+            .post_entries(&[reading()])
+            .await
+            .unwrap_err();
+        assert_eq!(err.error_code(), "NS006");
+    }
+
+    #[tokio::test]
     async fn maps_401_to_unauthorized() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(401))
             .mount(&server)
             .await;
@@ -384,7 +656,7 @@ mod tests {
     async fn maps_502_to_retryable_after_exhausting_retries() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(502))
             .mount(&server)
             .await;
@@ -408,13 +680,13 @@ mod tests {
     async fn retries_succeed_after_two_502s_then_201() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(502))
             .up_to_n_times(2)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(201))
             .mount(&server)
             .await;
@@ -436,7 +708,7 @@ mod tests {
     async fn non_retryable_400_is_not_retried() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(400))
             .mount(&server)
             .await;
@@ -459,7 +731,7 @@ mod tests {
     async fn maps_429_to_retryable() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/v3/entries"))
+            .and(path("/api/v1/entries"))
             .respond_with(ResponseTemplate::new(429))
             .mount(&server)
             .await;

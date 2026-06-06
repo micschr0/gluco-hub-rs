@@ -150,17 +150,48 @@ pub struct SinkConfig {
     pub mqtt: Option<MqttSinkConfig>,
 }
 
-/// `[sink.nightscout]` block. Supply the API secret via the environment
-/// variable `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET`; do not embed it in TOML.
+/// Which credential the Nightscout sink presents. The choice also
+/// dictates the entries API version the sink targets, because modern
+/// Nightscout only accepts each credential on the version that issued it
+/// (see `sinks/nightscout/client.rs`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NsAuthMode {
+    /// Legacy `api-secret: <sha1>` header against the v1 entries API.
+    /// The default, for backward compatibility with existing configs.
+    #[default]
+    ApiSecret,
+    /// JWT minted from an access token, sent as `Authorization: Bearer`
+    /// against the v3 entries API.
+    Token,
+}
+
+/// `[sink.nightscout]` block. Supply the credential via the environment:
+/// `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET` for `auth = "api_secret"`
+/// (the default) or `GLUCO_HUB__SINK__NIGHTSCOUT__TOKEN` for
+/// `auth = "token"`. Do not embed either in TOML.
 #[cfg_attr(not(feature = "sink-nightscout"), allow(dead_code))]
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct NightscoutSinkConfig {
     #[validate(length(min = 5, max = 512), custom(function = "validate_http_url"))]
     pub base_url: String,
 
-    /// Nightscout API secret (raw, NOT pre-hashed). Supply via
+    /// Credential type. Defaults to `api_secret` so configs written
+    /// before token auth existed keep working unchanged.
+    #[serde(default)]
+    pub auth: NsAuthMode,
+
+    /// Nightscout API secret (raw, NOT pre-hashed). Required when
+    /// `auth = "api_secret"`. Supply via
     /// `GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET`.
-    pub api_secret: SecretString,
+    #[serde(default)]
+    pub api_secret: Option<SecretString>,
+
+    /// Nightscout access token (e.g. `myuploader-0123456789abcdef`).
+    /// Required when `auth = "token"`. Supply via
+    /// `GLUCO_HUB__SINK__NIGHTSCOUT__TOKEN`.
+    #[serde(default)]
+    pub token: Option<SecretString>,
 
     /// Identifies this service in the NS UI's source column. Defaults
     /// to `"gluco-hub"`.
@@ -595,12 +626,16 @@ pub fn verify_secrets(cfg: &Config) -> Result<(), ConfigError> {
         });
     }
 
-    if let Some(ns) = cfg.sink.nightscout.as_ref()
-        && ns.api_secret.expose_secret().is_empty()
-    {
-        return Err(ConfigError::EmptySecret {
-            field: "[sink.nightscout] api_secret",
-        });
+    if let Some(ns) = cfg.sink.nightscout.as_ref() {
+        // The credential required depends on the selected auth mode.
+        // An empty or absent value is rejected the same way.
+        let (value, field): (Option<&SecretString>, &'static str) = match ns.auth {
+            NsAuthMode::ApiSecret => (ns.api_secret.as_ref(), "[sink.nightscout] api_secret"),
+            NsAuthMode::Token => (ns.token.as_ref(), "[sink.nightscout] token"),
+        };
+        if value.is_none_or(|s| s.expose_secret().is_empty()) {
+            return Err(ConfigError::EmptySecret { field });
+        }
     }
 
     if let Some(mqtt) = cfg.sink.mqtt.as_ref()
@@ -855,7 +890,9 @@ region = "EU"
             sink: SinkConfig {
                 nightscout: Some(NightscoutSinkConfig {
                     base_url: "https://ns.example".into(),
-                    api_secret: SecretString::from(String::new()),
+                    auth: NsAuthMode::ApiSecret,
+                    api_secret: Some(SecretString::from(String::new())),
+                    token: None,
                     device: None,
                     app: None,
                 }),
@@ -867,6 +904,40 @@ region = "EU"
         let err = verify_secrets(&cfg).expect_err("must reject empty api_secret");
         assert!(
             matches!(err, ConfigError::EmptySecret { field } if field.contains("api_secret")),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[cfg(feature = "sink-nightscout")]
+    #[test]
+    fn verify_secrets_rejects_missing_token_in_token_mode() {
+        let cfg = Config {
+            http: HttpConfig {
+                enabled: true,
+                bind: "127.0.0.1:0".parse().unwrap(),
+                bearer_token: None,
+            },
+            poller: PollerConfig { interval_secs: 60 },
+            source: SourceConfig::default(),
+            sink: SinkConfig {
+                nightscout: Some(NightscoutSinkConfig {
+                    base_url: "https://ns.example".into(),
+                    auth: NsAuthMode::Token,
+                    // api_secret present but irrelevant in token mode;
+                    // the missing `token` is what must be rejected.
+                    api_secret: Some(SecretString::from("ignored")),
+                    token: None,
+                    device: None,
+                    app: None,
+                }),
+                mqtt: None,
+            },
+            state: StateConfig::default(),
+            dlq: DlqConfig::default(),
+        };
+        let err = verify_secrets(&cfg).expect_err("must reject missing token");
+        assert!(
+            matches!(err, ConfigError::EmptySecret { field } if field.contains("token")),
             "unexpected: {err:?}"
         );
     }

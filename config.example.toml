@@ -57,11 +57,24 @@ interval_secs = 60
 # Optional: Nightscout sink. Requires the `sink-nightscout` Cargo
 # feature on the binary. Uncomment and fill in to push every batch of
 # readings to a self-hosted Nightscout instance.
-# Supply the API secret via the environment:
-#   GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET=<secret>
+#
+# Two auth modes, selected by `auth` (default "api_secret"):
+#
+#   auth = "api_secret"  →  legacy `api-secret` header against the v1
+#                           entries API. Supply the raw secret via:
+#                             GLUCO_HUB__SINK__NIGHTSCOUT__API_SECRET=<secret>
+#                           Note: modern Nightscout rejects this header on
+#                           the v3 API, so api_secret mode targets v1.
+#
+#   auth = "token"       →  access token exchanged for a JWT, sent as
+#                           `Authorization: Bearer` against the v3 entries
+#                           API. Supply the access token via:
+#                             GLUCO_HUB__SINK__NIGHTSCOUT__TOKEN=<token>
+#                           (e.g. "myuploader-0123456789abcdef")
 #
 # [sink.nightscout]
 # base_url = "https://nightscout.example.com"
+# auth = "api_secret"        # "api_secret" (default) | "token"
 
 # Optional: MQTT v5 sink (V2). Requires the `sink-mqtt` Cargo feature
 # on the binary. Publishes:
