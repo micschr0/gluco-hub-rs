@@ -28,8 +28,7 @@ mod tests {
     #[tokio::test]
     async fn metrics_returns_prometheus_text() {
         let handle = crate::metrics::init_recorder().expect("recorder");
-        let (tx, rx) =
-            tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
+        let (tx, rx) = tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
         let (clock_tx, _clock_rx) = tokio::sync::broadcast::channel(16);
         let state = AppState {
             cache: ReadingCache::new(),
