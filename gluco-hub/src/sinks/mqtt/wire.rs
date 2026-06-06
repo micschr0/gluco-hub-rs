@@ -332,7 +332,10 @@ mod tests {
         assert_eq!(build_display_name(Some("Anna"), None, "id"), "Anna");
         // Neither present → fall back to the id so the entry is still
         // identifiable.
-        assert_eq!(build_display_name(None, None, "uuid-fallback"), "uuid-fallback");
+        assert_eq!(
+            build_display_name(None, None, "uuid-fallback"),
+            "uuid-fallback"
+        );
         assert_eq!(build_display_name(Some(""), Some(""), "uuid-x"), "uuid-x");
     }
 
@@ -340,7 +343,10 @@ mod tests {
     fn build_display_name_uses_first_unicode_scalar_for_initial() {
         // A multibyte surname initial must use the first char, never a
         // byte slice (`[..1]` would split mid-codepoint and panic).
-        assert_eq!(build_display_name(Some("Émile"), Some("Über"), "id"), "Émile Ü.");
+        assert_eq!(
+            build_display_name(Some("Émile"), Some("Über"), "id"),
+            "Émile Ü."
+        );
     }
 
     #[test]
