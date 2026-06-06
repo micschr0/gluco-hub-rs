@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::extract::Request;
 use axum::http::{HeaderName, HeaderValue};
@@ -9,12 +11,16 @@ use axum::routing::get;
 use gluco_hub_core::ReadingCache;
 use metrics_exporter_prometheus::PrometheusHandle;
 use secrecy::SecretString;
+use tokio::sync::watch;
 use tower_http::trace::TraceLayer;
+
+use crate::poll_status::PollStatus;
 
 mod auth;
 mod glucose;
 mod health;
 mod metrics;
+mod status;
 
 /// Header attached to every API response so downstream consumers
 /// (Home Assistant, dashboards, scripts) can detect the
@@ -27,11 +33,17 @@ const X_DISCLAIMER_VALUE: HeaderValue = HeaderValue::from_static("not-for-medica
 /// `bearer_token` is `Some` only when `GLUCO_HUB__HTTP__BEARER_TOKEN` was
 /// set at startup. The auth middleware checks this on
 /// every request and short-circuits to `401` on mismatch.
+///
+/// `poll_status_tx` is owned here to keep the channel alive for the
+/// lifetime of the server. The poll task gets a clone of the `Sender`;
+/// HTTP handlers read via `poll_status_rx`.
 #[derive(Clone)]
 pub struct AppState {
     pub cache: ReadingCache,
     pub metrics_handle: PrometheusHandle,
     pub bearer_token: Option<SecretString>,
+    pub poll_status_tx: Arc<watch::Sender<PollStatus>>,
+    pub poll_status_rx: watch::Receiver<PollStatus>,
 }
 
 /// Build the public HTTP router with state.
@@ -41,6 +53,7 @@ pub struct AppState {
 /// - `/glucose/*` runs through the Bearer middleware. If
 ///   `bearer_token` is `None` the middleware short-circuits to
 ///   passthrough so unauthenticated local-dev usage still works.
+/// - `/api/v1/status` is public (Cache-Control: no-store).
 pub fn router(state: AppState) -> Router {
     router_with_state(state)
 }
@@ -57,8 +70,11 @@ pub(crate) fn router_with_state(state: AppState) -> Router {
             auth::require_bearer,
         ));
 
+    let api_v1 = Router::new().route("/status", get(status::status));
+
     public
         .nest("/glucose", glucose)
+        .nest("/api/v1", api_v1)
         .with_state(state)
         .layer(axum::middleware::from_fn(add_disclaimer_header))
         .layer(TraceLayer::new_for_http())
@@ -85,10 +101,13 @@ mod tests {
 
     fn state(bearer: Option<&str>) -> AppState {
         let handle = crate::metrics::init_recorder().expect("recorder");
+        let (tx, rx) = tokio::sync::watch::channel(crate::poll_status::PollStatus::default());
         AppState {
             cache: ReadingCache::new(),
             metrics_handle: handle,
             bearer_token: bearer.map(|s| SecretString::from(s.to_string())),
+            poll_status_tx: Arc::new(tx),
+            poll_status_rx: rx,
         }
     }
 
