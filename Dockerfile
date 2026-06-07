@@ -34,7 +34,7 @@
 
 # ── Stage 1: chef ─────────────────────────────────────────────────────────────
 # renovate: datasource=docker depName=docker.io/library/rust
-FROM docker.io/library/rust:1.95.0-bookworm AS chef
+FROM docker.io/library/rust:1.96.0-bookworm@sha256:13c186980fa33cc12759b429662a1322939dbe697484b7c33b47dd2698d28460 AS chef
 
 # `aws-lc-sys` (a transitive dep of rustls) needs cmake at build time.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
