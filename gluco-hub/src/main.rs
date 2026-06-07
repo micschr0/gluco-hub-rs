@@ -326,16 +326,6 @@ fn resolve_bearer_token(cfg: &config::Config) -> Option<secrecy::SecretString> {
     cfg.http.bearer_token.clone()
 }
 
-/// Wiring exposed by an LLU source for the `_patients` MQTT publisher: a
-/// receiver that fires the full connection list after every successful
-/// `list_connections()`, plus the source's selection policy so the
-/// publisher can mark the same connection `is_active` the poller fetches.
-#[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
-struct ConnectionsWiring {
-    rx: tokio::sync::watch::Receiver<Vec<sources::llu::wire::Connection>>,
-    selection: sources::llu::source::ConnectionSelection,
-}
-
 
 /// Build sources to drive the poller. Priority order:
 /// 1. `source-llu` feature + `[source]` blocks configured.
@@ -350,12 +340,6 @@ fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Sou
         allow(unused_mut)
     )]
     let mut sources: Vec<(String, Arc<dyn Source>)> = Vec::new();
-
-    // Only set on the LLU path with MQTT compiled in; stays `None`
-    // otherwise so the publisher is simply never wired.
-    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
-    #[cfg_attr(not(feature = "source-llu"), allow(unused_mut))]
-    let mut connections: Option<ConnectionsWiring> = None;
 
     #[cfg(feature = "source-llu")]
     if let Some(llu) = cfg.source.llu.as_ref() {
@@ -872,13 +856,7 @@ fn extract_error_code(message: &str) -> String {
 /// uses, without opening a second broker connection.
 struct BuiltSinks {
     routed: Vec<Arc<sink_router::SinkRouter>>,
-    // Only carried when the `_patients` publisher can consume it, i.e. when
-    // an LLU source is also compiled in. Avoids an unused-field warning in
-    // sink-mqtt-only builds.
-    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
-    mqtt: Option<Arc<sinks::mqtt::MqttSink>>,
 }
-
 /// Build the configured sinks, each layered as
 /// `SinkRouter (watermark)` → `DlqSink (persistence)` → real sink.
 /// Order is config-driven; future sinks (webhook, …) slot in as
@@ -897,13 +875,6 @@ async fn build_sinks(
         allow(unused_mut)
     )]
     let mut sink_list: Vec<Arc<dyn Sink>> = Vec::new();
-
-    // Concrete MQTT handle, retained only when the `_patients` publisher
-    // can consume it (LLU source also compiled in). In sink-mqtt-only
-    // builds the sink is still built and pushed below — we just don't keep
-    // a second handle around.
-    #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
-    let mut mqtt_handle: Option<Arc<sinks::mqtt::MqttSink>> = None;
 
     #[cfg(feature = "sink-nightscout")]
     if let Some(ns) = cfg.sink.nightscout.as_ref() {
@@ -951,60 +922,12 @@ async fn build_sinks(
             .collect()
     };
 
-    Ok(BuiltSinks {
-        routed,
-        #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
-        mqtt: mqtt_handle,
-    })
+    Ok(BuiltSinks { routed })
 }
-
 /// Build the MQTT sink and return it as `Arc<MqttSink>` so the caller can
 /// share it between the `Sink` trait path (glucose readings) and direct
 /// method calls (e.g. `publish_patients`).
 #[cfg(feature = "sink-mqtt")]
-async fn build_mqtt_sink(
-    cfg: &config::MqttSinkConfig,
-    source_name: Option<&str>,
-) -> Result<Arc<sinks::mqtt::MqttSink>> {
-    use sinks::mqtt::MqttSink;
-    let password = cfg.password.clone();
-
-    // Resolve Tailscale MagicDNS hostname to tailnet IP if configured.
-    let broker_host = if let Some(ts_hostname) = cfg.tailscale_hostname.as_deref() {
-        sinks::mqtt::tailscale::resolve_tailscale_hostname(ts_hostname)
-            .await
-            .unwrap_or_else(|| cfg.broker_host.clone())
-    } else {
-        cfg.broker_host.clone()
-    };
-
-    // Start with a clone; apply per-source suffix if enabled.
-    let mut resolved_cfg = cfg.clone();
-    resolved_cfg.broker_host = broker_host;
-
-    if cfg.per_source {
-        if let Some(name) = source_name {
-            let name_suffix = format!("_{name}");
-            // Truncate client_id + suffix to fit within 23-char MQTT limit.
-            let max_base = 23_usize.saturating_sub(name_suffix.len());
-            let truncated_base = &cfg.client_id[..cfg.client_id.len().min(max_base)];
-            resolved_cfg.client_id = format!("{truncated_base}{name_suffix}");
-
-            resolved_cfg.topic_prefix = format!("{}/{}", cfg.topic_prefix, name);
-        } else {
-            warn!("per_source = true but no source name provided; using raw config");
-        }
-    }
-
-    info!(
-        broker = %resolved_cfg.broker_host,
-        port = resolved_cfg.broker_port,
-        client_id = %resolved_cfg.client_id,
-        tls = resolved_cfg.tls,
-        topic_prefix = %resolved_cfg.topic_prefix,
-        "mqtt sink configured"
-    );
-
 async fn build_mqtt_sink(
     cfg: &config::MqttSinkConfig,
     source_name: Option<&str>,
@@ -1054,7 +977,6 @@ async fn build_mqtt_sink(
         .map(Arc::new)
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
-}
 
 #[cfg(feature = "sink-nightscout")]
 fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Sink>> {
@@ -1071,6 +993,31 @@ fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Si
         .with_app(app);
     info!(base_url = %ns.base_url, device, app, "nightscout sink configured");
     Ok(Arc::new(NightscoutSink::new(client)))
+}
+
+/// Map a raw LLU connections list into PHI-safe `PatientSummary` records.
+///
+/// PHI rule: only `id`, an abbreviated display name (first name + last
+/// initial), and `is_active` ever leave this function — never a full
+/// surname or birthdate. `is_active` is `true` for exactly the connection
+/// the poll loop fetches, as resolved by the source's `selection`.
+#[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+fn connection_summaries(
+    connections: &[sources::llu::wire::Connection],
+    selection: &sources::llu::source::ConnectionSelection,
+) -> Vec<sinks::mqtt::wire::PatientSummary> {
+    let active_id = selection.resolve_active_id(connections);
+    connections
+        .iter()
+        .map(|c| {
+            sinks::mqtt::wire::PatientSummary::new(
+                c.patient_id.clone(),
+                c.first_name.as_deref(),
+                c.last_name.as_deref(),
+                active_id.as_deref() == Some(c.patient_id.as_str()),
+            )
+        })
+        .collect()
 }
 
 async fn shutdown_signal() {

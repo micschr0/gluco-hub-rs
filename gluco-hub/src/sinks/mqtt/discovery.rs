@@ -251,6 +251,7 @@ mod tests {
             client_cert_file: None,
             client_key_file: None,
             tailscale_hostname: None,
+            per_source: false,
         }
     }
 

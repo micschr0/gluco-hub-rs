@@ -910,6 +910,10 @@ mod patients_e2e {
             discovery_prefix: "homeassistant".into(),
             device_name: None,
             discovery_unit: MqttGlucoseUnit::default(),
+            client_cert_file: None,
+            client_key_file: None,
+            tailscale_hostname: None,
+            per_source: false,
         }
     }
 
