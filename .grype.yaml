@@ -1,0 +1,39 @@
+# Ignore rules for the Grype container CVE scan.
+#
+# Every entry MUST justify why we accept the risk and carry a review
+# date (~90 days). Renovate bumps the base image when upstream rebuilds;
+# revisit then and prune stale exceptions.
+#
+# To add an exception:
+#   - vulnerability: CVE-YYYY-NNNNN
+#     package:
+#       name: <package-name>
+#       type: <type>          # e.g. go-module, apk, deb
+#   # Justification: <why accepted> — review by: <date>
+#
+# Last reviewed: 2026-05-25 — review by: 2026-08-25
+
+fail-on-severity: critical
+
+ignore:
+  - vulnerability: CVE-2026-5450
+    package:
+      name: libc6
+      type: deb
+    # Justification: scanf %mc heap-overflow in glibc 2.7–2.43 (Debian 12
+    # ships 2.36-9+deb12u14). No patched Debian 12 package available yet;
+    # fix depends on Google rebuilding the distroless/cc-debian12 base.
+    # gluco-hub is a Rust binary — it does not call C scanf with user input,
+    # so the attack surface is nil. Renovate will update the base image
+    # digest once upstream ships a fix. — review by: 2026-08-25
+
+  - vulnerability: CVE-2019-1010022
+    package:
+      name: libc6
+      type: deb
+    # Justification: glibc stack-guard mitigation bypass. Upstream glibc
+    # maintainers consider this working-as-designed / disputed (no CVE fix
+    # planned). Grype classifies it critical; NVD base score is low. Not
+    # exploitable without a prior stack buffer overflow in a process that
+    # uses glibc thread-local storage — not applicable to a distroless Rust
+    # binary. — review by: 2026-08-25

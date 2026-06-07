@@ -16,8 +16,9 @@
 //! subscribers and must be accompanied by a doc update.
 //!
 //! V3 adds opt-in Home Assistant MQTT auto-discovery via `discovery.rs`
-//! — a retained config message on `<discovery_prefix>/sensor/.../config`
-//! published once per ConnAck so HA picks up the entity automatically.
+//! — two retained config messages on `<discovery_prefix>/sensor/.../config`
+//! published once per ConnAck (glucose value + categorical trend) so HA
+//! picks up both entities automatically, grouped under one device.
 
 pub mod discovery;
 pub mod error;

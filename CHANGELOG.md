@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **End-to-end verification runbook** (`docs/VERIFICATION.md`) — structured manual verification covering automated tests, Docker testcontainer suite, Clock View E2E browser tests, HA live validation, and PHI checklist. Complements `V3_VALIDATION.md` and the CI gate.
+
+## [2026.524.1] - 2026-05-24
+
+## [2026.524.0] - 2026-05-24
+
+### Added
+
+- **CI: Grype container CVE scan** — `release.yml` now builds a local amd64
+  image after every push/release and scans it with Grype. Builds fail on
+  CRITICAL CVEs; findings upload to the GitHub Security tab as SARIF. CVE
+  exceptions are managed in `.grype.yaml` with mandatory 90-day review dates.
+- **CI: Zizmor GitHub Actions audit** — new `zizmor` job in `ci.yml` audits
+  all workflow files for template injection, unpinned actions, and excessive
+  permissions (min-severity: medium).
+- **`.grype.yaml`** — baseline Grype config; empty exception list with an
+  inline template for adding justified, time-boxed CVE ignores.
+
+## [2026.516.2] - 2026-05-16
+
+### Added
+
+- **MQTT HA-discovery: dedicated trend sensor entity** — when `discovery_enabled = true`, the sink now publishes a *second* retained config message on `<discovery_prefix>/sensor/gluco_hub_<client_id>_trend/config` alongside the existing glucose one. The trend entity reads `value_json.trend` from the same `<prefix>/glucose` topic, declares `device_class = "enum"` with the full `Trend` variant list in `options`, and shares the glucose entity's `device` block so HA groups both entities under one device. Operators get a first-class `sensor.<device>_trend` they can put directly on a dashboard card (with state→icon mapping for arrows) instead of having to wrap the glucose entity's `trend` attribute in a template sensor. The wire payload is unchanged. Backward-compatible: existing templates reading `state_attr('sensor.glucose', 'trend')` keep working because the glucose entity still exposes `json_attributes_topic`.
+
+### Changed
+
+- **MQTT HA-discovery: `has_entity_name: true` + `origin:` block on both entities** — the glucose and trend discovery payloads now carry `has_entity_name: true` (HA 2024+ idiom: HA renders entities as `<Device Name> Glucose` / `<Device Name> Trend` and respects user-driven renames) and an `origin: { name, sw_version, support_url }` block (HA 2024.6+ recommendation: surfaces the integration name and gluco-hub-rs version in HA's device picker). Pure visibility improvements — no entity IDs change, no breaking schema changes.
+
+## [2026.516.1] - 2026-05-16
+
 ### Changed
 
 - **Security reporting now goes through GitHub Private Vulnerability Reporting** — `SECURITY.md` no longer lists a maintainer email; sensitive reports use the in-platform [advisory form](https://github.com/micschr0/gluco-hub-rs/security/advisories/new) instead. Public bug reports still go to GitHub issues. Reduces address harvesting from the public repo and routes coordinated disclosure through GitHub's audit trail.
@@ -47,6 +79,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Sink backfill via per-sink watermark** (V3) — each sink is now wrapped in a `SinkRouter` that tracks the highest reading timestamp it has successfully pushed. The fan-out only delivers strictly-newer readings per cycle. Two consequences: (a) the MQTT sink no longer republishes the full ~24 h `graphData` batch every minute — only the new reading; (b) when a sink fails, its watermark stays put and the next poll-cycle replays the missed window automatically (LLU's 24 h history covers most realistic outages — no on-disk DLQ required). New Prometheus counters `cgm_sink_filtered_total` and `cgm_sink_replayed_total` make the behaviour visible. Watermarks are in-memory and reset on restart (persisting them is tracked as part of the V3 DLQ work).
 - **Persistent dead-letter queue** (V3) — `DlqSink` sits between `SinkRouter` and the real sink. Failed pushes accumulate in a per-sink JSONL file at `<state_dir>/dlq/<sink>.jsonl` (atomic writes via `tempfile::NamedTempFile::persist`) and replay on the next successful push, surviving process restarts and outages longer than LLU's 24 h history. New config: `[state] dir` (default `./state`), `[dlq] enabled` (default `true`), `[dlq] max_entries` (default `10000` ≈ 35 days at the 5-min raster). Cap-exceeding entries drop oldest-first. Four new metrics: `cgm_dlq_enqueued_total{sink}`, `cgm_dlq_drained_total{sink}`, `cgm_dlq_evicted_total{sink}`, `cgm_dlq_size{sink}` gauge.
 
-[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.516.0...HEAD
+[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.524.1...HEAD
+[2026.524.1]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.524.0...v2026.524.1
+[2026.524.0]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.516.2...v2026.524.0
+[2026.516.2]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.516.1...v2026.516.2
+[2026.516.1]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.516.0...v2026.516.1
 [2026.516.0]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.515.0...v2026.516.0
 [2026.515.0]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.513.0...v2026.515.0

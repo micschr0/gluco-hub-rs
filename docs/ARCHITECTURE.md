@@ -315,23 +315,55 @@ false`.
 
 ### Home Assistant MQTT auto-discovery (V3, opt-in)
 
-When `discovery_enabled = true`, the sink publishes one retained config
-message per ConnAck on `<discovery_prefix>/sensor/gluco_hub_<client_id>_glucose/config`.
-HA's MQTT integration consumes this and instantiates a sensor entity
-that:
+When `discovery_enabled = true`, the sink publishes two retained config
+messages per ConnAck — one per HA entity, both grouped under one device
+via a shared `device.identifiers` value:
+
+| Topic                                                                        | Entity        | State reads                       |
+| ---------------------------------------------------------------------------- | ------------- | --------------------------------- |
+| `<discovery_prefix>/sensor/gluco_hub_<client_id>_glucose/config`             | Glucose value | `value_json.mgdl` (or `.mmol`)    |
+| `<discovery_prefix>/sensor/gluco_hub_<client_id>_trend/config`               | Trend (enum)  | `value_json.trend`                |
+
+The **glucose entity**:
 
 * reads its state from `<topic_prefix>/glucose` via
-  `value_template = "{{ value_json.mgdl }}"`,
+  `value_template = "{{ value_json.mgdl }}"` (or `.mmol` when
+  `discovery_unit = "mmol"`),
 * derives availability from `<topic_prefix>/_health` via the boolean
   `online` field,
 * exposes the full glucose JSON body as entity attributes
-  (`json_attributes_topic` = `<topic_prefix>/glucose`).
+  (`json_attributes_topic` = `<topic_prefix>/glucose`) so existing
+  templates reading `state_attr('sensor.<...>_glucose', 'trend')` keep
+  working,
+* sets `state_class = "measurement"` so HA's long-term statistics
+  recorder ingests the series.
+
+The **trend entity** is a sibling sensor that:
+
+* reads its state from the same `<topic_prefix>/glucose` topic via
+  `value_template = "{{ value_json.trend }}"` — a single MQTT publish
+  updates both entities,
+* declares `device_class = "enum"` with every `Trend` variant in
+  `options` (`Flat`, `SingleUp`, `FortyFiveUp`, `DoubleUp`,
+  `FortyFiveDown`, `SingleDown`, `DoubleDown`, `NotComputable`,
+  `RateOutOfRange`) so HA treats it as a finite-state text sensor,
+* carries a fixed `icon: "mdi:trending-up"`. Directional arrow icons
+  per trend variant are intentionally **not** in the discovery payload
+  — HA's MQTT discovery does not support templated `icon` fields, and
+  arrow rendering belongs on the dashboard (a `template`/`mushroom`
+  card with a state→icon mapping).
+
+Both entities also carry `has_entity_name: true` (HA renders them as
+`<Device Name> Glucose` / `<Device Name> Trend` and respects user
+renames) and an `origin: { name, sw_version, support_url }` block (HA
+2024.6+ idiom; surfaces the integration name and gluco-hub-rs version
+in HA's device picker).
 
 The config payload shape is stable; field names match HA's [MQTT sensor
 discovery schema](https://www.home-assistant.io/integrations/sensor.mqtt/)
 verbatim. `unique_id` is derived from `client_id`, so renaming a
-gluco-hub instance creates a new HA entity rather than overwriting the
-existing one.
+gluco-hub instance creates new HA entities rather than overwriting the
+existing ones.
 
 ## Module map
 

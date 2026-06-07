@@ -121,32 +121,47 @@ pub async fn subscribe_to(
     opts.set_keep_alive(std::time::Duration::from_secs(5));
 
     let (client, mut eventloop) = AsyncClient::new(opts, 16);
-    client
-        .subscribe(topic_filter.to_string(), QoS::AtLeastOnce)
-        .await?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<CapturedPublish>(64);
     let cancel = tokio_util::sync::CancellationToken::new();
     let cancel_for_task = cancel.clone();
 
+    // SUBACK barrier — fixed a long-standing race where the SUBSCRIBE
+    // was queued on the rumqttc client side but the eventloop hadn't
+    // yet been polled, so the packet never reached the broker before
+    // the caller started publishing. Symptom: tests that subscribed
+    // first, then pushed, then waited for the topic, intermittently
+    // timed out because the broker delivered the publish before it
+    // had registered the subscription.
+    let (suback_tx, suback_rx) = tokio::sync::oneshot::channel::<()>();
+
     tokio::spawn(async move {
+        let mut suback_tx = Some(suback_tx);
         loop {
             tokio::select! {
                 _ = cancel_for_task.cancelled() => return,
                 event = eventloop.poll() => match event {
                     Ok(Event::Incoming(packet)) => {
                         use rumqttc::v5::mqttbytes::v5::Packet;
-                        if let Packet::Publish(p) = packet {
-                            let cap = CapturedPublish {
-                                topic: std::str::from_utf8(&p.topic)
-                                    .unwrap_or("")
-                                    .to_string(),
-                                payload: p.payload.to_vec(),
-                                retain: p.retain,
-                            };
-                            if tx.send(cap).await.is_err() {
-                                return;
+                        match packet {
+                            Packet::SubAck(_) => {
+                                if let Some(tx) = suback_tx.take() {
+                                    let _ = tx.send(());
+                                }
                             }
+                            Packet::Publish(p) => {
+                                let cap = CapturedPublish {
+                                    topic: std::str::from_utf8(&p.topic)
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    payload: p.payload.to_vec(),
+                                    retain: p.retain,
+                                };
+                                if tx.send(cap).await.is_err() {
+                                    return;
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     Ok(_) => {}
@@ -155,6 +170,14 @@ pub async fn subscribe_to(
             }
         }
     });
+
+    client
+        .subscribe(topic_filter.to_string(), QoS::AtLeastOnce)
+        .await?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), suback_rx)
+        .await
+        .map_err(|_| "subscribe_to: timed out waiting for SUBACK from broker")?
+        .map_err(|_| "subscribe_to: SUBACK signaller dropped before firing")?;
 
     Ok((rx, cancel))
 }
