@@ -41,6 +41,9 @@ gluco-hub-rs is a small, self-hosted relay between a CGM (currently LibreLink Up
 - **Modular design** — add sources or sinks with a single file plus a feature flag ([how-to](./docs/EXTENDING.md))
 - **Resilient sinks** — per-sink watermark drops already-pushed readings each cycle and replays missed ones automatically when a sink recovers, within LLU's 24 h history
 - **Persistent DLQ** — failed pushes are written to a per-sink JSONL queue on disk and replayed on the next successful push, surviving process restarts and arbitrary outage windows beyond LLU's history
+- **mTLS for MQTT** — present a client certificate during the TLS handshake with `client_cert_file` + `client_key_file` in `[sink.mqtt]`
+- **JWT-as-password** — supply a pre-obtained JWT in the `password` field instead of the raw LibreLink Up password; the bridge detects the format and skips the login call
+- **Tailscale-ready** — set `tailscale_hostname` in `[sink.mqtt]` to resolve MQTT broker addresses through a local `tailscaled` daemon at startup
 - **Operable** — Prometheus metrics, structured JSON logs, graceful shutdown on `SIGINT`/`SIGTERM`
 
 ## Requirements
@@ -158,8 +161,12 @@ broker_host    = "mqtt.example.com"
 broker_port    = 8883
 client_id      = "gluco-hub-1"
 topic_prefix   = "gluco-hub/gluco-hub-1"
+# mTLS (optional): both fields needed for mutual TLS
+# client_cert_file = "/path/to/client.crt"
+# client_key_file  = "/path/to/client.key"
+# Tailscale (optional): resolve broker via tailscaled
+# tailscale_hostname = "mqtt-broker"
 # Password via env: export GLUCO_HUB__SINK__MQTT__PASSWORD=…
-```
 
 Any TOML key can also be overridden at runtime via `GLUCO_HUB__SECTION__KEY` (double-underscore as separator):
 

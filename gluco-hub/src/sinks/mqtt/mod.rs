@@ -24,6 +24,7 @@ pub mod discovery;
 pub mod error;
 pub mod sink;
 pub mod stats;
+pub mod tailscale;
 pub mod wire;
 
 pub use sink::MqttSink;

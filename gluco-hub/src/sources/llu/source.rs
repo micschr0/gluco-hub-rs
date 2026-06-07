@@ -252,36 +252,28 @@ impl Source for LluSource {
             .data
             .graph_data
             .iter()
-            .map(|m| reading_from_measurement(m, &patient_id, &self.id, self.source_tz))
-            .collect::<Result<_, _>>()
-            .map_err(into_core)?;
+            .filter_map(|m| reading_from_measurement(m, &patient_id, &self.id, self.source_tz))
+            .collect();
 
         // Merge the connection's live `glucoseMeasurement` (1-min-fresh)
         // on top of `graphData` (5-min raster) so the cache reflects the
-        // same value the LinkUp app shows. A bad live timestamp is
-        // logged-and-skipped rather than failing the whole batch — the
-        // historical readings stay useful. Only appended when STRICTLY
-        // newer than the freshest graphData entry, so collisions on the
-        // rare 5-min boundary do not surface as duplicate-timestamp
-        // readings to sinks.
+        // same value the LinkUp app shows. Missing/bad fields or bad
+        // timestamps are logged-and-skipped inside reading_from_measurement
+        // rather than failing the whole batch — the historical readings
+        // stay useful. Only appended when STRICTLY newer than the freshest
+        // graphData entry, so collisions on the rare 5-min boundary do not
+        // surface as duplicate-timestamp readings to sinks.
         if let Some(live) = live_measurement {
-            match reading_from_measurement(&live, &patient_id, &self.id, self.source_tz) {
-                Ok(live_reading) => {
-                    let newer_than_graph = readings
-                        .iter()
-                        .map(|r| r.timestamp)
-                        .max()
-                        .is_none_or(|t| live_reading.timestamp > t);
-                    if newer_than_graph {
-                        readings.push(live_reading);
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        error_code = e.error_code(),
-                        error = %e,
-                        "llu connection.glucoseMeasurement skipped"
-                    );
+            if let Some(live_reading) =
+                reading_from_measurement(&live, &patient_id, &self.id, self.source_tz)
+            {
+                let newer_than_graph = readings
+                    .iter()
+                    .map(|r| r.timestamp)
+                    .max()
+                    .is_none_or(|t| live_reading.timestamp > t);
+                if newer_than_graph {
+                    readings.push(live_reading);
                 }
             }
         }

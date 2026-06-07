@@ -67,10 +67,10 @@ pub struct Connection {
 #[serde(rename_all = "PascalCase")]
 pub struct GlucoseMeasurement {
     /// Raw timestamp in LLU's `M/D/YYYY h:mm:ss AM/PM` format, UTC.
-    pub timestamp: String,
+    pub timestamp: Option<String>,
     /// Glucose value in mg/dL.
     #[serde(rename = "ValueInMgPerDl")]
-    pub value_in_mg_per_dl: f64,
+    pub value_in_mg_per_dl: Option<f64>,
     /// Integer 1..=5 (see [`crate::sources::llu::mapping::trend_from_llu`]).
     /// Optional because graph entries (`GlucoseItem`) sometimes omit it.
     pub trend_arrow: Option<u8>,

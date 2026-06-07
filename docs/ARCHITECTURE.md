@@ -155,6 +155,7 @@ exit-code contracts are also keyed off these prefixes via
 | MQTT005 | `gluco-hub/src/sinks/mqtt/error.rs` | Local payload / serialisation error |
 | MQTT006 | `gluco-hub/src/sinks/mqtt/error.rs` | Keep-alive timeout |
 | MQTT007 | `gluco-hub/src/sinks/mqtt/error.rs` | MQTT protocol-state error / unexpected packet |
+| MQTT008 | `gluco-hub/src/sinks/mqtt/error.rs` | mTLS client certificate error (read, parse, or configuration) |
 
 ## Cargo features
 
@@ -162,7 +163,7 @@ exit-code contracts are also keyed off these prefixes via
 | ----------------- | -------------------- | ------ |
 | `source-llu`      | `gluco-hub`         | **Default.** Real LibreLink Up source. Honours `[source.llu]`; takes precedence over `mock-source`. Activates `dep:sha2`. |
 | `sink-nightscout` | `gluco-hub`         | **Default.** Nightscout v3 sink. Honours `[sink.nightscout]`; fans out from the poller. Activates `dep:sha1`. |
-| `sink-mqtt`       | `gluco-hub`         | V2 MQTT v5 sink (rumqttc 0.25, rustls only). Honours `[sink.mqtt]`; LWT-driven `_health` topic, schema `v: 1` glucose payload, exponential reconnect backoff. Activates `dep:rumqttc`, `dep:bytes`, `dep:tokio-util`. Bundled in published GHCR images. |
+| `sink-mqtt`       | `gluco-hub`         | V5 MQTT v5 sink (rumqttc 0.25, rustls only). Honours `[sink.mqtt]`; LWT-driven `_health` topic, schema `v: 1` glucose payload, exponential reconnect backoff. Optional mTLS (`client_cert_file` + `client_key_file`), JWT-as-password for LLU, Tailscale MagicDNS discovery (`tailscale_hostname`). Activates `dep:rumqttc`, `dep:bytes`, `dep:tokio-util`, `dep:rustls-pemfile`, `dep:rustls-native-certs`. Bundled in published GHCR images. |
 | `mock-source`     | `gluco-hub`, `gluco-hub-core` | In-memory canned source for offline tests; opt-in only. |
 
 `build_default_source(&Config)` and `build_sinks(&Config)` in
@@ -236,6 +237,9 @@ environment variables — never embed them in TOML.
 | `[sink.mqtt] discovery_enabled`     | bool     | no (default `false`) | bool | opt-in HA MQTT auto-discovery |
 | `[sink.mqtt] discovery_prefix`      | string   | no (default `homeassistant`) | 1..=200 chars, no `+`/`#`, no leading/trailing `/` | HA discovery topic prefix |
 | `[sink.mqtt] device_name`           | string   | no | 1..=128 chars | friendly device name in HA; defaults to `Gluco Hub (<client_id>)` |
+| `[sink.mqtt] client_cert_file`      | string   | no | 1..=512 chars, path to PEM file | mTLS client certificate (pair with `client_key_file`) |
+| `[sink.mqtt] client_key_file`       | string   | no | 1..=512 chars, path to PEM file | mTLS client private key (pair with `client_cert_file`) |
+| `[sink.mqtt] tailscale_hostname`    | string   | no | 1..=253 chars, Tailscale MagicDNS name | resolve broker IP via tailscaled Local API at startup |
 
 ### Sink layering: SinkRouter → DlqSink → real sink (V3)
 

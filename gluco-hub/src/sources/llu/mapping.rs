@@ -28,6 +28,8 @@ use gluco_hub_core::{GlucoseMgDl, PatientId, Reading, SourceId, Trend};
 
 use super::error::LluError;
 use super::wire::GlucoseMeasurement;
+use tracing::warn;
+
 
 /// LLU `Timestamp` field format: month/day/year with a 12-hour AM/PM clock
 /// in the patient's local wall-clock. Accepts both single- and
@@ -88,25 +90,49 @@ pub fn newest_measurement(
     graph_data
         .iter()
         .filter_map(|m| {
-            parse_llu_timestamp(&m.timestamp, source_tz)
+            let ts = m.timestamp.as_deref()?;
+            parse_llu_timestamp(ts, source_tz)
                 .ok()
                 .map(|t| (t, m))
         })
         .max_by_key(|(t, _)| *t)
 }
-
 pub fn reading_from_measurement(
     m: &GlucoseMeasurement,
     patient_id: &PatientId,
     source_id: &SourceId,
     source_tz: Tz,
-) -> Result<Reading, LluError> {
-    let timestamp = parse_llu_timestamp(&m.timestamp, source_tz)?;
-    let glucose = GlucoseMgDl::new(m.value_in_mg_per_dl).map_err(|_| LluError::Protocol {
-        reason: format!("glucose out of range: {}", m.value_in_mg_per_dl),
-    })?;
+) -> Option<Reading> {
+    let raw_ts = match &m.timestamp {
+        Some(ts) => ts.as_str(),
+        None => {
+            warn!("LLU glucose measurement missing Timestamp, skipping");
+            return None;
+        }
+    };
+    let timestamp = match parse_llu_timestamp(raw_ts, source_tz) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(error = %e, "LLU glucose measurement bad timestamp, skipping");
+            return None;
+        }
+    };
+    let mgdl = match m.value_in_mg_per_dl {
+        Some(v) => v,
+        None => {
+            warn!("LLU glucose measurement missing ValueInMgPerDl, skipping");
+            return None;
+        }
+    };
+    let glucose = match GlucoseMgDl::new(mgdl) {
+        Ok(g) => g,
+        Err(_) => {
+            warn!(mgdl, "LLU glucose value out of range, skipping");
+            return None;
+        }
+    };
     let trend = trend_from_llu(m.trend_arrow);
-    Ok(Reading {
+    Some(Reading {
         patient_id: patient_id.clone(),
         source_id: source_id.clone(),
         timestamp,
@@ -121,8 +147,8 @@ mod tests {
 
     fn measurement(timestamp: &str, value: f64, trend: Option<u8>) -> GlucoseMeasurement {
         GlucoseMeasurement {
-            timestamp: timestamp.to_string(),
-            value_in_mg_per_dl: value,
+            timestamp: Some(timestamp.to_string()),
+            value_in_mg_per_dl: Some(value),
             trend_arrow: trend,
         }
     }
@@ -183,7 +209,7 @@ mod tests {
         let p = PatientId::new("p1").unwrap();
         let s = SourceId::new("llu").unwrap();
         let m = measurement("3/26/2024 4:38:38 PM", 142.0, Some(3));
-        let r = reading_from_measurement(&m, &p, &s, Tz::UTC).unwrap();
+        let r = reading_from_measurement(&m, &p, &s, Tz::UTC).expect("should produce reading");
         assert_eq!(r.glucose.get(), 142.0);
         assert_eq!(r.trend, Trend::Flat);
         assert_eq!(r.patient_id.as_str(), "p1");
@@ -196,18 +222,17 @@ mod tests {
         let p = PatientId::new("p1").unwrap();
         let s = SourceId::new("llu").unwrap();
         let m = measurement("3/26/2024 4:38:38 PM", 9000.0, Some(3));
-        let err = reading_from_measurement(&m, &p, &s, Tz::UTC).unwrap_err();
-        assert!(matches!(err, LluError::Protocol { .. }));
-        assert_eq!(err.error_code(), "LLU004");
+        let r = reading_from_measurement(&m, &p, &s, Tz::UTC);
+        assert!(r.is_none(), "out-of-range glucose should yield None");
     }
 
     #[test]
-    fn reading_from_measurement_propagates_bad_timestamp() {
+    fn reading_from_measurement_skips_bad_timestamp() {
         let p = PatientId::new("p1").unwrap();
         let s = SourceId::new("llu").unwrap();
         let m = measurement("nope", 142.0, Some(3));
-        let err = reading_from_measurement(&m, &p, &s, Tz::UTC).unwrap_err();
-        assert!(matches!(err, LluError::BadTimestamp { .. }));
+        let r = reading_from_measurement(&m, &p, &s, Tz::UTC);
+        assert!(r.is_none(), "bad timestamp should yield None");
     }
 
     #[test]
@@ -215,7 +240,7 @@ mod tests {
         let p = PatientId::new("p1").unwrap();
         let s = SourceId::new("llu").unwrap();
         let m = measurement("3/26/2024 4:38:38 PM", 142.0, None);
-        let r = reading_from_measurement(&m, &p, &s, Tz::UTC).unwrap();
+        let r = reading_from_measurement(&m, &p, &s, Tz::UTC).expect("should produce reading");
         assert_eq!(r.trend, Trend::NotComputable);
     }
 }
