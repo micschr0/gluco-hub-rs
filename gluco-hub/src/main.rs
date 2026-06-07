@@ -194,6 +194,8 @@ async fn serve(cfg: config::Config) -> Result<()> {
     // crash on startup than to start serving 401s after the bearer token
     // ended up empty.
     config::verify_secrets(&cfg).context("verify configured secrets")?;
+    info!("LLU schema fingerprint: ValueInMgPerDl, ValueInMmolPerL, TrendArrow, Timestamp, PatientId");
+
 
     // state.dir hosts both the DLQ tree and the liveness heartbeat file.
     // The DLQ creates its own subdir lazily, but the heartbeat writer
@@ -221,8 +223,9 @@ async fn serve(cfg: config::Config) -> Result<()> {
         metrics_handle,
         bearer_token,
     };
-
-    let sinks = build_sinks(&cfg).await?;
+    let sources = build_default_source(&cfg)?;
+    let source_names: Vec<String> = sources.iter().map(|(n, _)| n.clone()).collect();
+    let sinks = build_sinks(&cfg, &source_names).await?;
     info!(sink_count = sinks.len(), "sinks configured");
     if sinks.is_empty() && !cfg.http.enabled {
         warn!(
@@ -235,19 +238,18 @@ async fn serve(cfg: config::Config) -> Result<()> {
              HTTP API only — nothing is pushed downstream"
         );
     }
-
-    if let Some(source) = build_default_source(&cfg)? {
+    if !sources.is_empty() {
         let interval = Duration::from_secs(cfg.poller.interval_secs);
         let cache_for_poller = cache.clone();
         let sinks_for_poller = sinks.clone();
-        let heartbeat_path = Some(cfg.state.dir.join(".alive"));
+        let heartbeat_base = cfg.state.dir.clone();
         tokio::spawn(async move {
             poll_loop(
-                source,
+                sources,
                 cache_for_poller,
                 sinks_for_poller,
                 interval,
-                heartbeat_path,
+                Some(heartbeat_base),
             )
             .await;
         });
@@ -285,34 +287,46 @@ fn resolve_bearer_token(cfg: &config::Config) -> Option<secrecy::SecretString> {
     cfg.http.bearer_token.clone()
 }
 
-/// Build the source to drive the poller. Priority order:
-/// 1. `source-llu` feature + `[source.llu]` block configured → LLU.
+/// Build sources to drive the poller. Priority order:
+/// 1. `source-llu` feature + `[source]` blocks configured.
 /// 2. `mock-source` feature → MockSource fixture.
-/// 3. Otherwise, no source (HTTP API stays up; data endpoints serve 503).
-fn build_default_source(cfg: &config::Config) -> Result<Option<Arc<dyn Source>>> {
-    // Mark `cfg` used in every feature combination, including the
-    // no-default-features build where neither branch below compiles.
-    let _ = cfg;
-
+/// 3. Otherwise, empty vec (HTTP API stays up; data endpoints serve 503).
+///
+/// Returns a list of `(name, source)` pairs. Legacy `[source.llu]` is named
+/// `"default"`; multi-source `[source.sources]` entries use their map key.
+fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Source>)>> {
     #[cfg_attr(
         not(any(feature = "source-llu", feature = "mock-source")),
         allow(unused_mut)
     )]
-    let mut source: Option<Arc<dyn Source>> = None;
+    let mut sources: Vec<(String, Arc<dyn Source>)> = Vec::new();
 
     #[cfg(feature = "source-llu")]
     if let Some(llu) = cfg.source.llu.as_ref() {
-        source = Some(build_llu_source(llu).context("build LLU source")?);
+        sources.push((
+            "default".to_string(),
+            build_llu_source("default", llu).context("build LLU source")?,
+        ));
+    }
+
+    #[cfg(feature = "source-llu")]
+    if sources.is_empty() {
+        for (name, llu) in &cfg.source.sources {
+            sources.push((
+                name.clone(),
+                build_llu_source(name, llu).context(format!("build LLU source '{name}'"))?,
+            ));
+        }
     }
 
     #[cfg(feature = "mock-source")]
-    if source.is_none() {
+    if sources.is_empty() {
         let mock =
             gluco_hub_core::MockSource::default_fixture().context("build MockSource fixture")?;
-        source = Some(Arc::new(mock));
+        sources.push(("default".to_string(), Arc::new(mock)));
     }
 
-    Ok(source)
+    Ok(sources)
 }
 
 /// Resolve `[source.llu]` into a wired `LluAuthClient` + `LluCredentials`
@@ -371,7 +385,7 @@ fn resolve_source_tz(llu: &config::LluSourceConfig) -> Result<chrono_tz::Tz> {
 }
 
 #[cfg(feature = "source-llu")]
-fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
+fn build_llu_source(name: &str, llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
     use chrono_tz::Tz;
     use gluco_hub_core::{PatientId, SourceId};
     use sources::llu::source::{ConnectionSelection, LluSource};
@@ -387,8 +401,9 @@ fn build_llu_source(llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
     // below is a defensive double-check rather than a real fallible step.
     // Default `UTC` keeps behaviour stable for deployments that never set it.
     let source_tz: Tz = resolve_source_tz(llu)?;
-    let id = SourceId::new("llu").context("build SourceId")?;
+    let id = SourceId::new(name).context("build SourceId")?;
     info!(
+        source = %name,
         region = ?creds.region,
         llu_version = %resolved_version,
         source_tz = %source_tz,
@@ -519,8 +534,29 @@ fn write_heartbeat(path: &std::path::Path) -> std::io::Result<()> {
     tmp.persist(path).map_err(std::io::Error::other)?;
     Ok(())
 }
-
 async fn poll_loop(
+    sources: Vec<(String, Arc<dyn Source>)>,
+    cache: ReadingCache,
+    sinks: Vec<Arc<sink_router::SinkRouter>>,
+    interval: Duration,
+    heartbeat_base: Option<PathBuf>,
+) {
+    for (name, source) in sources {
+        let cache = cache.clone();
+        let sinks = sinks.clone();
+        let heartbeat_path = heartbeat_base.as_deref().map(|base| base.join(format!(".alive.{name}")));
+
+        tokio::spawn(async move {
+            poll_loop_single(name, source, cache, sinks, interval, heartbeat_path).await;
+        });
+    }
+}
+
+/// Drive a single source: poll on `interval`, update `cache`, push to
+/// `sinks`, and touch the heartbeat file. Errors are logged; the loop
+/// never exits except via process shutdown.
+async fn poll_loop_single(
+    name: String,
     source: Arc<dyn Source>,
     cache: ReadingCache,
     sinks: Vec<Arc<sink_router::SinkRouter>>,
@@ -542,6 +578,7 @@ async fn poll_loop(
                 )
                 .increment(1);
                 warn!(
+                    source = %name,
                     source_id = %source_id,
                     timeout_secs = sink_timeout.as_secs(),
                     "source fetch timed out",
@@ -554,6 +591,7 @@ async fn poll_loop(
                 )
                 .increment(1);
                 error!(
+                    source = %name,
                     error_code = e.error_code(),
                     source_id = %source_id,
                     error = %e,
@@ -587,6 +625,7 @@ async fn poll_loop(
                 }
                 match newest_log {
                     Some((mgdl, ts, age_secs)) => info!(
+                        source = %name,
                         source_id = %source_id,
                         count,
                         newest_mgdl = mgdl,
@@ -594,7 +633,12 @@ async fn poll_loop(
                         newest_age_secs = age_secs,
                         "cache updated",
                     ),
-                    None => info!(source_id = %source_id, count, "cache updated (empty batch)"),
+                    None => info!(
+                        source = %name,
+                        source_id = %source_id,
+                        count,
+                        "cache updated (empty batch)",
+                    ),
                 }
 
                 if !sinks.is_empty() {
@@ -719,8 +763,15 @@ fn extract_error_code(message: &str) -> String {
 /// `SinkRouter (watermark)` → `DlqSink (persistence)` → real sink.
 /// Order is config-driven; future sinks (webhook, …) slot in as
 /// additional entries.
-async fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>> {
+///
+/// When `per_source` is true on the MQTT sink, each source name gets
+/// its own MQTT sink with a unique client_id and topic_prefix.
+async fn build_sinks(
+    cfg: &config::Config,
+    source_names: &[String],
+) -> Result<Vec<Arc<sink_router::SinkRouter>>> {
     let _ = cfg;
+    let _ = source_names;
     #[cfg_attr(
         not(any(feature = "sink-nightscout", feature = "sink-mqtt")),
         allow(unused_mut)
@@ -734,7 +785,17 @@ async fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRo
 
     #[cfg(feature = "sink-mqtt")]
     if let Some(mqtt) = cfg.sink.mqtt.as_ref() {
-        sinks.push(build_mqtt_sink(mqtt).await.context("build MQTT sink")?);
+        if mqtt.per_source && !source_names.is_empty() {
+            for name in source_names {
+                sinks.push(
+                    build_mqtt_sink(mqtt, Some(name))
+                        .await
+                        .context(format!("build MQTT sink for '{name}'"))?,
+                );
+            }
+        } else {
+            sinks.push(build_mqtt_sink(mqtt, None).await.context("build MQTT sink")?);
+        }
     }
 
     let routed: Vec<Arc<sink_router::SinkRouter>> = if cfg.dlq.enabled {
@@ -766,7 +827,10 @@ async fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRo
 }
 
 #[cfg(feature = "sink-mqtt")]
-async fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
+async fn build_mqtt_sink(
+    cfg: &config::MqttSinkConfig,
+    source_name: Option<&str>,
+) -> Result<Arc<dyn Sink>> {
     use sinks::mqtt::MqttSink;
 
     let password = cfg.password.clone();
@@ -780,18 +844,34 @@ async fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> 
         cfg.broker_host.clone()
     };
 
+    // Start with a clone; apply per-source suffix if enabled.
+    let mut resolved_cfg = cfg.clone();
+    resolved_cfg.broker_host = broker_host;
+
+    if cfg.per_source {
+        if let Some(name) = source_name {
+            let name_suffix = format!("_{name}");
+            // Truncate client_id + suffix to fit within 23-char MQTT limit.
+            let max_base = 23_usize.saturating_sub(name_suffix.len());
+            let truncated_base = &cfg.client_id[..cfg.client_id.len().min(max_base)];
+            resolved_cfg.client_id = format!("{truncated_base}{name_suffix}");
+
+            resolved_cfg.topic_prefix = format!("{}/{}", cfg.topic_prefix, name);
+        } else {
+            warn!("per_source = true but no source name provided; using raw config");
+        }
+    }
+
     info!(
-        broker = %broker_host,
-        port = cfg.broker_port,
-        client_id = %cfg.client_id,
-        tls = cfg.tls,
-        topic_prefix = %cfg.topic_prefix,
+        broker = %resolved_cfg.broker_host,
+        port = resolved_cfg.broker_port,
+        client_id = %resolved_cfg.client_id,
+        tls = resolved_cfg.tls,
+        topic_prefix = %resolved_cfg.topic_prefix,
         "mqtt sink configured"
     );
 
     // Build with the potentially-resolved broker host.
-    let mut resolved_cfg = cfg.clone();
-    resolved_cfg.broker_host = broker_host;
     let sink = MqttSink::new(&resolved_cfg, password).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(Arc::new(sink))
 }
@@ -1077,7 +1157,8 @@ mod tests {
             id: SourceId::new("llu").unwrap(),
         });
         let cache = ReadingCache::new();
-        let handle = tokio::spawn(poll_loop(
+        let handle = tokio::spawn(poll_loop_single(
+            "default".to_string(),
             source,
             cache,
             Vec::new(),

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::net::SocketAddr;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ::config::{Config as ConfigBuilder, Environment, File, FileFormat};
@@ -129,9 +130,17 @@ pub struct PollerConfig {
 /// `build_default_source` only honours the ones whose feature is enabled.
 #[derive(Debug, Clone, Default, Deserialize, Validate)]
 pub struct SourceConfig {
+    /// Legacy single-source block. Works identically to v4.x.
     #[serde(default)]
     #[validate(nested)]
     pub llu: Option<LluSourceConfig>,
+
+    /// Named multi-source blocks: each key becomes the source name
+    /// (used in MQTT topic prefixes, client IDs, log context).
+    /// When `sources` is non-empty, `llu` is ignored.
+    #[serde(default)]
+    #[validate(nested)]
+    pub sources: HashMap<String, LluSourceConfig>,
 }
 
 /// Sink-specific configuration. Mirrors `SourceConfig`: each variant
@@ -341,6 +350,12 @@ pub struct MqttSinkConfig {
     #[serde(default)]
     #[validate(length(min = 1, max = 253))]
     pub tailscale_hostname: Option<String>,
+
+    /// When true, MQTT topic_prefix and client_id are suffixed with
+    /// the source name. When false (default, backward compat), they
+    /// are used exactly as configured.
+    #[serde(default)]
+    pub per_source: bool,
 }
 
 fn default_mqtt_keep_alive() -> u64 {
@@ -551,7 +566,7 @@ pub enum ConfigError {
     },
 
     #[error("[CFG007] {field} is empty (likely an unset env var)")]
-    EmptySecret { field: &'static str },
+    EmptySecret { field: String },
 }
 
 const DEFAULT_PATH: &str = "config.toml";
@@ -615,7 +630,21 @@ pub fn verify_secrets(cfg: &Config) -> Result<(), ConfigError> {
             }
             (Some(secret), None) if secret.expose_secret().is_empty() => {
                 return Err(ConfigError::EmptySecret {
-                    field: "[source.llu] password",
+                    field: "[source.llu] password".to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    for (name, llu) in &cfg.source.sources {
+        match (llu.password.as_ref(), llu.password_file.as_deref()) {
+            (None, Some(path)) => {
+                resolve_secret_file(path)?;
+            }
+            (Some(secret), None) if secret.expose_secret().is_empty() => {
+                return Err(ConfigError::EmptySecret {
+                    field: format!("[source.sources.{name}] password"),
                 });
             }
             _ => {}
@@ -626,7 +655,7 @@ pub fn verify_secrets(cfg: &Config) -> Result<(), ConfigError> {
         && token.expose_secret().is_empty()
     {
         return Err(ConfigError::EmptySecret {
-            field: "[http] bearer_token",
+            field: "[http] bearer_token".to_string(),
         });
     }
 
@@ -634,7 +663,7 @@ pub fn verify_secrets(cfg: &Config) -> Result<(), ConfigError> {
         && ns.api_secret.expose_secret().is_empty()
     {
         return Err(ConfigError::EmptySecret {
-            field: "[sink.nightscout] api_secret",
+            field: "[sink.nightscout] api_secret".to_string(),
         });
     }
 
@@ -643,7 +672,7 @@ pub fn verify_secrets(cfg: &Config) -> Result<(), ConfigError> {
         && pw.expose_secret().is_empty()
     {
         return Err(ConfigError::EmptySecret {
-            field: "[sink.mqtt] password",
+            field: "[sink.mqtt] password".to_string(),
         });
     }
 
@@ -662,6 +691,13 @@ pub fn verify_features(cfg: &Config) -> Result<(), ConfigError> {
     if cfg.source.llu.is_some() {
         return Err(ConfigError::FeatureMismatch {
             section: "[source.llu]",
+            feature: "source-llu",
+        });
+    }
+    #[cfg(not(feature = "source-llu"))]
+    if !cfg.source.sources.is_empty() {
+        return Err(ConfigError::FeatureMismatch {
+            section: "[source.sources]",
             feature: "source-llu",
         });
     }
@@ -871,7 +907,7 @@ region = "EU"
         cfg.source.llu.as_mut().unwrap().password = Some(SecretString::from(String::new()));
         let err = verify_secrets(&cfg).expect_err("must reject empty password");
         assert!(
-            matches!(err, ConfigError::EmptySecret { field } if field.contains("password")),
+            matches!(err, ConfigError::EmptySecret { ref field } if field.contains("password")),
             "unexpected: {err:?}"
         );
     }
@@ -901,12 +937,12 @@ region = "EU"
         };
         let err = verify_secrets(&cfg).expect_err("must reject empty api_secret");
         assert!(
-            matches!(err, ConfigError::EmptySecret { field } if field.contains("api_secret")),
+            matches!(err, ConfigError::EmptySecret { ref field } if field.contains("api_secret")),
             "unexpected: {err:?}"
         );
     }
-
     #[test]
+
     fn verify_secrets_rejects_empty_bearer_token() {
         let cfg = Config {
             http: HttpConfig {
@@ -922,7 +958,7 @@ region = "EU"
         };
         let err = verify_secrets(&cfg).expect_err("must reject empty bearer_token");
         assert!(
-            matches!(err, ConfigError::EmptySecret { field } if field.contains("bearer_token")),
+            matches!(err, ConfigError::EmptySecret { ref field } if field.contains("bearer_token")),
             "unexpected: {err:?}"
         );
     }
@@ -1037,5 +1073,82 @@ region = "EU"
         assert!(llu.password.is_none());
         assert_eq!(llu.password_file.as_deref(), Some(pw_path.as_path()));
         verify_secrets(&cfg).expect("secret resolves");
+    }
+
+    /// Multi-source `[source.sources]` block: each named entry becomes
+    /// its own LLU source. Legacy `[source.llu]` is NOT present.
+    #[test]
+    fn parses_multi_source_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[http]
+bind = "127.0.0.1:9000"
+
+[poller]
+interval_secs = 60
+
+[source.sources.alice]
+email = "alice@example.com"
+password = "secret1"
+region = "EU"
+patient_id = "patient-alice"
+
+[source.sources.bob]
+email = "bob@example.com"
+password = "secret2"
+region = "US"
+"#,
+        )
+        .unwrap();
+        let cfg = load(Some(&path)).expect("load");
+        assert!(cfg.source.llu.is_none(), "llu should be absent");
+        assert_eq!(cfg.source.sources.len(), 2);
+
+        let alice = cfg.source.sources.get("alice").expect("alice present");
+        assert_eq!(alice.email, "alice@example.com");
+        assert_eq!(alice.region, "EU");
+        assert_eq!(alice.patient_id.as_deref(), Some("patient-alice"));
+
+        let bob = cfg.source.sources.get("bob").expect("bob present");
+        assert_eq!(bob.email, "bob@example.com");
+        assert_eq!(bob.region, "US");
+        assert!(bob.patient_id.is_none());
+    }
+
+    /// When both `[source.llu]` and `[source.sources]` are configured,
+    /// both are parsed and present in the struct. The priority (llu
+    /// wins) is enforced at wiring time in `build_default_source`.
+    #[test]
+    fn parses_both_llu_and_sources_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[http]
+bind = "127.0.0.1:9000"
+
+[poller]
+interval_secs = 60
+
+[source.llu]
+email = "legacy@example.com"
+password = "legacy_secret"
+region = "EU"
+
+[source.sources.alice]
+email = "alice@example.com"
+password = "alice_secret"
+region = "EU"
+"#,
+        )
+        .unwrap();
+        let cfg = load(Some(&path)).expect("load");
+        assert!(cfg.source.llu.is_some(), "llu should be present");
+        assert_eq!(cfg.source.sources.len(), 1);
+        assert!(cfg.source.sources.contains_key("alice"));
     }
 }

@@ -150,6 +150,43 @@ impl LluAuthClient {
         )
     }
 
+    /// Send a request with automatic 429 rate-limit retry.
+    /// Reads the `Retry-After` header (defaults to 5 s if missing),
+    /// sleeps, and retries up to 3 total attempts.
+    async fn send_with_retry(
+        &self,
+        req: reqwest::RequestBuilder,
+        label: &'static str,
+    ) -> Result<reqwest::Response, LluError> {
+        const MAX_ATTEMPTS: u32 = 3;
+        for attempt in 0..MAX_ATTEMPTS {
+            let resp = req
+                .try_clone()
+                .ok_or_else(|| LluError::Transport("request not cloneable".into()))?
+                .send()
+                .await?;
+            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let retry_after = resp
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(5);
+                warn!(
+                    attempt = attempt + 1,
+                    retry_after,
+                    "LLU {label} 429 rate-limited, retrying"
+                );
+                tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                continue;
+            }
+            return Ok(resp);
+        }
+        Err(LluError::Transport(format!(
+            "{label} rate-limited after {MAX_ATTEMPTS} attempts"
+        )))
+    }
+
     /// Authenticate with LibreLink Up. Follows at most one region redirect:
     /// LLU sometimes responds with `{ status: 0, data: { redirect: true,
     /// region: "..." } }` and expects the client to retry against the new
@@ -196,11 +233,13 @@ impl LluAuthClient {
             let url = self.login_url(current_region);
             debug!(region = ?current_region, hop, "llu login request");
             let resp = self
-                .http
-                .post(&url)
-                .headers(base_headers(&self.version))
-                .json(&body)
-                .send()
+                .send_with_retry(
+                    self.http
+                        .post(&url)
+                        .headers(base_headers(&self.version))
+                        .json(&body),
+                    "login",
+                )
                 .await?;
 
             let status = resp.status();
@@ -269,10 +308,12 @@ impl LluAuthClient {
     ) -> Result<Vec<Connection>, LluError> {
         let url = self.connections_url(region);
         let resp = self
-            .http
-            .get(&url)
-            .headers(authorized_headers(tokens, &self.version))
-            .send()
+            .send_with_retry(
+                self.http
+                    .get(&url)
+                    .headers(authorized_headers(tokens, &self.version)),
+                "connections",
+            )
             .await?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -311,10 +352,12 @@ impl LluAuthClient {
     ) -> Result<GraphResponse, LluError> {
         let url = self.graph_url(region, patient_id);
         let resp = self
-            .http
-            .get(&url)
-            .headers(authorized_headers(tokens, &self.version))
-            .send()
+            .send_with_retry(
+                self.http
+                    .get(&url)
+                    .headers(authorized_headers(tokens, &self.version)),
+                "graph",
+            )
             .await?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -756,7 +799,7 @@ mod tests {
             .await
             .expect("graph");
         assert_eq!(resp.data.graph_data.len(), 1);
-        assert_eq!(resp.data.graph_data[0].value_in_mg_per_dl, 138.0);
+        assert_eq!(resp.data.graph_data[0].value_in_mg_per_dl, Some(138.0));
     }
 
     #[tokio::test]
