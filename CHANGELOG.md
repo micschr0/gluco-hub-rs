@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **End-to-end verification runbook** (`docs/VERIFICATION.md`) — structured manual verification covering automated tests, Docker testcontainer suite, Clock View E2E browser tests, HA live validation, and PHI checklist. Complements `V3_VALIDATION.md` and the CI gate.
+
 ## [2026.524.1] - 2026-05-24
 
 ## [2026.524.0] - 2026-05-24
