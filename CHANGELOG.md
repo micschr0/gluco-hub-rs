@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **End-to-end verification runbook** (`docs/VERIFICATION.md`) — structured manual verification covering automated tests, Docker testcontainer suite, Clock View E2E browser tests, HA live validation, and PHI checklist. Complements `V3_VALIDATION.md` and the CI gate.
 
+- **V5: mTLS for MQTT** — optional `client_cert_file` and `client_key_file` fields in `[sink.mqtt]`. When both are set, the MQTT sink presents a client certificate during TLS handshake for mutual TLS authentication. Backward-compatible: omitting both fields preserves standard server-only TLS.
+- **V5: JWT-as-password for LLU** — the `[source.llu] password` field now accepts a pre-obtained JWT. When the password looks like a JWT (3 segments, header starts `eyJ`), the bridge skips the LibreLink Up login call and uses the token directly as the Bearer credential. Non-JWT passwords continue through the normal login flow unchanged.
+- **V5: Tailscale MagicDNS discovery for MQTT** — new optional `tailscale_hostname` field in `[sink.mqtt]`. When set, gluco-hub resolves the hostname to a tailnet IP via the local `tailscaled` daemon's HTTP API at startup and uses the resolved IP as the broker address. Falls back to `broker_host` if tailscaled is unreachable. No new Cargo dependencies — uses the existing `reqwest` client.
 ## [2026.524.1] - 2026-05-24
 
 ## [2026.524.0] - 2026-05-24

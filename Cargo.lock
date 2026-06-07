@@ -1056,6 +1056,8 @@ dependencies = [
  "metrics-exporter-prometheus",
  "reqwest",
  "rumqttc",
+ "rustls-native-certs",
+ "rustls-pemfile",
  "secrecy",
  "serde",
  "serde_json",

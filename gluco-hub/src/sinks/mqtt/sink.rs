@@ -16,8 +16,12 @@
 //! * Shutdown via `CancellationToken`: on Drop the token is cancelled,
 //!   the poll task best-effort publishes `online: false`, and exits.
 
+use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use rumqttc::tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use rustls_pemfile::Item;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -264,9 +268,70 @@ fn build_client(
     }
 
     if cfg.tls {
-        // `TlsConfiguration::default()` loads platform-native CAs and
-        // builds a rustls ClientConfig — no direct rustls dep needed.
-        let tls = rumqttc::TlsConfiguration::default();
+        let tls = if let (Some(cert_path), Some(key_path)) = (
+            cfg.client_cert_file.as_deref(),
+            cfg.client_key_file.as_deref(),
+        ) {
+            // mTLS: build a custom ClientConfig with client certificate.
+            let cert_pem = std::fs::read(cert_path).map_err(|e| MqttError::ClientCert {
+                message: format!("read client certificate {cert_path}: {e}"),
+            })?;
+            let key_pem = std::fs::read(key_path).map_err(|e| MqttError::ClientCert {
+                message: format!("read client key {key_path}: {e}"),
+            })?;
+
+            let certs = rustls_pemfile::certs(&mut BufReader::new(std::io::Cursor::new(&cert_pem)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| MqttError::ClientCert {
+                    message: format!("parse client certificate: {e}"),
+                })?;
+
+            let key = {
+                let mut key_reader = BufReader::new(std::io::Cursor::new(&key_pem));
+                loop {
+                    match rustls_pemfile::read_one(&mut key_reader).map_err(|e| {
+                        MqttError::ClientCert {
+                            message: format!("read client key PEM: {e}"),
+                        }
+                    })? {
+                        Some(Item::Sec1Key(k)) => break k.into(),
+                        Some(Item::Pkcs1Key(k)) => break k.into(),
+                        Some(Item::Pkcs8Key(k)) => break k.into(),
+                        None => {
+                            return Err(MqttError::ClientCert {
+                                message: "no private key found in client key file".into(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            };
+
+            // rustls-native-certs 0.8 returns CertificateResult, not Result.
+            let mut root_store = RootCertStore::empty();
+            let native = rustls_native_certs::load_native_certs();
+            for err in &native.errors {
+                warn!("failed to load a platform CA certificate: {err}");
+            }
+            for cert in native.certs {
+                root_store.add(cert).map_err(|e| MqttError::ClientCert {
+                    message: format!("add CA certificate: {e}"),
+                })?;
+            }
+
+            let config = ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_client_auth_cert(certs, key)
+                .map_err(|e| MqttError::ClientCert {
+                    message: format!("build TLS client config: {e}"),
+                })?;
+
+            rumqttc::TlsConfiguration::from(config)
+        } else {
+            // `TlsConfiguration::default()` loads platform-native CAs and
+            // builds a rustls ClientConfig — no client certificate needed.
+            rumqttc::TlsConfiguration::default()
+        };
         opts.set_transport(Transport::tls_with_config(tls));
     }
 
@@ -605,6 +670,9 @@ mod tests {
             discovery_prefix: "homeassistant".into(),
             device_name: None,
             discovery_unit: MqttGlucoseUnit::default(),
+            client_cert_file: None,
+            client_key_file: None,
+            tailscale_hostname: None,
         }
     }
 

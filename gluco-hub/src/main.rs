@@ -222,7 +222,7 @@ async fn serve(cfg: config::Config) -> Result<()> {
         bearer_token,
     };
 
-    let sinks = build_sinks(&cfg)?;
+    let sinks = build_sinks(&cfg).await?;
     info!(sink_count = sinks.len(), "sinks configured");
     if sinks.is_empty() && !cfg.http.enabled {
         warn!(
@@ -719,7 +719,7 @@ fn extract_error_code(message: &str) -> String {
 /// `SinkRouter (watermark)` → `DlqSink (persistence)` → real sink.
 /// Order is config-driven; future sinks (webhook, …) slot in as
 /// additional entries.
-fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>> {
+async fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>> {
     let _ = cfg;
     #[cfg_attr(
         not(any(feature = "sink-nightscout", feature = "sink-mqtt")),
@@ -734,7 +734,7 @@ fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>
 
     #[cfg(feature = "sink-mqtt")]
     if let Some(mqtt) = cfg.sink.mqtt.as_ref() {
-        sinks.push(build_mqtt_sink(mqtt).context("build MQTT sink")?);
+        sinks.push(build_mqtt_sink(mqtt).await.context("build MQTT sink")?);
     }
 
     let routed: Vec<Arc<sink_router::SinkRouter>> = if cfg.dlq.enabled {
@@ -766,13 +766,22 @@ fn build_sinks(cfg: &config::Config) -> Result<Vec<Arc<sink_router::SinkRouter>>
 }
 
 #[cfg(feature = "sink-mqtt")]
-fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
+async fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
     use sinks::mqtt::MqttSink;
 
     let password = cfg.password.clone();
 
+    // Resolve Tailscale MagicDNS hostname to tailnet IP if configured.
+    let broker_host = if let Some(ts_hostname) = cfg.tailscale_hostname.as_deref() {
+        sinks::mqtt::tailscale::resolve_tailscale_hostname(ts_hostname)
+            .await
+            .unwrap_or_else(|| cfg.broker_host.clone())
+    } else {
+        cfg.broker_host.clone()
+    };
+
     info!(
-        broker = %cfg.broker_host,
+        broker = %broker_host,
         port = cfg.broker_port,
         client_id = %cfg.client_id,
         tls = cfg.tls,
@@ -780,7 +789,10 @@ fn build_mqtt_sink(cfg: &config::MqttSinkConfig) -> Result<Arc<dyn Sink>> {
         "mqtt sink configured"
     );
 
-    let sink = MqttSink::new(cfg, password).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Build with the potentially-resolved broker host.
+    let mut resolved_cfg = cfg.clone();
+    resolved_cfg.broker_host = broker_host;
+    let sink = MqttSink::new(&resolved_cfg, password).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(Arc::new(sink))
 }
 

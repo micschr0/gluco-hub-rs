@@ -317,6 +317,30 @@ pub struct MqttSinkConfig {
     /// `mgdl` preserves V2 / V3 behaviour.
     #[serde(default)]
     pub discovery_unit: MqttGlucoseUnit,
+
+    /// Path to a PEM-encoded client certificate for mTLS.
+    /// When set together with `client_key_file`, the MQTT sink
+    /// presents a client certificate during the TLS handshake.
+    /// Leave unset for standard server-only TLS.
+    #[serde(default)]
+    #[validate(length(min = 1, max = 512), custom(function = "validate_file_path"))]
+    pub client_cert_file: Option<String>,
+
+    /// Path to a PEM-encoded client private key for mTLS.
+    /// Must be paired with `client_cert_file`.
+    #[serde(default)]
+    #[validate(length(min = 1, max = 512), custom(function = "validate_file_path"))]
+    pub client_key_file: Option<String>,
+
+    /// Optional Tailscale MagicDNS hostname of the MQTT broker. When set,
+    /// gluco-hub resolves this hostname to a tailnet IP via the local
+    /// `tailscaled` daemon's API at startup and uses the resolved IP as
+    /// `broker_host`. The `tailscaled` daemon must be running on the
+    /// same host (or as a sidecar container). Falls back to `broker_host`
+    /// if tailscaled is unreachable or the hostname is not found.
+    #[serde(default)]
+    #[validate(length(min = 1, max = 253))]
+    pub tailscale_hostname: Option<String>,
 }
 
 fn default_mqtt_keep_alive() -> u64 {
@@ -352,6 +376,17 @@ fn validate_topic_prefix(value: &str) -> Result<(), ValidationError> {
     if value.contains('#') || value.contains('+') || value.starts_with('/') || value.ends_with('/')
     {
         return Err(ValidationError::new("topic_prefix_chars"));
+    }
+    Ok(())
+}
+
+/// Reject file paths that contain null bytes or are only whitespace.
+fn validate_file_path(value: &str) -> Result<(), ValidationError> {
+    if value.contains('\0') {
+        return Err(ValidationError::new("file_path_null"));
+    }
+    if value.trim().is_empty() {
+        return Err(ValidationError::new("file_path_empty"));
     }
     Ok(())
 }

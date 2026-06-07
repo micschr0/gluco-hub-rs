@@ -39,6 +39,10 @@ pub enum MqttError {
     /// `[MQTT007]` MQTT protocol-state error or unexpected packet.
     #[error("[MQTT007] MQTT protocol error: {message}")]
     Protocol { message: String },
+
+    /// `[MQTT008]` Client certificate or key error (mTLS).
+    #[error("[MQTT008] client certificate error: {message}")]
+    ClientCert { message: String },
 }
 
 impl MqttError {
@@ -51,6 +55,7 @@ impl MqttError {
             Self::Payload { .. } => "MQTT005",
             Self::KeepAliveTimeout { .. } => "MQTT006",
             Self::Protocol { .. } => "MQTT007",
+            Self::ClientCert { .. } => "MQTT008",
         }
     }
 }

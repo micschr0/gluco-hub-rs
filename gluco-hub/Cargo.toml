@@ -17,8 +17,9 @@ source-llu = ["dep:sha2"]
 sink-nightscout = ["dep:sha1"]
 # V2: real MQTT v5 sink backed by rumqttc + rustls. Pulls in the
 # rumqttc client, the bytes crate (LastWill payload), and tokio-util
-# (CancellationToken for graceful shutdown).
-sink-mqtt = ["dep:rumqttc", "dep:bytes", "dep:tokio-util"]
+# (CancellationToken for graceful shutdown). Also pulls in rustls-pemfile
+# and rustls-native-certs for mTLS client certificate support.
+sink-mqtt = ["dep:rumqttc", "dep:bytes", "dep:tokio-util", "dep:rustls-pemfile", "dep:rustls-native-certs"]
 # Enables the in-memory `MockSource` fixture so the HTTP API can be
 # exercised end-to-end before the LibreLink Up source lands.
 mock-source = ["gluco-hub-core/mock-source"]
@@ -67,6 +68,8 @@ sha1 = { workspace = true, optional = true }
 rumqttc = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
+rustls-pemfile = { version = "2", optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }

@@ -63,7 +63,7 @@ interval_secs = 60
 # [sink.nightscout]
 # base_url = "https://nightscout.example.com"
 
-# Optional: MQTT v5 sink (V2). Requires the `sink-mqtt` Cargo feature
+# Optional: MQTT v5 sink (V5). Requires the `sink-mqtt` Cargo feature
 # on the binary. Publishes:
 #   * one JSON payload per Reading to `<topic_prefix>/glucose`
 #     (schema `v: 1`),
@@ -87,6 +87,15 @@ interval_secs = 60
 # tls = true                  # false only for local plaintext brokers
 # include_patient_id = true   # set false to omit the patient field
 # stats_interval_secs = 60    # 5..=3600; how often _stats is refreshed
+#
+# mTLS (V5): when both files are set, the sink presents a client
+# certificate during the TLS handshake for mutual TLS auth.
+# client_cert_file = "/path/to/client.crt"
+# client_key_file  = "/path/to/client.key"
+#
+# Tailscale (V5): set to a MagicDNS name to resolve the broker's
+# tailnet IP via the local tailscaled daemon at startup.
+# tailscale_hostname = "mqtt-broker"
 #
 # Home Assistant MQTT auto-discovery (opt-in). When `true`, the sink
 # publishes two retained configs on `<discovery_prefix>/sensor/.../config`

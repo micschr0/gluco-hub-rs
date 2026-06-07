@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use gluco_hub_core::PatientId;
 
@@ -155,9 +155,40 @@ impl LluAuthClient {
     /// region: "..." } }` and expects the client to retry against the new
     /// region. Loops past one hop are mapped to `LluError::RedirectLoop`.
     pub async fn login(&self, creds: &LluCredentials) -> Result<LluTokens, LluError> {
+        let password = creds.password.expose_secret();
+
+        // If the password looks like a JWT, skip the login call and use
+        // the token directly as the Bearer credential. The operator can
+        // paste a pre-obtained token into the `password` config field
+        // without changing the schema.
+        if is_jwt(password) {
+            info!("LLU password appears to be a JWT — skipping login, using token directly");
+
+            let account_id_hash = jwt_claims_user_id(password)
+                .map(|uid| account_id_hash(&uid))
+                .unwrap_or_default();
+
+            let expires_at = jwt_claims_exp(password)
+                .and_then(|exp| UNIX_EPOCH.checked_add(Duration::from_secs(exp)))
+                .unwrap_or_else(|| {
+                    // Without an `exp` claim, assume the token is good for 60
+                    // minutes — the same order of magnitude as a normal LLU
+                    // auth ticket.
+                    SystemTime::now()
+                        .checked_add(Duration::from_secs(3600))
+                        .unwrap_or(SystemTime::now())
+                });
+
+            return Ok(LluTokens {
+                bearer: SecretString::from(password.to_string()),
+                account_id_hash,
+                expires_at,
+            });
+        }
+
         let body = LoginRequest {
             email: &creds.email,
-            password: creds.password.expose_secret(),
+            password,
         };
 
         let mut current_region = creds.region;
@@ -353,6 +384,55 @@ fn build_tokens(ticket: AuthTicket, user_id: &str) -> LluTokens {
         account_id_hash: account_id_hash(user_id),
         expires_at,
     }
+}
+
+/// Heuristic: does `s` look like a JWT? Checks for two dots, a header
+/// segment starting with `eyJ` (base64url of `{"`), and minimum length.
+fn is_jwt(s: &str) -> bool {
+    s.len() >= 20 && s.matches('.').count() == 2 && s.starts_with("eyJ")
+}
+
+/// Minimal base64url decoder. Accepts standard base64url alphabet
+/// (`-` and `_` as the last two characters) with optional padding.
+fn base64url_decode(input: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let input = input.trim_end_matches('=');
+    let mut buf = Vec::with_capacity(input.len() * 3 / 4);
+    let mut accum: u32 = 0;
+    let mut bits: u32 = 0;
+    for &b in input.as_bytes() {
+        let val = ALPHABET.iter().position(|&c| c == b)? as u32;
+        accum = (accum << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            buf.push((accum >> bits) as u8);
+        }
+    }
+    Some(buf)
+}
+
+/// Extract a user identifier from the JWT payload. Tries common claims:
+/// `sub`, `userId`, and `user_id`. Returns `None` if the payload cannot
+/// be decoded or none of the claims are present.
+fn jwt_claims_user_id(jwt: &str) -> Option<String> {
+    let payload = jwt.split('.').nth(1)?;
+    let decoded = base64url_decode(payload)?;
+    let v: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    v.get("sub")
+        .or_else(|| v.get("userId"))
+        .or_else(|| v.get("user_id"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
+/// Extract the `exp` claim (Unix seconds) from the JWT payload.
+/// Returns `None` if the payload cannot be decoded or the claim is absent.
+fn jwt_claims_exp(jwt: &str) -> Option<u64> {
+    let payload = jwt.split('.').nth(1)?;
+    let decoded = base64url_decode(payload)?;
+    let v: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    v.get("exp").and_then(|v| v.as_u64())
 }
 
 #[derive(Serialize)]
@@ -698,5 +778,116 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, LluError::Unauthorized { endpoint } if endpoint == "graph"));
         assert_eq!(err.error_code(), "LLU008");
+    }
+
+    // ── JWT heuristic tests ──
+
+    #[test]
+    fn is_jwt_detects_valid_token() {
+        let token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        assert!(is_jwt(token));
+    }
+
+    #[test]
+    fn is_jwt_rejects_plain_password() {
+        assert!(!is_jwt("hunter2"));
+        assert!(!is_jwt("correct-horse-battery-staple"));
+        assert!(!is_jwt("12345678901234567890")); // ≥20 chars but no dots
+    }
+
+    #[test]
+    fn is_jwt_rejects_short_input() {
+        assert!(!is_jwt("eyJ.h.sig")); // 10 chars — below minimum
+    }
+
+    #[test]
+    fn is_jwt_rejects_wrong_dot_count() {
+        assert!(!is_jwt("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0")); // 1 dot
+        assert!(!is_jwt("eyJ.a.b.c")); // 3 dots
+    }
+
+    #[test]
+    fn is_jwt_rejects_non_jwt_header_prefix() {
+        assert!(!is_jwt(
+            "eXJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig"
+        )); // starts with eXJ not eyJ
+    }
+
+    #[test]
+    fn base64url_decode_roundtrips_known() {
+        // "abc" in base64url = "YWJj"
+        assert_eq!(base64url_decode("YWJj").unwrap(), b"abc");
+        // "f" (single byte) = "Zg" (must handle padding correctly)
+        assert_eq!(base64url_decode("Zg").unwrap(), b"f");
+    }
+
+    #[test]
+    fn base64url_decode_rejects_invalid_chars() {
+        assert!(base64url_decode("!!!").is_none());
+    }
+
+    #[test]
+    fn base64url_decode_handles_padding() {
+        assert_eq!(base64url_decode("YWJj").unwrap(), b"abc");
+        assert_eq!(base64url_decode("YWJj=").unwrap(), b"abc");
+        assert_eq!(base64url_decode("YWJj==").unwrap(), b"abc");
+    }
+
+    #[test]
+    fn jwt_claims_extracts_sub() {
+        // Payload: {"sub":"user-42","exp":2000000000}
+        let payload = "eyJzdWIiOiJ1c2VyLTQyIiwiZXhwIjoyMDAwMDAwMDAwfQ";
+        let token = format!("header.{payload}.sig");
+        assert_eq!(jwt_claims_user_id(&token).as_deref(), Some("user-42"));
+    }
+
+    #[test]
+    fn jwt_claims_extracts_user_id() {
+        // Payload: {"user_id":"abc-123"}
+        let payload = "eyJ1c2VyX2lkIjoiYWJjLTEyMyJ9";
+        let token = format!("header.{payload}.sig");
+        assert_eq!(jwt_claims_user_id(&token).as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn jwt_claims_returns_none_without_known_field() {
+        let payload = base64url_encode(br#"{"iss":"gluco-hub"}"#);
+        let token = format!("header.{payload}.sig");
+        assert!(jwt_claims_user_id(&token).is_none());
+    }
+
+    #[test]
+    fn jwt_claims_exp_extracts_unix_time() {
+        let payload = "eyJleHAiOjIwMDAwMDAwMDB9"; // {"exp":2000000000}
+        let token = format!("header.{payload}.sig");
+        assert_eq!(jwt_claims_exp(&token), Some(2_000_000_000));
+    }
+
+    #[test]
+    fn jwt_claims_exp_returns_none_when_absent() {
+        let payload = base64url_encode(br#"{"sub":"u1"}"#);
+        let token = format!("header.{payload}.sig");
+        assert!(jwt_claims_exp(&token).is_none());
+    }
+
+    // Helper to produce base64url without pulling in a crate.
+    fn base64url_encode(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+            let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
+            out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+            if chunk.len() > 1 {
+                out.push(ALPHABET[((n >> 6) & 0x3F) as usize] as char);
+            }
+            if chunk.len() > 2 {
+                out.push(ALPHABET[(n & 0x3F) as usize] as char);
+            }
+        }
+        out
     }
 }
