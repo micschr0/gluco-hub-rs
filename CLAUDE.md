@@ -97,17 +97,20 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 - New `Source` or `Sink`: own module plus Cargo feature, register in binary wiring.
 - Verify external-API claims with the latest official docs — LibreLink Up and Nightscout v3 change without notice.
 
+### Session Learnings (2026-06-07)
+
+- `cargo test --all-features` — required before pushing; default features miss #[cfg(feature="...")] errors
+- `git merge-tree --write-tree <a> <b>` — check mergeability without merging
+- `write({ path: "conflict://<N>", content })` — resolve merge conflicts by block; use custom content (not @both) for structural conflicts
+- Multi-source: serve() spawns per-source poll_loop_single tasks; no wrapper exists
+- Patients publisher deferred 2026-06-07 (ConnectionsWiring, BuiltSinks.mqtt removed)
+- Test MqttSinkConfig helpers must include per_source, client_cert_file, client_key_file
+
 ## Releasing & Branching
 
-**Branching**: two long-lived branches.
-- `develop` — active integration branch; all feature work lands here.
-- `main` — stable; receives merges from `develop` when changes are ready
-  to ship plus the release-cut commits/tags from `cargo release`.
-
-Feature branches use Conventional-Commits prefixes — `feat/<topic>`,
-`fix/<topic>`, `chore/<topic>`, `docs/<topic>` — and merge into `develop`
-via PR + squash-merge. Releases: fast-forward `develop` → `main` (or PR),
-then `task release` from `main`.
+**Branching**: single branch — `main`. Feature branches PR into main via squash-merge.
+No `develop` branch (removed 2026-06-07 after merging multi-source into main).
+Releases: `task release` from `main`.
 
 **CHANGELOG**: every PR that changes user-visible behaviour MUST add a
 line under `## [Unreleased]` in `CHANGELOG.md` (`### Added` / `### Changed`
