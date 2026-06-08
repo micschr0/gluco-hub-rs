@@ -89,7 +89,7 @@ RUN GLUCO_HUB_GIT_SHA="${GLUCO_HUB_GIT_SHA}" \
 # ── Stage 4: runtime ───────────────────────────────────────────────────────────
 # Distroless `cc` provides glibc + ca-certificates; no shell, no package manager.
 # renovate: datasource=docker depName=gcr.io/distroless/cc-debian12
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:bd2899c12b335c827750ccf2359879eab09c09b206023dcebea408947d54127c
 
 WORKDIR /app
 
