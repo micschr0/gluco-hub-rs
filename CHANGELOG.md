@@ -15,11 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **V5: Tailscale MagicDNS discovery for MQTT** — new optional `tailscale_hostname` field in `[sink.mqtt]`. When set, gluco-hub resolves the hostname to a tailnet IP via the local `tailscaled` daemon's HTTP API at startup and uses the resolved IP as the broker address. Falls back to `broker_host` if tailscaled is unreachable. No new Cargo dependencies — uses the existing `reqwest` client.
 ### Fixed
 
-- **Clock View root redirect** — `GET /` now 308-redirects to `/clock` so
-  the Home Assistant Ingress sidebar entry (which proxies to `/` on the
-  add-on's HTTP server) renders the clock view instead of a 404/blank
-  screen. Query parameters (`?unit=mmol&lo=70&hi=180`) are preserved
-  through the redirect.
+- **Clock View root path** — `GET /` now serves `clock.html` directly
+  instead of a 308 redirect to `/clock`. The HA Ingress proxy proxies
+  `/hassio/ingress/<slug>/` to `/` on the add-on. A redirect causes the
+  browser to follow `Location: /clock` outside the Ingress URL prefix
+  (outside `/api/hassio_ingress/`), resulting in a 404 on the HA server.
+  Serving `clock.html` directly at `/` keeps the response inside the
+  proxy context.
 
 ## [2026.524.1] - 2026-05-24
 
