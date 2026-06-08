@@ -3,7 +3,7 @@
 services:
   gluco-hub:
     container_name: gluco-hub
-    image: ghcr.io/micschr0/gluco-hub:latest
+    image: ghcr.io/micschr0/gluco-hub:latest@sha256:b3bd25f116ff50d815df5374b7ff32b6d55aa27a871fd2c2791c4b23a622b2d8
     # build:
     #   context: .
     #   args:
