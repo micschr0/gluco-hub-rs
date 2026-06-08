@@ -43,6 +43,11 @@ ignore = [
     # Panic in BorrowedCertRevocationList::from_der parsing — same
     # root as 2026-0049, gated on CRL parsing we never invoke.
     { id = "RUSTSEC-2026-0104", reason = "gluco-hub does not parse CRLs; unreachable" },
+    # proc-macro-error2 is unmaintained; pulled in through
+    # validator → validator_derive. A proc-macro crate that
+    # emits compile errors — not reachable at runtime, and
+    # functionally complete (no runtime dependencies to rot).
+    { id = "RUSTSEC-2026-0173", reason = "build-time-only proc-macro dependency; not reachable at runtime" },
 ]
 
 [licenses]
