@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::Request;
-use axum::http::{HeaderName, HeaderValue, Uri};
+use axum::http::{HeaderName, HeaderValue};
 use axum::middleware::Next;
-use axum::response::{Redirect, Response};
+use axum::response::Response;
 use axum::routing::get;
 use gluco_hub_core::ReadingCache;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -97,27 +97,16 @@ pub(crate) fn router_with_state(state: AppState) -> Router {
         .route("/clock/state", get(clock::clock_state))
         .route("/clock/history", get(clock::clock_history))
         .route("/clock/events", get(clock::clock_events_sse))
-        // Ingress proxy support: HA sidebar links to /hassio/ingress/<slug>/ which
-        // proxies to the add-on at `/`. Redirect preserves query params for the
-        // clock view (unit, lo, hi, eink, dark, etc.).
-        .route("/", get(root_redirect))
+        // Ingress proxy support: HA sidebar opens `/hassio/ingress/<slug>/`
+        // which proxies to the add-on at `/`. The same clock.html is served
+        // at the root so the sidebar renders the clock view directly instead
+        // of following a redirect (which would exit the Ingress context).
+        .route("/", get(clock::clock_html))
         .with_state(state)
         .layer(axum::middleware::from_fn(add_disclaimer_header))
         .layer(TraceLayer::new_for_http())
 }
 
-/// `GET /` — permanent redirect to the clock view.
-///
-/// Home Assistant's Ingress sidebar entry opens `/hassio/ingress/<slug>/`,
-/// which the Supervisor proxy translates to `GET /` on the add-on's HTTP
-/// server. This handler redirects to `/clock`, preserving any query
-/// parameters so config like `?unit=mmol&lo=70&hi=180` survives the hop.
-async fn root_redirect(uri: Uri) -> Redirect {
-    match uri.query() {
-        Some(q) if !q.is_empty() => Redirect::permanent(&format!("/clock?{q}")),
-        _ => Redirect::permanent("/clock"),
-    }
-}
 
 /// Adds `X-Disclaimer: not-for-medical-use` to every outgoing response,
 /// regardless of route or status code. Layered after the routing tree so
