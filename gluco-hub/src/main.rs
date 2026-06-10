@@ -326,17 +326,22 @@ fn resolve_bearer_token(cfg: &config::Config) -> Option<secrecy::SecretString> {
     cfg.http.bearer_token.clone()
 }
 
-
 /// Build sources to drive the poller. Priority order:
 /// 1. `source-llu` feature + `[source]` blocks configured.
-/// 2. `mock-source` feature → MockSource fixture.
-/// 3. Otherwise, empty vec (HTTP API stays up; data endpoints serve 503).
+/// 2. `source-ns-socket` feature + `[source.ns_socket]` block (only when no
+///    LLU source was configured — coexistence stays deferred).
+/// 3. `mock-source` feature → MockSource fixture.
+/// 4. Otherwise, empty vec (HTTP API stays up; data endpoints serve 503).
 ///
 /// Returns a list of `(name, source)` pairs. Legacy `[source.llu]` is named
 /// `"default"`; multi-source `[source.sources]` entries use their map key.
 fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Source>)>> {
     #[cfg_attr(
-        not(any(feature = "source-llu", feature = "mock-source")),
+        not(any(
+            feature = "source-llu",
+            feature = "source-ns-socket",
+            feature = "mock-source"
+        )),
         allow(unused_mut)
     )]
     let mut sources: Vec<(String, Arc<dyn Source>)> = Vec::new();
@@ -359,6 +364,18 @@ fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Sou
         }
     }
 
+    // NS-Socket is a standalone alternative to LLU; coexistence stays
+    // deferred, so it only contributes when no LLU source was configured.
+    #[cfg(feature = "source-ns-socket")]
+    if sources.is_empty()
+        && let Some(ns) = cfg.source.ns_socket.as_ref()
+    {
+        sources.push((
+            "default".to_string(),
+            build_ns_socket_source(ns).context("build NS-Socket source")?,
+        ));
+    }
+
     #[cfg(feature = "mock-source")]
     if sources.is_empty() {
         let mock =
@@ -367,6 +384,46 @@ fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Sou
     }
 
     Ok(sources)
+}
+
+/// Resolve `[source.ns_socket]` into a wired `NsSocketSource`.
+///
+/// V6 scaffold: the source compiles and registers, but its Socket.IO loop is
+/// stubbed (`[NSS001]`), so the poller surfaces a typed source error on each
+/// tick rather than producing readings. The credential is resolved from the
+/// environment-injected `SecretString` (never logged).
+#[cfg(feature = "source-ns-socket")]
+fn build_ns_socket_source(ns: &config::NsSocketSourceConfig) -> Result<Arc<dyn Source>> {
+    use config::NsSocketAuthMode;
+    use gluco_hub_core::SourceId;
+    use secrecy::SecretString;
+    use sources::ns_socket::client::{NsAuthMode, NsSocketClient};
+    use sources::ns_socket::source::NsSocketSource;
+
+    let (auth_mode, secret): (NsAuthMode, SecretString) = match ns.auth {
+        NsSocketAuthMode::Token => (
+            NsAuthMode::Token,
+            ns.token
+                .clone()
+                .context("[source.ns_socket] token required when auth = \"token\"")?,
+        ),
+        NsSocketAuthMode::ApiSecret => (
+            NsAuthMode::ApiSecret,
+            ns.api_secret
+                .clone()
+                .context("[source.ns_socket] api_secret required when auth = \"api_secret\"")?,
+        ),
+    };
+
+    let client = NsSocketClient::new(ns.base_url.clone(), auth_mode, secret, ns.history_hours);
+    let id = SourceId::new("ns_socket").context("build SourceId")?;
+    info!(
+        base_url = %ns.base_url,
+        auth = ?ns.auth,
+        history_hours = ns.history_hours,
+        "ns_socket source configured (V6 scaffold — Socket.IO loop stubbed)"
+    );
+    Ok(Arc::new(NsSocketSource::new(id, client)))
 }
 
 /// Resolve `[source.llu]` into a wired `LluAuthClient` + `LluCredentials`

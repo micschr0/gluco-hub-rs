@@ -54,6 +54,23 @@ interval_secs = 60
 # # Default `UTC` preserves prior (UTC-only-correct) behaviour.
 # # timezone = "Europe/Berlin"
 
+# Optional: NS-Socket source (Roadmap V6). Requires the `source-ns-socket`
+# Cargo feature on the binary. Uses a Nightscout site as the UPSTREAM data
+# source via its Socket.IO real-time feed — a STANDALONE alternative to
+# LibreLink Up (do not configure both; only the first wins). Supply the
+# credential via the environment, never in TOML:
+#   GLUCO_HUB__SOURCE__NS_SOCKET__TOKEN=<access-token>        # auth = "token"
+#   GLUCO_HUB__SOURCE__NS_SOCKET__API_SECRET=<api-secret>     # auth = "api_secret"
+#
+# NOTE: V6 is currently a SCAFFOLD — the Socket.IO connect/subscribe loop is
+# not yet implemented and the source returns `[NSS001]` on every poll. Do not
+# rely on it for data yet.
+#
+# [source.ns_socket]
+# base_url = "https://nightscout.example.com"
+# auth = "token"            # "token" (default) or "api_secret"
+# history_hours = 48        # 1..=168; initial replay window in the authorize handshake
+
 # Optional: Nightscout sink. Requires the `sink-nightscout` Cargo
 # feature on the binary. Uncomment and fill in to push every batch of
 # readings to a self-hosted Nightscout instance.

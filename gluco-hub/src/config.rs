@@ -141,6 +141,65 @@ pub struct SourceConfig {
     #[serde(default)]
     #[validate(nested)]
     pub sources: HashMap<String, LluSourceConfig>,
+
+    /// V6 NS-Socket source. Parsed unconditionally; honoured only when the
+    /// `source-ns-socket` feature is enabled (see `build_default_source` in
+    /// `main.rs`). Standalone alternative to LLU.
+    #[serde(default)]
+    #[validate(nested)]
+    pub ns_socket: Option<NsSocketSourceConfig>,
+}
+
+/// How the NS-Socket source authenticates to Nightscout's Socket.IO
+/// `authorize` handshake. Fixed set — never a magic string.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NsSocketAuthMode {
+    /// Access token (e.g. `myreader-0123456789abcdef`) sent as the
+    /// `authorize` payload's `token` field. The default — preferred on
+    /// modern Nightscout deployments.
+    #[default]
+    Token,
+    /// API secret (raw, NOT pre-hashed) — the source hashes it to SHA-1 and
+    /// sends it as the `authorize` payload's `secret` field.
+    ApiSecret,
+}
+
+/// `[source.ns_socket]` block (Roadmap V6). Supply the credential via the
+/// environment: `GLUCO_HUB__SOURCE__NS_SOCKET__TOKEN` for `auth = "token"`
+/// (the default) or `GLUCO_HUB__SOURCE__NS_SOCKET__API_SECRET` for
+/// `auth = "api_secret"`. Never embed either in TOML.
+#[cfg_attr(not(feature = "source-ns-socket"), allow(dead_code))]
+#[derive(Debug, Clone, Deserialize, Validate)]
+pub struct NsSocketSourceConfig {
+    /// Base URL of the Nightscout site, e.g. `https://ns.example.com`.
+    #[validate(length(min = 5, max = 512), custom(function = "validate_http_url"))]
+    pub base_url: String,
+
+    /// Credential type. Defaults to `token`.
+    #[serde(default)]
+    pub auth: NsSocketAuthMode,
+
+    /// Nightscout access token. Required when `auth = "token"`. Supply via
+    /// `GLUCO_HUB__SOURCE__NS_SOCKET__TOKEN`.
+    #[serde(default)]
+    pub token: Option<SecretString>,
+
+    /// Nightscout API secret (raw, NOT pre-hashed). Required when
+    /// `auth = "api_secret"`. Supply via
+    /// `GLUCO_HUB__SOURCE__NS_SOCKET__API_SECRET`.
+    #[serde(default)]
+    pub api_secret: Option<SecretString>,
+
+    /// History window, in hours, requested in the `authorize` handshake.
+    /// Defaults to 48 (Nightscout's own default). Bounds the initial replay.
+    #[serde(default = "default_ns_socket_history_hours")]
+    #[validate(range(min = 1, max = 168))]
+    pub history_hours: u32,
+}
+
+fn default_ns_socket_history_hours() -> u32 {
+    48
 }
 
 /// Sink-specific configuration. Mirrors `SourceConfig`: each variant
@@ -554,6 +613,7 @@ pub enum ConfigError {
     #[cfg_attr(
         all(
             feature = "source-llu",
+            feature = "source-ns-socket",
             feature = "sink-nightscout",
             feature = "sink-mqtt"
         ),
@@ -651,6 +711,20 @@ pub fn verify_secrets(cfg: &Config) -> Result<(), ConfigError> {
         }
     }
 
+    if let Some(ns) = cfg.source.ns_socket.as_ref() {
+        // The credential required depends on the selected auth mode. An
+        // empty or absent value is rejected the same way.
+        let (value, field): (Option<&SecretString>, &'static str) = match ns.auth {
+            NsSocketAuthMode::Token => (ns.token.as_ref(), "[source.ns_socket] token"),
+            NsSocketAuthMode::ApiSecret => {
+                (ns.api_secret.as_ref(), "[source.ns_socket] api_secret")
+            }
+        };
+        if value.is_none_or(|s| s.expose_secret().is_empty()) {
+            return Err(ConfigError::EmptySecret { field });
+        }
+    }
+
     if let Some(token) = cfg.http.bearer_token.as_ref()
         && token.expose_secret().is_empty()
     {
@@ -701,6 +775,13 @@ pub fn verify_features(cfg: &Config) -> Result<(), ConfigError> {
             feature: "source-llu",
         });
     }
+    #[cfg(not(feature = "source-ns-socket"))]
+    if cfg.source.ns_socket.is_some() {
+        return Err(ConfigError::FeatureMismatch {
+            section: "[source.ns_socket]",
+            feature: "source-ns-socket",
+        });
+    }
     #[cfg(not(feature = "sink-nightscout"))]
     if cfg.sink.nightscout.is_some() {
         return Err(ConfigError::FeatureMismatch {
@@ -729,6 +810,109 @@ mod tests {
         assert_eq!(cfg.http.bind.to_string(), "127.0.0.1:8080");
         assert_eq!(cfg.poller.interval_secs, 60);
         assert!(cfg.source.llu.is_none());
+    }
+
+    #[test]
+    fn parses_ns_socket_section_with_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[http]
+bind = "127.0.0.1:9000"
+
+[poller]
+interval_secs = 60
+
+[source.ns_socket]
+base_url = "https://ns.example.com"
+"#,
+        )
+        .unwrap();
+        let cfg = load(Some(&path)).expect("load");
+        let ns = cfg.source.ns_socket.expect("ns_socket present");
+        assert_eq!(ns.base_url, "https://ns.example.com");
+        // auth defaults to token; history defaults to 48.
+        assert_eq!(ns.auth, NsSocketAuthMode::Token);
+        assert_eq!(ns.history_hours, 48);
+    }
+
+    #[test]
+    fn rejects_ns_socket_non_http_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[http]
+bind = "127.0.0.1:9000"
+
+[poller]
+interval_secs = 60
+
+[source.ns_socket]
+base_url = "wss://ns.example.com"
+"#,
+        )
+        .unwrap();
+        let err = load(Some(&path)).expect_err("must reject non-http scheme");
+        assert!(matches!(err, ConfigError::Validate(_)));
+    }
+
+    #[test]
+    fn verify_secrets_rejects_missing_ns_socket_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[http]
+bind = "127.0.0.1:9000"
+
+[poller]
+interval_secs = 60
+
+[source.ns_socket]
+base_url = "https://ns.example.com"
+auth = "token"
+"#,
+        )
+        .unwrap();
+        let cfg = load(Some(&path)).expect("load");
+        let err = verify_secrets(&cfg).expect_err("must reject missing token");
+        assert!(
+            matches!(err, ConfigError::EmptySecret { field } if field.contains("token")),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_secrets_rejects_empty_ns_socket_api_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[http]
+bind = "127.0.0.1:9000"
+
+[poller]
+interval_secs = 60
+
+[source.ns_socket]
+base_url = "https://ns.example.com"
+auth = "api_secret"
+"#,
+        )
+        .unwrap();
+        let mut cfg = load(Some(&path)).expect("load");
+        cfg.source.ns_socket.as_mut().unwrap().api_secret = Some(SecretString::from(String::new()));
+        let err = verify_secrets(&cfg).expect_err("must reject empty api_secret");
+        assert!(
+            matches!(err, ConfigError::EmptySecret { field } if field.contains("api_secret")),
+            "unexpected: {err:?}"
+        );
     }
 
     /// MQTT-only deployments (e.g. the HA add-on) disable the listener
