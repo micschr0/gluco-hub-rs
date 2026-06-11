@@ -195,8 +195,9 @@ async fn serve(cfg: config::Config) -> Result<()> {
     // crash on startup than to start serving 401s after the bearer token
     // ended up empty.
     config::verify_secrets(&cfg).context("verify configured secrets")?;
-    info!("LLU schema fingerprint: ValueInMgPerDl, ValueInMmolPerL, TrendArrow, Timestamp, PatientId");
-
+    info!(
+        "LLU schema fingerprint: ValueInMgPerDl, ValueInMmolPerL, TrendArrow, Timestamp, PatientId"
+    );
 
     // state.dir hosts both the DLQ tree and the liveness heartbeat file.
     // The DLQ creates its own subdir lazily, but the heartbeat writer
@@ -336,6 +337,9 @@ fn resolve_bearer_token(cfg: &config::Config) -> Option<secrecy::SecretString> {
 /// Returns a list of `(name, source)` pairs. Legacy `[source.llu]` is named
 /// `"default"`; multi-source `[source.sources]` entries use their map key.
 fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Source>)>> {
+    // `cfg` is only read inside the feature-gated branches below; mark it
+    // used so the no-default-features build doesn't warn.
+    let _ = cfg;
     #[cfg_attr(
         not(any(
             feature = "source-llu",
@@ -509,7 +513,9 @@ fn build_llu_source(name: &str, llu: &config::LluSourceConfig) -> Result<Arc<dyn
         source_tz = %source_tz,
         "llu source configured"
     );
-    Ok(Arc::new(LluSource::new(id, client, creds, selection, source_tz)))
+    Ok(Arc::new(LluSource::new(
+        id, client, creds, selection, source_tz,
+    )))
 }
 
 /// One-shot LLU probe. Logs in, lists connections, fetches one graph,
@@ -635,6 +641,7 @@ fn write_heartbeat(path: &std::path::Path) -> std::io::Result<()> {
 /// Drive a single source: poll on `interval`, update `cache`, push to
 /// `sinks`, and touch the heartbeat file. Errors are logged; the loop
 /// never exits except via process shutdown.
+#[allow(clippy::too_many_arguments)]
 async fn poll_loop_single(
     name: String,
     source: Arc<dyn Source>,
@@ -921,10 +928,7 @@ struct BuiltSinks {
 ///
 /// When `per_source` is true on the MQTT sink, each source name gets
 /// its own MQTT sink with a unique client_id and topic_prefix.
-async fn build_sinks(
-    cfg: &config::Config,
-    source_names: &[String],
-) -> Result<BuiltSinks> {
+async fn build_sinks(cfg: &config::Config, source_names: &[String]) -> Result<BuiltSinks> {
     let _ = cfg;
     let _ = source_names;
     #[cfg_attr(
@@ -943,12 +947,14 @@ async fn build_sinks(
         // Per-source MQTT when enabled; one shared sink otherwise.
         if mqtt.per_source && !source_names.is_empty() {
             for name in source_names {
-                let sink = build_mqtt_sink(mqtt, Some(name)).await
+                let sink = build_mqtt_sink(mqtt, Some(name))
+                    .await
                     .context(format!("build MQTT sink for '{name}'"))?;
                 sink_list.push(sink as Arc<dyn Sink>);
             }
         } else {
-            let sink = build_mqtt_sink(mqtt, None).await
+            let sink = build_mqtt_sink(mqtt, None)
+                .await
                 .context("build MQTT sink")?;
             sink_list.push(sink as Arc<dyn Sink>);
         }
@@ -1059,6 +1065,10 @@ fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Si
 /// surname or birthdate. `is_active` is `true` for exactly the connection
 /// the poll loop fetches, as resolved by the source's `selection`.
 #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+// Only exercised by the e2e test today: the binary caller (MQTT patients
+// publisher) is deferred, so the non-test binary build sees it as dead.
+// Retained for when the publisher is revived; allow dead_code until then.
+#[cfg_attr(not(test), allow(dead_code))]
 fn connection_summaries(
     connections: &[sources::llu::wire::Connection],
     selection: &sources::llu::source::ConnectionSelection,

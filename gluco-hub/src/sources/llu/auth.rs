@@ -174,8 +174,7 @@ impl LluAuthClient {
                     .unwrap_or(5);
                 warn!(
                     attempt = attempt + 1,
-                    retry_after,
-                    "LLU {label} 429 rate-limited, retrying"
+                    retry_after, "LLU {label} 429 rate-limited, retrying"
                 );
                 tokio::time::sleep(Duration::from_secs(retry_after)).await;
                 continue;

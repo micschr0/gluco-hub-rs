@@ -263,18 +263,17 @@ impl Source for LluSource {
         // stay useful. Only appended when STRICTLY newer than the freshest
         // graphData entry, so collisions on the rare 5-min boundary do not
         // surface as duplicate-timestamp readings to sinks.
-        if let Some(live) = live_measurement {
-            if let Some(live_reading) =
+        if let Some(live) = live_measurement
+            && let Some(live_reading) =
                 reading_from_measurement(&live, &patient_id, &self.id, self.source_tz)
-            {
-                let newer_than_graph = readings
-                    .iter()
-                    .map(|r| r.timestamp)
-                    .max()
-                    .is_none_or(|t| live_reading.timestamp > t);
-                if newer_than_graph {
-                    readings.push(live_reading);
-                }
+        {
+            let newer_than_graph = readings
+                .iter()
+                .map(|r| r.timestamp)
+                .max()
+                .is_none_or(|t| live_reading.timestamp > t);
+            if newer_than_graph {
+                readings.push(live_reading);
             }
         }
 

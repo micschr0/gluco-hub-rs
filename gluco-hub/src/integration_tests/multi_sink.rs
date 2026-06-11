@@ -73,6 +73,8 @@ async fn one_reading_fans_out_to_both_ns_and_mqtt() {
         discovery_unit: MqttGlucoseUnit::default(),
         client_cert_file: None,
         client_key_file: None,
+        tailscale_hostname: None,
+        per_source: false,
     };
     let mqtt_sink: Arc<dyn Sink> = Arc::new(MqttSink::new(&mqtt_cfg, None).expect("mqtt sink"));
     let mqtt_dlq = Arc::new(DlqSink::open(mqtt_sink, dlq_dir.path(), 1000).expect("dlq mqtt"));
@@ -150,6 +152,8 @@ async fn watermark_drops_duplicates_across_both_sinks_in_steady_state() {
         discovery_unit: MqttGlucoseUnit::default(),
         client_cert_file: None,
         client_key_file: None,
+        tailscale_hostname: None,
+        per_source: false,
     };
     let mqtt_sink: Arc<dyn Sink> = Arc::new(MqttSink::new(&mqtt_cfg, None).expect("mqtt sink"));
     let mqtt_router = Arc::new(SinkRouter::new(Arc::new(

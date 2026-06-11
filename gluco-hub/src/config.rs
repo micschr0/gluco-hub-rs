@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::net::SocketAddr;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use ::config::{Config as ConfigBuilder, Environment, File, FileFormat};
@@ -721,7 +721,9 @@ pub fn verify_secrets(cfg: &Config) -> Result<(), ConfigError> {
             }
         };
         if value.is_none_or(|s| s.expose_secret().is_empty()) {
-            return Err(ConfigError::EmptySecret { field });
+            return Err(ConfigError::EmptySecret {
+                field: field.to_string(),
+            });
         }
     }
 
@@ -882,7 +884,7 @@ auth = "token"
         let cfg = load(Some(&path)).expect("load");
         let err = verify_secrets(&cfg).expect_err("must reject missing token");
         assert!(
-            matches!(err, ConfigError::EmptySecret { field } if field.contains("token")),
+            matches!(&err, ConfigError::EmptySecret { field } if field.contains("token")),
             "unexpected: {err:?}"
         );
     }
@@ -910,7 +912,7 @@ auth = "api_secret"
         cfg.source.ns_socket.as_mut().unwrap().api_secret = Some(SecretString::from(String::new()));
         let err = verify_secrets(&cfg).expect_err("must reject empty api_secret");
         assert!(
-            matches!(err, ConfigError::EmptySecret { field } if field.contains("api_secret")),
+            matches!(&err, ConfigError::EmptySecret { field } if field.contains("api_secret")),
             "unexpected: {err:?}"
         );
     }
