@@ -40,6 +40,8 @@ fn cfg(host: &str, port: u16, client_id: &str, topic_prefix: &str) -> MqttSinkCo
         discovery_unit: MqttGlucoseUnit::default(),
         client_cert_file: None,
         client_key_file: None,
+        tailscale_hostname: None,
+        per_source: false,
     }
 }
 

@@ -195,8 +195,9 @@ async fn serve(cfg: config::Config) -> Result<()> {
     // crash on startup than to start serving 401s after the bearer token
     // ended up empty.
     config::verify_secrets(&cfg).context("verify configured secrets")?;
-    info!("LLU schema fingerprint: ValueInMgPerDl, ValueInMmolPerL, TrendArrow, Timestamp, PatientId");
-
+    info!(
+        "LLU schema fingerprint: ValueInMgPerDl, ValueInMmolPerL, TrendArrow, Timestamp, PatientId"
+    );
 
     // state.dir hosts both the DLQ tree and the liveness heartbeat file.
     // The DLQ creates its own subdir lazily, but the heartbeat writer
@@ -326,17 +327,25 @@ fn resolve_bearer_token(cfg: &config::Config) -> Option<secrecy::SecretString> {
     cfg.http.bearer_token.clone()
 }
 
-
 /// Build sources to drive the poller. Priority order:
 /// 1. `source-llu` feature + `[source]` blocks configured.
-/// 2. `mock-source` feature → MockSource fixture.
-/// 3. Otherwise, empty vec (HTTP API stays up; data endpoints serve 503).
+/// 2. `source-ns-socket` feature + `[source.ns_socket]` block (only when no
+///    LLU source was configured — coexistence stays deferred).
+/// 3. `mock-source` feature → MockSource fixture.
+/// 4. Otherwise, empty vec (HTTP API stays up; data endpoints serve 503).
 ///
 /// Returns a list of `(name, source)` pairs. Legacy `[source.llu]` is named
 /// `"default"`; multi-source `[source.sources]` entries use their map key.
 fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Source>)>> {
+    // `cfg` is only read inside the feature-gated branches below; mark it
+    // used so the no-default-features build doesn't warn.
+    let _ = cfg;
     #[cfg_attr(
-        not(any(feature = "source-llu", feature = "mock-source")),
+        not(any(
+            feature = "source-llu",
+            feature = "source-ns-socket",
+            feature = "mock-source"
+        )),
         allow(unused_mut)
     )]
     let mut sources: Vec<(String, Arc<dyn Source>)> = Vec::new();
@@ -359,6 +368,18 @@ fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Sou
         }
     }
 
+    // NS-Socket is a standalone alternative to LLU; coexistence stays
+    // deferred, so it only contributes when no LLU source was configured.
+    #[cfg(feature = "source-ns-socket")]
+    if sources.is_empty()
+        && let Some(ns) = cfg.source.ns_socket.as_ref()
+    {
+        sources.push((
+            "default".to_string(),
+            build_ns_socket_source(ns).context("build NS-Socket source")?,
+        ));
+    }
+
     #[cfg(feature = "mock-source")]
     if sources.is_empty() {
         let mock =
@@ -367,6 +388,46 @@ fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Sou
     }
 
     Ok(sources)
+}
+
+/// Resolve `[source.ns_socket]` into a wired `NsSocketSource`.
+///
+/// V6 scaffold: the source compiles and registers, but its Socket.IO loop is
+/// stubbed (`[NSS001]`), so the poller surfaces a typed source error on each
+/// tick rather than producing readings. The credential is resolved from the
+/// environment-injected `SecretString` (never logged).
+#[cfg(feature = "source-ns-socket")]
+fn build_ns_socket_source(ns: &config::NsSocketSourceConfig) -> Result<Arc<dyn Source>> {
+    use config::NsSocketAuthMode;
+    use gluco_hub_core::SourceId;
+    use secrecy::SecretString;
+    use sources::ns_socket::client::{NsAuthMode, NsSocketClient};
+    use sources::ns_socket::source::NsSocketSource;
+
+    let (auth_mode, secret): (NsAuthMode, SecretString) = match ns.auth {
+        NsSocketAuthMode::Token => (
+            NsAuthMode::Token,
+            ns.token
+                .clone()
+                .context("[source.ns_socket] token required when auth = \"token\"")?,
+        ),
+        NsSocketAuthMode::ApiSecret => (
+            NsAuthMode::ApiSecret,
+            ns.api_secret
+                .clone()
+                .context("[source.ns_socket] api_secret required when auth = \"api_secret\"")?,
+        ),
+    };
+
+    let client = NsSocketClient::new(ns.base_url.clone(), auth_mode, secret, ns.history_hours);
+    let id = SourceId::new("ns_socket").context("build SourceId")?;
+    info!(
+        base_url = %ns.base_url,
+        auth = ?ns.auth,
+        history_hours = ns.history_hours,
+        "ns_socket source configured (V6 scaffold — Socket.IO loop stubbed)"
+    );
+    Ok(Arc::new(NsSocketSource::new(id, client)))
 }
 
 /// Resolve `[source.llu]` into a wired `LluAuthClient` + `LluCredentials`
@@ -452,7 +513,9 @@ fn build_llu_source(name: &str, llu: &config::LluSourceConfig) -> Result<Arc<dyn
         source_tz = %source_tz,
         "llu source configured"
     );
-    Ok(Arc::new(LluSource::new(id, client, creds, selection, source_tz)))
+    Ok(Arc::new(LluSource::new(
+        id, client, creds, selection, source_tz,
+    )))
 }
 
 /// One-shot LLU probe. Logs in, lists connections, fetches one graph,
@@ -578,6 +641,7 @@ fn write_heartbeat(path: &std::path::Path) -> std::io::Result<()> {
 /// Drive a single source: poll on `interval`, update `cache`, push to
 /// `sinks`, and touch the heartbeat file. Errors are logged; the loop
 /// never exits except via process shutdown.
+#[allow(clippy::too_many_arguments)]
 async fn poll_loop_single(
     name: String,
     source: Arc<dyn Source>,
@@ -864,10 +928,7 @@ struct BuiltSinks {
 ///
 /// When `per_source` is true on the MQTT sink, each source name gets
 /// its own MQTT sink with a unique client_id and topic_prefix.
-async fn build_sinks(
-    cfg: &config::Config,
-    source_names: &[String],
-) -> Result<BuiltSinks> {
+async fn build_sinks(cfg: &config::Config, source_names: &[String]) -> Result<BuiltSinks> {
     let _ = cfg;
     let _ = source_names;
     #[cfg_attr(
@@ -886,12 +947,14 @@ async fn build_sinks(
         // Per-source MQTT when enabled; one shared sink otherwise.
         if mqtt.per_source && !source_names.is_empty() {
             for name in source_names {
-                let sink = build_mqtt_sink(mqtt, Some(name)).await
+                let sink = build_mqtt_sink(mqtt, Some(name))
+                    .await
                     .context(format!("build MQTT sink for '{name}'"))?;
                 sink_list.push(sink as Arc<dyn Sink>);
             }
         } else {
-            let sink = build_mqtt_sink(mqtt, None).await
+            let sink = build_mqtt_sink(mqtt, None)
+                .await
                 .context("build MQTT sink")?;
             sink_list.push(sink as Arc<dyn Sink>);
         }
@@ -1002,6 +1065,10 @@ fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Si
 /// surname or birthdate. `is_active` is `true` for exactly the connection
 /// the poll loop fetches, as resolved by the source's `selection`.
 #[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
+// Only exercised by the e2e test today: the binary caller (MQTT patients
+// publisher) is deferred, so the non-test binary build sees it as dead.
+// Retained for when the publisher is revived; allow dead_code until then.
+#[cfg_attr(not(test), allow(dead_code))]
 fn connection_summaries(
     connections: &[sources::llu::wire::Connection],
     selection: &sources::llu::source::ConnectionSelection,

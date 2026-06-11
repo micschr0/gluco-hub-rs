@@ -30,7 +30,6 @@ use super::error::LluError;
 use super::wire::GlucoseMeasurement;
 use tracing::warn;
 
-
 /// LLU `Timestamp` field format: month/day/year with a 12-hour AM/PM clock
 /// in the patient's local wall-clock. Accepts both single- and
 /// zero-padded month/day/hour.
@@ -91,9 +90,7 @@ pub fn newest_measurement(
         .iter()
         .filter_map(|m| {
             let ts = m.timestamp.as_deref()?;
-            parse_llu_timestamp(ts, source_tz)
-                .ok()
-                .map(|t| (t, m))
+            parse_llu_timestamp(ts, source_tz).ok().map(|t| (t, m))
         })
         .max_by_key(|(t, _)| *t)
 }

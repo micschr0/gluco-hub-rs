@@ -14,6 +14,11 @@ publish = false
 [features]
 default = ["source-llu", "sink-nightscout"]
 source-llu = ["dep:sha2"]
+# V6 scaffold: Nightscout-as-a-source via Socket.IO. Standalone alternative
+# to LLU. No new runtime deps yet — the connect/subscribe loop is stubbed
+# (returns [NSS001]). When implemented it will add a rustls-based Socket.IO
+# client (candidate: rust-socketio), pending `cargo deny check`.
+source-ns-socket = []
 sink-nightscout = ["dep:sha1"]
 # V2: real MQTT v5 sink backed by rumqttc + rustls. Pulls in the
 # rumqttc client, the bytes crate (LastWill payload), and tokio-util

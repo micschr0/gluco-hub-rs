@@ -107,7 +107,6 @@ pub(crate) fn router_with_state(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
 }
 
-
 /// Adds `X-Disclaimer: not-for-medical-use` to every outgoing response,
 /// regardless of route or status code. Layered after the routing tree so
 /// it covers `/healthz`, `/metrics`, and `/glucose/*` uniformly.
