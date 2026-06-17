@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "gluco-hub"
-version = "2026.524.1"
+version = "2026.607.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "gluco-hub-core"
-version = "2026.524.1"
+version = "2026.607.2"
 dependencies = [
  "async-trait",
  "chrono",

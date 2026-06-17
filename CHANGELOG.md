@@ -8,12 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **End-to-end verification runbook** (`docs/VERIFICATION.md`) — structured manual verification covering automated tests, Docker testcontainer suite, Clock View E2E browser tests, HA live validation, and PHI checklist. Complements `V3_VALIDATION.md` and the CI gate.
-
-- **V5: mTLS for MQTT** — optional `client_cert_file` and `client_key_file` fields in `[sink.mqtt]`. When both are set, the MQTT sink presents a client certificate during TLS handshake for mutual TLS authentication. Backward-compatible: omitting both fields preserves standard server-only TLS.
-- **V5: JWT-as-password for LLU** — the `[source.llu] password` field now accepts a pre-obtained JWT. When the password looks like a JWT (3 segments, header starts `eyJ`), the bridge skips the LibreLink Up login call and uses the token directly as the Bearer credential. Non-JWT passwords continue through the normal login flow unchanged.
-- **V5: Tailscale MagicDNS discovery for MQTT** — new optional `tailscale_hostname` field in `[sink.mqtt]`. When set, gluco-hub resolves the hostname to a tailnet IP via the local `tailscaled` daemon's HTTP API at startup and uses the resolved IP as the broker address. Falls back to `broker_host` if tailscaled is unreachable. No new Cargo dependencies — uses the existing `reqwest` client.
 - **NS-Socket source scaffold (V6, feature-gated, off by default)** — new `source-ns-socket` Cargo feature and `[source.ns_socket]` config block lay the groundwork for using a Nightscout site as an upstream data source via its Socket.IO real-time feed (a standalone alternative to LibreLink Up). The `NsSocketSource` registers in the binary wiring and implements the `Source` trait, but the actual Socket.IO connect/subscribe loop is **stubbed**: it returns a typed `[NSS001] not yet implemented` error rather than panicking, so the poller surfaces a clean error code until the loop lands. Config supports `auth = "token"` (default, via `GLUCO_HUB__SOURCE__NS_SOCKET__TOKEN`) or `auth = "api_secret"` (via `GLUCO_HUB__SOURCE__NS_SOCKET__API_SECRET`), validated at the boundary; secrets stay in `SecretString` and are never logged. Adds **zero new runtime dependencies**. The verified Nightscout Socket.IO contract (default namespace, `authorize` handshake, `dataUpdate`/`sgvs` payload shape) is documented in the module and in `docs/EXTENDING.md`.
+
+## [2026.607.2] - 2026-06-07
 
 ### Fixed
 
@@ -24,6 +21,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (outside `/api/hassio_ingress/`), resulting in a 404 on the HA server.
   Serving `clock.html` directly at `/` keeps the response inside the
   proxy context.
+- **cargo-deny: waive `proc-macro-error2` unmaintained advisory** — the
+  RUSTSEC advisory for the transitive `proc-macro-error2` crate is
+  ignored in `deny.toml` until an upstream replacement lands, so
+  `cargo deny check` stays green.
+
+## [2026.607.1] - 2026-06-07
+
+### Fixed
+
+- **HA Ingress root path** — `GET /` redirects to `/clock` so the Home
+  Assistant Ingress proxy serves the Clock View at the add-on root.
+  (Superseded by direct serving in 2026.607.2.)
+
+## [2026.606.0] - 2026-06-06
+
+### Added
+
+- **Multi-source support** — the poller now drives multiple configured
+  sources concurrently (one poll loop per source), with per-source MQTT
+  sinks when `per_source` is set. Includes HTTP 429 retry-after handling,
+  relaxed field optionality on the LLU wire format, and an LLU schema
+  fingerprint logged at startup.
+- **Clock View** — new SSE-backed live glucose view at `GET /clock` with a
+  polished UI and `GET /clock/history`.
+- **Poll status API** — `GET /api/v1/status` exposes `PollStatus`
+  (last poll, last reading, per-source health) from `AppState`.
+- **End-to-end verification runbook** (`docs/VERIFICATION.md`) — structured manual verification covering automated tests, Docker testcontainer suite, Clock View E2E browser tests, HA live validation, and PHI checklist. Complements `V3_VALIDATION.md` and the CI gate.
+- **V5: mTLS for MQTT** — optional `client_cert_file` and `client_key_file` fields in `[sink.mqtt]`. When both are set, the MQTT sink presents a client certificate during TLS handshake for mutual TLS authentication. Backward-compatible: omitting both fields preserves standard server-only TLS.
+- **V5: JWT-as-password for LLU** — the `[source.llu] password` field now accepts a pre-obtained JWT. When the password looks like a JWT (3 segments, header starts `eyJ`), the bridge skips the LibreLink Up login call and uses the token directly as the Bearer credential. Non-JWT passwords continue through the normal login flow unchanged.
+- **V5: Tailscale MagicDNS discovery for MQTT** — new optional `tailscale_hostname` field in `[sink.mqtt]`. When set, gluco-hub resolves the hostname to a tailnet IP via the local `tailscaled` daemon's HTTP API at startup and uses the resolved IP as the broker address. Falls back to `broker_host` if tailscaled is unreachable. No new Cargo dependencies — uses the existing `reqwest` client.
+
+### Fixed
+
+- **Nightscout v1 authentication** — the Nightscout sink now authenticates
+  against the v1 API with the hashed `api-secret` header instead of the v3
+  JWT flow, fixing rejected entry uploads. (#24, #39)
 
 ## [2026.524.1] - 2026-05-24
 
@@ -94,7 +127,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Sink backfill via per-sink watermark** (V3) — each sink is now wrapped in a `SinkRouter` that tracks the highest reading timestamp it has successfully pushed. The fan-out only delivers strictly-newer readings per cycle. Two consequences: (a) the MQTT sink no longer republishes the full ~24 h `graphData` batch every minute — only the new reading; (b) when a sink fails, its watermark stays put and the next poll-cycle replays the missed window automatically (LLU's 24 h history covers most realistic outages — no on-disk DLQ required). New Prometheus counters `cgm_sink_filtered_total` and `cgm_sink_replayed_total` make the behaviour visible. Watermarks are in-memory and reset on restart (persisting them is tracked as part of the V3 DLQ work).
 - **Persistent dead-letter queue** (V3) — `DlqSink` sits between `SinkRouter` and the real sink. Failed pushes accumulate in a per-sink JSONL file at `<state_dir>/dlq/<sink>.jsonl` (atomic writes via `tempfile::NamedTempFile::persist`) and replay on the next successful push, surviving process restarts and outages longer than LLU's 24 h history. New config: `[state] dir` (default `./state`), `[dlq] enabled` (default `true`), `[dlq] max_entries` (default `10000` ≈ 35 days at the 5-min raster). Cap-exceeding entries drop oldest-first. Four new metrics: `cgm_dlq_enqueued_total{sink}`, `cgm_dlq_drained_total{sink}`, `cgm_dlq_evicted_total{sink}`, `cgm_dlq_size{sink}` gauge.
 
-[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.524.1...HEAD
+[Unreleased]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.607.2...HEAD
+[2026.607.2]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.607.1...v2026.607.2
+[2026.607.1]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.606.0...v2026.607.1
+[2026.606.0]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.524.1...v2026.606.0
 [2026.524.1]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.524.0...v2026.524.1
 [2026.524.0]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.516.2...v2026.524.0
 [2026.516.2]: https://github.com/micschr0/gluco-hub-rs/compare/v2026.516.1...v2026.516.2
