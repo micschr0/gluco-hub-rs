@@ -4,7 +4,6 @@ name: Release
 #
 # Triggers and resulting tags (CalVer-on-SemVer scheme, YYYY.0M0D.PATCH):
 #   - push to main         → :main, :sha-<short>
-#   - push to develop      → :develop, :sha-<short>   (active dev branch)
 #   - pre-release tag      → :X.Y.Z-rc.N, :testing, :sha-<short>
 #       (e.g. v2026.510.0-rc.1; :latest and floating-version tags stay
 #        on the prior final release)
@@ -20,10 +19,10 @@ name: Release
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     tags: ['v*']
   pull_request:
-    branches: [main, develop]
+    branches: [main]
   workflow_dispatch:
 
 # Don't cancel a release in flight if a newer commit lands — the
@@ -212,8 +211,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Four-tier channel model:
-      #   :develop                   — active integration branch (V3 work)
+      # Channel model:
       #   :main                      — stable; main-only pushes (release-cuts)
       #   :testing                   — pre-release tags (v*-rc/alpha/beta)
       #   :latest, :stable, floating — final tags only (v2026.510.0, no suffix)
@@ -238,7 +236,6 @@ jobs:
             org.opencontainers.image.description=LibreLink Up → HTTP / Nightscout bridge
             org.opencontainers.image.licenses=AGPL-3.0-or-later
           tags: |
-            type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
             type=raw,value=main,enable={{is_default_branch}}
             type=raw,value=testing,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-') }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}

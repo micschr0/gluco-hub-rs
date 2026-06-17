@@ -158,7 +158,7 @@ or accept that DLQ contents reset on each container recreation.
 
 ### GHCR storage hygiene
 
-Every push to `main`, `develop`, or a `v*` tag publishes a multi-arch
+Every push to `main` or a `v*` tag publishes a multi-arch
 manifest list plus its underlying per-arch image manifests. GHCR shows
 the per-arch manifests as separate "package versions"; over time these
 accumulate as untagged digests even after the named tag has rolled
