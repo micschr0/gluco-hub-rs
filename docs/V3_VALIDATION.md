@@ -10,16 +10,18 @@ instances. They do **not** cover:
 - long-running operational behaviour (24 h+ DLQ persistence, sustained
   recovery cycles).
 
-This checklist is the manual gate before merging `develop` → `main`
-and cutting a CalVer release. Pull the `:develop` image and run it
-against your live infrastructure. Tick each box. File any unticked
-item as an issue before the merge.
+This checklist is the manual validation pass to run on a feature-branch
+PR before merge — or on the `:main` integration build before cutting a
+CalVer release. Pull the image under test (`:main` for the latest build
+on the default branch, or `:sha-<short>` for an immutable commit
+snapshot) and run it against your live infrastructure. Tick each box.
+File any unticked item as an issue before the merge / release.
 
 ## 0. Setup
 
-- [ ] `docker pull ghcr.io/micschr0/gluco-hub:develop`
+- [ ] `docker pull ghcr.io/micschr0/gluco-hub:main`
 - [ ] Container has the right version stamp:
-      `docker run --rm ghcr.io/micschr0/gluco-hub:develop --version`
+      `docker run --rm ghcr.io/micschr0/gluco-hub:main --version`
       → expected: `gluco-hub <YYYY.MMDD.PATCH>` matching `Cargo.toml`.
 - [ ] Persistent volume mounted at the configured `[state] dir` (DLQ
       survives container recreation).
@@ -117,12 +119,10 @@ item as an issue before the merge.
 
 ## 8. Tag / channel sanity
 
-- [ ] `docker pull ghcr.io/micschr0/gluco-hub:main` — equal-or-older
-      than `:develop` (V3 not yet merged to main).
 - [ ] `docker pull ghcr.io/micschr0/gluco-hub:latest` — equal-or-older
-      than `:main` (no final release cut yet from this V3 branch).
-- [ ] `docker pull ghcr.io/micschr0/gluco-hub:sha-<develop-HEAD>` —
-      identical digest to `:develop`.
+      than `:main` (no final release cut yet from this batch of changes).
+- [ ] `docker pull ghcr.io/micschr0/gluco-hub:sha-<main-HEAD>` —
+      identical digest to `:main`.
 
 ## Sign-off
 
