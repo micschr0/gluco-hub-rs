@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   # Run on every PR regardless of base branch so stacked feature→feature
   # PRs get fmt/clippy/test/build too — formatting drift on an inner branch
   # of a stack must not stay invisible until it retargets main. The heavy
@@ -74,7 +74,7 @@ jobs:
 
       # The `integration-tests` feature pulls in the testcontainers
       # surface; lint it explicitly too so changes there don't slip
-      # past clippy on develop pushes (the dedicated `integration-tests`
+      # past clippy on main pushes (the dedicated `integration-tests`
       # job below only runs for PRs to main).
       - name: clippy --features integration-tests
         run: cargo clippy --all-targets --features integration-tests --locked -- -D warnings
@@ -156,7 +156,7 @@ jobs:
 
   # Container-backed integration tests (Mosquitto, Nightscout + MongoDB,
   # combined fan-out). Slow — ~5 minutes per test boot of NS — so gated
-  # to PRs against `main` only. develop pushes get fmt/clippy/test/build
+  # to PRs against `main` only. main pushes get fmt/clippy/test/build
   # but not this lane.
   integration-tests:
     name: integration-tests (container-backed)
