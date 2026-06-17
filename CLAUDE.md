@@ -80,9 +80,9 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 
 - **V1** ✓: LLU source + Nightscout sink + HTTP API + optional Bearer
 - **V2** ✓: MQTT sink (v5, LWT, schema `v: 1`, topics `_health` and `_stats`)
-- **V3** ✓: HA MQTT auto-discovery, per-sink watermark backfill (SinkRouter), persistent DLQ (DlqSink). Pre-merge gate: `docs/V3_VALIDATION.md` checklist run against real infrastructure with `:develop`.
-- **V5**: tailscale-rs embedded, mTLS for MQTT, JWT-as-password
-- **V6**: NS-Socket source — Nightscout as an alternative data source via Socket.IO (NS becomes the upstream; gluco-hub fans out to MQTT / HA / Webhook). Standalone alternative to LLU; multi-source coexistence stays deferred.
+- **V3** ✓: HA MQTT auto-discovery, per-sink watermark backfill (SinkRouter), persistent DLQ (DlqSink). Pre-merge gate: `docs/V3_VALIDATION.md` checklist run against real infrastructure with the `:main` image (or a `:sha-<short>` snapshot).
+- **V5** ✓: mTLS for MQTT, JWT-as-password, Tailscale MagicDNS discovery (shipped 2026.606.0). Tailscale resolves via the local `tailscaled` HTTP API at startup — the lighter approach that shipped instead of the originally-planned embedded `tailscale-rs`.
+- **V6** (scaffolded): NS-Socket source — Nightscout as an alternative data source via Socket.IO (NS becomes the upstream; gluco-hub fans out to MQTT / HA / Webhook). Standalone alternative to LLU; multi-source coexistence stays deferred. Feature `source-ns-socket` + `[source.ns_socket]` config landed (#45); the Socket.IO connect/subscribe loop is still **stubbed** (returns `NSS001 not yet implemented`).
 - **Deferred** (revisit when a concrete use case emerges):
   - TUI
   - Webhook sink
@@ -105,6 +105,13 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 - Multi-source: serve() spawns per-source poll_loop_single tasks; no wrapper exists
 - Patients publisher deferred 2026-06-07 (ConnectionsWiring, BuiltSinks.mqtt removed)
 - Test MqttSinkConfig helpers must include per_source, client_cert_file, client_key_file
+
+### Session Learnings (2026-06-17)
+
+- Version lives in **three** places that must stay in lockstep: `[workspace.package].version` in `Cargo.toml` **and** the two `version = "…"` entries in `Cargo.lock` (gluco-hub + gluco-hub-core). `--locked` CI breaks if they drift — only `cargo release` keeps them aligned, never edit by hand.
+- `develop` branch refs are now fully purged (CI/release workflows, README, OPERATIONS, V3_VALIDATION, VERIFICATION) — the validation/verification runbooks target the `:main` image. Don't reintroduce `:develop`.
+- `renovate.json` disables the `pin` update-type for the `cargo` manager (packageRule: `matchManagers:["cargo"]` + `matchUpdateTypes:["pin"]` + `enabled:false`) to enforce "no exact pins outside Cargo.lock". Docker-digest and GitHub-Actions-SHA pinning stay on via `config:best-practices`. Don't re-enable cargo pinning.
+- `lockFileMaintenance` has `automerge:true` in `renovate.json` — stale lock-file PRs self-resolve on rebase; tick the rebase checkbox rather than merging a stale red run.
 
 ## Releasing & Branching
 
