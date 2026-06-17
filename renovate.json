@@ -25,6 +25,12 @@
 
   "packageRules": [
     {
+      "description": "Never pin Cargo crate versions to exact '=' — project convention keeps latest minor ranges in Cargo.toml, pins live only in Cargo.lock. Docker digests and GitHub Actions SHAs are still pinned via config:best-practices.",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["pin"],
+      "enabled": false
+    },
+    {
       "description": "Group the tokio ecosystem into a single PR",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["tokio*"],
