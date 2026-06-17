@@ -67,9 +67,9 @@ PHI guard (asserted in the spec): `localStorage` holds only `gluco_unit` /
 ## 3. Live end-to-end in Home Assistant (the real confirmation)
 
 The only test that exercises live LibreLink Up → MQTT → HA panel, and the only
-place the Ingress proxy behavior is real. See plan `:develop`-image-in-HA.
+place the Ingress proxy behavior is real. Run it against the `:main` image in HA.
 
-1. Build/publish the `:develop` image and add the add-on locally in HA.
+1. Build/publish the `:main` image and add the add-on locally in HA.
 2. Install the **Mosquitto broker** add-on; configure the MQTT integration.
 3. Set LibreLink Up credentials + `topic_prefix`; start the add-on.
 4. Verify:
