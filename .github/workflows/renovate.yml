@@ -5,6 +5,10 @@ on:
     - cron: "0 8 * * 1"
   workflow_dispatch:
 
+concurrency:
+  group: renovate-${{ github.ref }}
+  cancel-in-progress: false
+
 # Deny-all by default. Renovate authenticates with its own RENOVATE_TOKEN
 # (PAT) — the workflow's GITHUB_TOKEN only needs `contents: read` for
 # checkout.
