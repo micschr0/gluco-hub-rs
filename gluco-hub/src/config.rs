@@ -668,7 +668,15 @@ pub fn resolve_secret_file(path: &Path) -> Result<String, ConfigError> {
         path: path.to_path_buf(),
         source,
     })?;
-    let value = raw.trim_end_matches(['\r', '\n']).to_string();
+    // Strip UTF-8 BOM first (written by some Windows editors and kubectl),
+    // then trim all leading/trailing whitespace (spaces, tabs, CR/LF).
+    // Order matters: BOM sits before any whitespace, so BOM-then-trim is
+    // always safe. A BOM stripped after a general trim would be missed if
+    // the file started with whitespace before the BOM (pathological but possible).
+    let value = raw
+        .trim_start_matches('\u{FEFF}')
+        .trim()
+        .to_string();
     if value.is_empty() {
         return Err(ConfigError::SecretFileEmpty {
             path: path.to_path_buf(),
