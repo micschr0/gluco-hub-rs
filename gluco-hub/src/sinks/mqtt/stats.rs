@@ -7,6 +7,7 @@
 //! poll-loop never poke struct fields directly. Snapshots are pure-data
 //! and can be taken without holding the lock across the publish.
 
+#[cfg(test)]
 use std::sync::Mutex;
 use std::time::Instant;
 
