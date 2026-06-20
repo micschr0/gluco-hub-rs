@@ -22,6 +22,13 @@ pub struct PollStatus {
     /// returned at least one measurement.
     pub last_successful_reading_at: Option<DateTime<Utc>>,
 
+    /// Set to `Utc::now()` when a poll attempt fails (error or timeout).
+    /// Cleared (set to `None`) on the next successful reading.
+    /// Used to derive `llu.connected` in `GET /api/v1/status`:
+    /// `connected = last_poll_failed_at.is_none()` once a reading has been
+    /// seen, so a single error after a long run correctly shows disconnected.
+    pub last_poll_failed_at: Option<DateTime<Utc>>,
+
     /// Seconds until the next scheduled poll tick fires (best-effort
     /// estimate written after each tick).
     pub next_poll_in_secs: u64,

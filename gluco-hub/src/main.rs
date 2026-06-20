@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -236,6 +237,17 @@ async fn serve(cfg: config::Config) -> Result<()> {
     // (`GET /clock/history`). Shared with the poll loop, which pushes one point
     // per successful reading.
     let clock_history = api::new_history();
+    // Shared state for the status endpoint: real values from running sinks.
+    // Created here so they can be passed both to AppState (for reads) and to
+    // the sink builder (for writes), without a circular dependency.
+    let mqtt_connected: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let dlq_depth: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+    let sources = build_default_source(&cfg)?;
+    let source_names: Vec<String> = sources.iter().map(|(n, _)| n.clone()).collect();
+    let built_sinks = build_sinks(&cfg, &source_names, Arc::clone(&mqtt_connected), Arc::clone(&dlq_depth)).await?;
+    // Only advertise MQTT/DLQ state when those features are actually enabled.
+    let mqtt_connected_state = cfg.sink.mqtt.is_some().then(|| Arc::clone(&mqtt_connected));
+    let dlq_depth_state = cfg.dlq.enabled.then(|| Arc::clone(&dlq_depth));
     let state = api::AppState {
         cache: cache.clone(),
         metrics_handle,
@@ -244,10 +256,9 @@ async fn serve(cfg: config::Config) -> Result<()> {
         poll_status_rx,
         clock_tx: clock_tx.clone(),
         clock_history: clock_history.clone(),
+        mqtt_connected: mqtt_connected_state,
+        dlq_depth: dlq_depth_state,
     };
-    let sources = build_default_source(&cfg)?;
-    let source_names: Vec<String> = sources.iter().map(|(n, _)| n.clone()).collect();
-    let built_sinks = build_sinks(&cfg, &source_names).await?;
     let sinks = built_sinks.routed;
     info!(sink_count = sinks.len(), "sinks configured");
     if sinks.is_empty() && !cfg.http.enabled {
@@ -661,8 +672,11 @@ async fn poll_loop_single(
     // Track across iterations so partial updates preserve previous values.
     // `last_successful_reading_at` stays `None` until the first successful
     // fetch; `last_poll_attempt_at` is set unconditionally each iteration.
+    // `last_poll_failed_at` is set on error/timeout and cleared on success so
+    // `llu.connected` reflects the most recent poll outcome.
     let mut last_poll_attempt_at: Option<chrono::DateTime<chrono::Utc>>;
     let mut last_successful_reading_at: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut last_poll_failed_at: Option<chrono::DateTime<chrono::Utc>> = None;
 
     // Previous glucose value (mg/dL), retained across iterations so the Clock
     // View SSE event can carry a delta. The single-slot `ReadingCache` keeps
@@ -689,6 +703,7 @@ async fn poll_loop_single(
                     timeout_secs = sink_timeout.as_secs(),
                     "source fetch timed out",
                 );
+                last_poll_failed_at = Some(chrono::Utc::now());
             }
             Ok(Err(e)) => {
                 ::metrics::counter!(
@@ -703,6 +718,7 @@ async fn poll_loop_single(
                     error = %e,
                     "source fetch failed",
                 );
+                last_poll_failed_at = Some(chrono::Utc::now());
             }
             Ok(Ok(batch)) => {
                 let count = batch.len();
@@ -752,6 +768,9 @@ async fn poll_loop_single(
                 // responded but had no measurements to report.
                 if !batch.is_empty() {
                     last_successful_reading_at = Some(chrono::Utc::now());
+                    // Clear the failure flag so llu.connected recovers
+                    // after transient errors.
+                    last_poll_failed_at = None;
                 }
 
                 // Publish the newest reading to Clock View SSE subscribers.
@@ -796,6 +815,7 @@ async fn poll_loop_single(
         let _ = poll_status_tx.send(poll_status::PollStatus {
             last_poll_attempt_at,
             last_successful_reading_at,
+            last_poll_failed_at,
             next_poll_in_secs,
             poll_interval_secs,
         });
@@ -928,9 +948,15 @@ struct BuiltSinks {
 ///
 /// When `per_source` is true on the MQTT sink, each source name gets
 /// its own MQTT sink with a unique client_id and topic_prefix.
-async fn build_sinks(cfg: &config::Config, source_names: &[String]) -> Result<BuiltSinks> {
+///
+/// `mqtt_connected` and `dlq_depth` are shared atomics updated by the running
+/// sinks so `GET /api/v1/status` can reflect real runtime values.
+async fn build_sinks(cfg: &config::Config, source_names: &[String], mqtt_connected: Arc<AtomicBool>, dlq_depth: Arc<AtomicU64>) -> Result<BuiltSinks> {
     let _ = cfg;
     let _ = source_names;
+    // Used only when feature-gated sink branches are compiled in.
+    let _ = &mqtt_connected;
+    let _ = &dlq_depth;
     #[cfg_attr(
         not(any(feature = "sink-nightscout", feature = "sink-mqtt")),
         allow(unused_mut)
@@ -945,15 +971,24 @@ async fn build_sinks(cfg: &config::Config, source_names: &[String]) -> Result<Bu
     #[cfg(feature = "sink-mqtt")]
     if let Some(mqtt) = cfg.sink.mqtt.as_ref() {
         // Per-source MQTT when enabled; one shared sink otherwise.
+        // Only the first MQTT sink updates `mqtt_connected` — per-source
+        // sinks share the same broker, so any ConnAck is representative.
         if mqtt.per_source && !source_names.is_empty() {
+            let mut first = true;
             for name in source_names {
-                let sink = build_mqtt_sink(mqtt, Some(name))
+                let connected_flag = if first {
+                    first = false;
+                    Some(Arc::clone(&mqtt_connected))
+                } else {
+                    None
+                };
+                let sink = build_mqtt_sink(mqtt, Some(name), connected_flag)
                     .await
                     .context(format!("build MQTT sink for '{name}'"))?;
                 sink_list.push(sink as Arc<dyn Sink>);
             }
         } else {
-            let sink = build_mqtt_sink(mqtt, None)
+            let sink = build_mqtt_sink(mqtt, None, Some(Arc::clone(&mqtt_connected)))
                 .await
                 .context("build MQTT sink")?;
             sink_list.push(sink as Arc<dyn Sink>);
@@ -970,8 +1005,13 @@ async fn build_sinks(cfg: &config::Config, source_names: &[String]) -> Result<Bu
         sink_list
             .into_iter()
             .map(|inner| {
-                let dlq = dlq::DlqSink::open(inner, &cfg.state.dir, cfg.dlq.max_entries)
-                    .with_context(|| format!("open DLQ at {}", cfg.state.dir.display()))?;
+                let dlq = dlq::DlqSink::open_with_shared_depth(
+                    inner,
+                    &cfg.state.dir,
+                    cfg.dlq.max_entries,
+                    Some(Arc::clone(&dlq_depth)),
+                )
+                .with_context(|| format!("open DLQ at {}", cfg.state.dir.display()))?;
                 Ok::<Arc<sink_router::SinkRouter>, anyhow::Error>(Arc::new(
                     sink_router::SinkRouter::new(Arc::new(dlq)),
                 ))
@@ -990,10 +1030,15 @@ async fn build_sinks(cfg: &config::Config, source_names: &[String]) -> Result<Bu
 /// Build the MQTT sink and return it as `Arc<MqttSink>` so the caller can
 /// share it between the `Sink` trait path (glucose readings) and direct
 /// method calls (e.g. `publish_patients`).
+///
+/// `connected_flag` is an optional `AtomicBool` that the MQTT poll loop
+/// will set to `true` on ConnAck and `false` on connection error. Used by
+/// `GET /api/v1/status` to report real connection state.
 #[cfg(feature = "sink-mqtt")]
 async fn build_mqtt_sink(
     cfg: &config::MqttSinkConfig,
     source_name: Option<&str>,
+    connected_flag: Option<Arc<AtomicBool>>,
 ) -> Result<Arc<sinks::mqtt::MqttSink>> {
     use sinks::mqtt::MqttSink;
 
@@ -1036,7 +1081,7 @@ async fn build_mqtt_sink(
     );
 
     // Build with the potentially-resolved broker host.
-    MqttSink::new(&resolved_cfg, password)
+    MqttSink::new(&resolved_cfg, password, connected_flag)
         .map(Arc::new)
         .map_err(|e| anyhow::anyhow!("{e}"))
 }

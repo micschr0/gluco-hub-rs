@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::sync::atomic::Ordering;
+
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode};
@@ -31,12 +33,30 @@ pub async fn status(State(state): State<AppState>) -> Response {
         ts: now,
         data: StatusData {
             llu: LluStatus {
-                connected: poll.last_successful_reading_at.is_some(),
+                // connected = true once we have had a successful reading AND
+                // the most recent poll attempt did not fail. A single error
+                // after a long run sets last_poll_failed_at and flips this
+                // flag until the next successful reading clears it.
+                connected: poll.last_successful_reading_at.is_some()
+                    && poll.last_poll_failed_at.is_none(),
                 last_poll_attempt_at: poll.last_poll_attempt_at,
                 last_successful_reading_at: poll.last_successful_reading_at,
             },
-            mqtt: MqttStatus { connected: true },
-            dlq: DlqStatus { depth: 0 },
+            mqtt: MqttStatus {
+                connected: state
+                    .mqtt_connected
+                    .as_ref()
+                    .map(|a| a.load(Ordering::Relaxed))
+                    // If no MQTT sink is configured, omit/default to false.
+                    .unwrap_or(false),
+            },
+            dlq: DlqStatus {
+                depth: state
+                    .dlq_depth
+                    .as_ref()
+                    .map(|a| a.load(Ordering::Relaxed))
+                    .unwrap_or(0),
+            },
             next_poll_in_secs: poll.next_poll_in_secs,
             poll_interval_secs: poll.poll_interval_secs,
         },
@@ -114,6 +134,8 @@ mod tests {
             poll_status_rx: rx,
             clock_tx: std::sync::Arc::new(clock_tx),
             clock_history: crate::api::new_history(),
+            mqtt_connected: None,
+            dlq_depth: None,
         }
     }
 
@@ -122,6 +144,7 @@ mod tests {
         let state = make_state(PollStatus {
             last_poll_attempt_at: None,
             last_successful_reading_at: None,
+            last_poll_failed_at: None,
             next_poll_in_secs: 60,
             poll_interval_secs: 60,
         });
@@ -142,6 +165,7 @@ mod tests {
         let state = make_state(PollStatus {
             last_poll_attempt_at: Some(now),
             last_successful_reading_at: Some(now),
+            last_poll_failed_at: None,
             next_poll_in_secs: 17,
             poll_interval_secs: 60,
         });
@@ -165,7 +189,8 @@ mod tests {
         assert_eq!(json["data"]["llu"]["connected"], true);
         assert!(json["data"]["llu"]["last_poll_attempt_at"].is_string());
         assert!(json["data"]["llu"]["last_successful_reading_at"].is_string());
-        assert_eq!(json["data"]["mqtt"]["connected"], true);
+        // No MQTT sink wired in test state → connected defaults to false.
+        assert_eq!(json["data"]["mqtt"]["connected"], false);
         assert_eq!(json["data"]["dlq"]["depth"], 0);
     }
 
