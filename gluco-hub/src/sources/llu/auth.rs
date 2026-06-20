@@ -159,6 +159,7 @@ impl LluAuthClient {
         label: &'static str,
     ) -> Result<reqwest::Response, LluError> {
         const MAX_ATTEMPTS: u32 = 3;
+        let mut last_retry_after: u64 = 5;
         for attempt in 0..MAX_ATTEMPTS {
             let resp = req
                 .try_clone()
@@ -166,7 +167,7 @@ impl LluAuthClient {
                 .send()
                 .await?;
             if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                let retry_after = resp
+                last_retry_after = resp
                     .headers()
                     .get("Retry-After")
                     .and_then(|v| v.to_str().ok())
@@ -174,16 +175,20 @@ impl LluAuthClient {
                     .unwrap_or(5);
                 warn!(
                     attempt = attempt + 1,
-                    retry_after, "LLU {label} 429 rate-limited, retrying"
+                    retry_after = last_retry_after,
+                    "LLU {label} 429 rate-limited, retrying"
                 );
-                tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                tokio::time::sleep(Duration::from_secs(last_retry_after)).await;
                 continue;
             }
             return Ok(resp);
         }
-        Err(LluError::Transport(format!(
-            "{label} rate-limited after {MAX_ATTEMPTS} attempts"
-        )))
+        // Return a distinct error so callers can distinguish rate-limiting
+        // from generic transport failures — enables targeted backoff and
+        // monitoring on the LLU010 error code.
+        Err(LluError::RateLimited {
+            retry_after_secs: last_retry_after,
+        })
     }
 
     /// Authenticate with LibreLink Up. Follows at most one region redirect:

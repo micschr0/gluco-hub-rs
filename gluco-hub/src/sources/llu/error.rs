@@ -33,6 +33,9 @@ pub enum LluError {
 
     #[error("[LLU009] no LLU connection matched selection: {selection}")]
     NoConnection { selection: String },
+
+    #[error("[LLU010] rate limited by LibreLink Up API; retry after {retry_after_secs}s")]
+    RateLimited { retry_after_secs: u64 },
 }
 
 impl LluError {
@@ -52,6 +55,7 @@ impl LluError {
             LluError::BadTimestamp { .. } => "LLU007",
             LluError::Unauthorized { .. } => "LLU008",
             LluError::NoConnection { .. } => "LLU009",
+            LluError::RateLimited { .. } => "LLU010",
         }
     }
 }

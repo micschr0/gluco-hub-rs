@@ -102,6 +102,7 @@ const DRYRUN_EXIT_TABLE: &[(&str, u8)] = &[
     ("[LLU007]", 4), // bad timestamp
     ("[LLU001]", 5), // transport
     ("[LLU005]", 5), // redirect loop
+    ("[LLU010]", 5), // rate limited
     ("[CFG", 2),     // config / env (any CFG0xx)
 ];
 
