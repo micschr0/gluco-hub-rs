@@ -224,15 +224,23 @@ impl Sink for DlqSink {
 }
 
 /// Merge `existing` and `batch` into a single set keyed by
-/// `(patient_id, timestamp_secs)`, sorted oldest-first. Later occurrences
-/// (from `batch`) win on collisions — important when LLU later returns a
-/// trend-corrected version of the same timestamp.
+/// `(source_id, patient_id, timestamp_secs)`, sorted oldest-first. Later
+/// occurrences (from `batch`) win on collisions — important when LLU later
+/// returns a trend-corrected version of the same timestamp.
+///
+/// `source_id` is included in the key to prevent silent data loss in
+/// multi-patient / multi-source deployments where two different sources
+/// could produce readings with the same patient_id + timestamp combination.
 fn merge_dedup(existing: &[Reading], batch: &[Reading]) -> Vec<Reading> {
     use std::collections::BTreeMap;
-    let mut map: BTreeMap<(String, i64), Reading> = BTreeMap::new();
+    let mut map: BTreeMap<(String, String, i64), Reading> = BTreeMap::new();
     for r in existing.iter().chain(batch.iter()) {
         map.insert(
-            (r.patient_id.as_str().to_string(), r.timestamp.timestamp()),
+            (
+                r.source_id.as_str().to_string(),
+                r.patient_id.as_str().to_string(),
+                r.timestamp.timestamp(),
+            ),
             r.clone(),
         );
     }
