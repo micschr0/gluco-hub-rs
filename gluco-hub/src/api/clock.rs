@@ -244,7 +244,7 @@ fn validate_glucose_param(value: f64, name: &str) -> Result<f64, String> {
             "invalid {name}: {value} is not a finite number (NaN and Inf are not allowed)"
         ));
     }
-    if value < GLUCOSE_PARAM_MIN || value > GLUCOSE_PARAM_MAX {
+    if !(GLUCOSE_PARAM_MIN..=GLUCOSE_PARAM_MAX).contains(&value) {
         return Err(format!(
             "invalid {name}: {value} is outside the medical glucose range [{GLUCOSE_PARAM_MIN}, {GLUCOSE_PARAM_MAX}] mg/dL"
         ));
