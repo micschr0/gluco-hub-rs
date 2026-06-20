@@ -439,24 +439,17 @@ fn is_jwt(s: &str) -> bool {
     s.len() >= 20 && s.matches('.').count() == 2 && s.starts_with("eyJ")
 }
 
-/// Minimal base64url decoder. Accepts standard base64url alphabet
-/// (`-` and `_` as the last two characters) with optional padding.
+/// Base64url decoder (URL-safe alphabet, no padding).
+///
+/// Uses the `base64` crate's `URL_SAFE_NO_PAD` engine so decoding is
+/// correct for arbitrary-length inputs and residue bits are validated.
 fn base64url_decode(input: &str) -> Option<Vec<u8>> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    use base64::Engine as _;
+    // Trim padding characters before decoding with NO_PAD engine.
     let input = input.trim_end_matches('=');
-    let mut buf = Vec::with_capacity(input.len() * 3 / 4);
-    let mut accum: u32 = 0;
-    let mut bits: u32 = 0;
-    for &b in input.as_bytes() {
-        let val = ALPHABET.iter().position(|&c| c == b)? as u32;
-        accum = (accum << 6) | val;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            buf.push((accum >> bits) as u8);
-        }
-    }
-    Some(buf)
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(input)
+        .ok()
 }
 
 /// Extract a user identifier from the JWT payload. Tries common claims:
