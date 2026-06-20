@@ -121,6 +121,10 @@ const NSDRYRUN_EXIT_TABLE: &[(&str, u8)] = &[
 /// on every subcommand. Printed to stderr BEFORE tracing initialisation
 /// so it appears even when the operator pipes stdout JSON to a log
 /// aggregator and uses stderr for human-readable startup output.
+///
+/// eprintln! is intentional: stderr keeps the disclaimer out of the
+/// machine-readable stdout stream (dryrun JSON) and out of structured
+/// tracing output (which goes to stdout in JSON mode).
 fn print_disclaimer_banner() {
     eprintln!("===========================================================");
     eprintln!(
@@ -592,6 +596,9 @@ async fn dryrun(cfg: &config::Config) -> Result<()> {
         "graph_count": graph.data.graph_data.len(),
         "latest": latest,
     });
+    // println! is intentional here: dryrun output is machine-readable JSON
+    // on stdout (scripts/llu-dryrun.sh captures it). Using tracing would
+    // mix structured log lines into the JSON stream.
     println!("{}", serde_json::to_string(&summary).expect("json"));
     Ok(())
 }
@@ -622,6 +629,9 @@ async fn nsdryrun(cfg: &config::Config) -> Result<()> {
         "last_entry_date_ms": last_ms,
         "last_entry_age_secs": age_secs,
     });
+    // println! is intentional here: ns-dryrun output is machine-readable JSON
+    // on stdout (scripts/ns-dryrun.sh captures it). Using tracing would
+    // mix structured log lines into the JSON stream.
     println!("{}", serde_json::to_string(&summary).expect("json"));
     Ok(())
 }

@@ -249,6 +249,10 @@ fn merge_dedup(existing: &[Reading], batch: &[Reading]) -> Vec<Reading> {
 
 /// Drop the oldest entries when over the cap. Returns the trimmed set
 /// and the number of dropped entries.
+///
+/// Relies on the BTreeMap ascending-key-order invariant in `merge_dedup`:
+/// entries are sorted oldest-first (smallest timestamp first), so
+/// `drain(..evicted)` removes the chronologically oldest readings.
 fn enforce_cap(mut set: Vec<Reading>, max: usize) -> (Vec<Reading>, usize) {
     if set.len() <= max {
         return (set, 0);

@@ -435,6 +435,12 @@ fn build_tokens(ticket: AuthTicket, user_id: &str) -> LluTokens {
 
 /// Heuristic: does `s` look like a JWT? Checks for two dots, a header
 /// segment starting with `eyJ` (base64url of `{"`), and minimum length.
+///
+/// This is an intentional heuristic. LLU API passwords rarely encode to a
+/// base64url string starting with "eyJ" (the JSON object prefix `{"`),
+/// so false positives are acceptable — at worst the JWT auth path is
+/// attempted and fails gracefully, falling back to a regular login error.
+/// False negatives are prevented by the dot-count and length checks.
 fn is_jwt(s: &str) -> bool {
     s.len() >= 20 && s.matches('.').count() == 2 && s.starts_with("eyJ")
 }

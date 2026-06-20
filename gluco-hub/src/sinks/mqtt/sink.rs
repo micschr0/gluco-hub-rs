@@ -87,7 +87,7 @@ impl MqttSink {
     pub fn new(cfg: &MqttSinkConfig, password: Option<SecretString>, connected_flag: Option<Arc<AtomicBool>>) -> Result<Self, MqttError> {
         let (client, eventloop) = build_client(cfg, password)?;
         let cancel = CancellationToken::new();
-        let stats = Arc::new(MqttStatsState::new());
+        let stats = Arc::new(Mutex::new(MqttStatsState::new()));
 
         let health_topic = format!("{}/_health", cfg.topic_prefix);
         let stats_topic = format!("{}/_stats", cfg.topic_prefix);

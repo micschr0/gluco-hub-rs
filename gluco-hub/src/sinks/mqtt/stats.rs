@@ -28,15 +28,15 @@ pub struct MqttStatsState {
 }
 
 impl MqttStatsState {
-    pub fn new() -> Mutex<Self> {
-        Mutex::new(Self {
+    pub fn new() -> Self {
+        Self {
             started_at: Instant::now(),
             publishes_total: 0,
             publish_errors_total: 0,
             connects_total: 0,
             last_publish_ts_ms: None,
             last_connect_ts_ms: None,
-        })
+        }
     }
 
     /// Increment by `n` successful glucose publishes and stamp the
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn counters_start_at_zero() {
-        let s = MqttStatsState::new();
+        let s = Mutex::new(MqttStatsState::new());
         let snap = s.lock().unwrap().snapshot();
         assert_eq!(snap.publishes_total, 0);
         assert_eq!(snap.publish_errors_total, 0);
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn record_publish_accumulates_and_stamps() {
-        let s = MqttStatsState::new();
+        let s = Mutex::new(MqttStatsState::new());
         {
             let mut g = s.lock().unwrap();
             g.record_publish(3);
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn record_publish_error_independent_of_success_counter() {
-        let s = MqttStatsState::new();
+        let s = Mutex::new(MqttStatsState::new());
         {
             let mut g = s.lock().unwrap();
             g.record_publish_error();
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn record_connect_counts_each_connack() {
-        let s = MqttStatsState::new();
+        let s = Mutex::new(MqttStatsState::new());
         {
             let mut g = s.lock().unwrap();
             g.record_connect();
