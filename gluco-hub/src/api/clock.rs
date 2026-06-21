@@ -23,10 +23,10 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use serde_json::json;
 use futures::stream::Stream;
 use gluco_hub_core::Trend;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::sync::broadcast;
 
 use super::AppState;

@@ -249,7 +249,13 @@ async fn serve(cfg: config::Config) -> Result<()> {
     let dlq_depth: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
     let sources = build_default_source(&cfg)?;
     let source_names: Vec<String> = sources.iter().map(|(n, _)| n.clone()).collect();
-    let built_sinks = build_sinks(&cfg, &source_names, Arc::clone(&mqtt_connected), Arc::clone(&dlq_depth)).await?;
+    let built_sinks = build_sinks(
+        &cfg,
+        &source_names,
+        Arc::clone(&mqtt_connected),
+        Arc::clone(&dlq_depth),
+    )
+    .await?;
     // Only advertise MQTT/DLQ state when those features are actually enabled.
     let mqtt_connected_state = cfg.sink.mqtt.is_some().then(|| Arc::clone(&mqtt_connected));
     let dlq_depth_state = cfg.dlq.enabled.then(|| Arc::clone(&dlq_depth));
@@ -962,7 +968,12 @@ struct BuiltSinks {
 ///
 /// `mqtt_connected` and `dlq_depth` are shared atomics updated by the running
 /// sinks so `GET /api/v1/status` can reflect real runtime values.
-async fn build_sinks(cfg: &config::Config, source_names: &[String], mqtt_connected: Arc<AtomicBool>, dlq_depth: Arc<AtomicU64>) -> Result<BuiltSinks> {
+async fn build_sinks(
+    cfg: &config::Config,
+    source_names: &[String],
+    mqtt_connected: Arc<AtomicBool>,
+    dlq_depth: Arc<AtomicU64>,
+) -> Result<BuiltSinks> {
     let _ = cfg;
     let _ = source_names;
     // Used only when feature-gated sink branches are compiled in.

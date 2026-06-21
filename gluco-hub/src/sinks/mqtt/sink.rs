@@ -84,7 +84,11 @@ impl MqttSink {
     /// `connected_flag` is an optional shared `AtomicBool` that is set to
     /// `true` on ConnAck and `false` on connection error, so the HTTP status
     /// endpoint can report real-time connection state without reading metrics.
-    pub fn new(cfg: &MqttSinkConfig, password: Option<SecretString>, connected_flag: Option<Arc<AtomicBool>>) -> Result<Self, MqttError> {
+    pub fn new(
+        cfg: &MqttSinkConfig,
+        password: Option<SecretString>,
+        connected_flag: Option<Arc<AtomicBool>>,
+    ) -> Result<Self, MqttError> {
         let (client, eventloop) = build_client(cfg, password)?;
         let cancel = CancellationToken::new();
         let stats = Arc::new(Mutex::new(MqttStatsState::new()));

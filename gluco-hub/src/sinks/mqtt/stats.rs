@@ -28,6 +28,12 @@ pub struct MqttStatsState {
     last_connect_ts_ms: Option<i64>,
 }
 
+impl Default for MqttStatsState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MqttStatsState {
     pub fn new() -> Self {
         Self {

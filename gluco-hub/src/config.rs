@@ -673,10 +673,7 @@ pub fn resolve_secret_file(path: &Path) -> Result<String, ConfigError> {
     // Order matters: BOM sits before any whitespace, so BOM-then-trim is
     // always safe. A BOM stripped after a general trim would be missed if
     // the file started with whitespace before the BOM (pathological but possible).
-    let value = raw
-        .trim_start_matches('\u{FEFF}')
-        .trim()
-        .to_string();
+    let value = raw.trim_start_matches('\u{FEFF}').trim().to_string();
     if value.is_empty() {
         return Err(ConfigError::SecretFileEmpty {
             path: path.to_path_buf(),
