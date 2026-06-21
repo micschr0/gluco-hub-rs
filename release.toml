@@ -14,13 +14,13 @@ shared-version = true
 # Binary workspace, no crates.io publish.
 publish = false
 
-# Match release.yml trigger `tags: ['v*']`. Override the workspace default
-# `<crate>-vX.Y.Z` to plain `vX.Y.Z`.
-tag-name = "v{{version}}"
+# Match release.yml trigger `tags: ['[0-9]*']`. Override the workspace default
+# `<crate>-vX.Y.Z` to plain CalVer `X.Y.Z` (no v prefix — CalVer convention).
+tag-name = "{{version}}"
 tag-message = "Release {{version}}"
 
 # Conventional-commits style.
-pre-release-commit-message = "chore: release v{{version}}"
+pre-release-commit-message = "chore: release {{version}}"
 
 # Push commit + tag to origin -> triggers release.yml.
 push = true

@@ -5,9 +5,9 @@ name: Release
 # Triggers and resulting tags (CalVer-on-SemVer scheme, YYYY.0M0D.PATCH):
 #   - push to main         → :main, :sha-<short>
 #   - pre-release tag      → :X.Y.Z-rc.N, :testing, :sha-<short>
-#       (e.g. v2026.510.0-rc.1; :latest and floating-version tags stay
+#       (e.g. 2026.510.0-rc.1; :latest and floating-version tags stay
 #        on the prior final release)
-#   - final tag (v* w/o -) → :X.Y.Z, :X.Y, :X, :latest, :stable, :sha-<short>
+#   - final tag (no -) → :X.Y.Z, :X.Y, :X, :latest, :stable, :sha-<short>
 #   - pull_request         → build-only verification on both arches (no push)
 #   - workflow_dispatch    → manual republish
 #
@@ -20,7 +20,7 @@ name: Release
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['[0-9]*']
   pull_request:
     branches: [main]
   workflow_dispatch:
