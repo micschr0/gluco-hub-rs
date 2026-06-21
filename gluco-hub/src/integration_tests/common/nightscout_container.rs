@@ -56,9 +56,10 @@ impl NightscoutStack {
 /// Boot is split into two waits:
 ///   1. testcontainers' compose layer brings up Mongo (healthcheck
 ///      from the YAML gates this) and starts NS.
-///   2. We then poll NS's `/api/v1/status` until it returns 200 — the
-///      NS process listens on the port before it's fully up, so a
-///      probe is needed to avoid racing the first real request.
+///   2. We poll NS's `/api/v1/status` until it returns 200 (server up),
+///      then poll an authenticated endpoint until it stops returning 401
+///      (auth module ready). NS 15 initialises auth asynchronously, so
+///      status-only is not enough.
 pub async fn start_nightscout_stack()
 -> Result<NightscoutStack, Box<dyn std::error::Error + Send + Sync>> {
     // Compose file lives at `<manifest-dir>/tests/fixtures/...`.
@@ -85,9 +86,13 @@ pub async fn start_nightscout_stack()
     Ok(stack)
 }
 
-/// Poll `/api/v1/status` until it returns a 2xx. NS opens its listener
-/// well before the Express app is ready to serve requests; a 30–60 s
-/// wait window covers a typical cold start.
+/// Poll until Nightscout is fully ready:
+///
+/// Phase 1 — wait for `/api/v1/status` to return 2xx (HTTP server up).
+/// Phase 2 — wait for an authenticated `GET /api/v1/entries` to not
+///            return 401. NS 15 initialises its auth module asynchronously
+///            after the HTTP listener opens, so `status` returning 200 is
+///            not a guarantee that api-secret auth is ready.
 async fn wait_for_ns_ready(
     stack: &NightscoutStack,
     deadline: Duration,
@@ -95,16 +100,38 @@ async fn wait_for_ns_ready(
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()?;
-    let url = format!("{}/api/v1/status", stack.ns_url());
     let started = std::time::Instant::now();
+
+    let status_url = format!("{}/api/v1/status", stack.ns_url());
     loop {
         if started.elapsed() > deadline {
             return Err(
-                format!("Nightscout did not become ready at {url} within {deadline:?}",).into(),
+                format!("Nightscout status not ready at {status_url} within {deadline:?}").into(),
             );
         }
-        match client.get(&url).send().await {
-            Ok(r) if r.status().is_success() => return Ok(()),
+        match client.get(&status_url).send().await {
+            Ok(r) if r.status().is_success() => break,
+            _ => tokio::time::sleep(Duration::from_secs(2)).await,
+        }
+    }
+
+    let entries_url = format!("{}/api/v1/entries.json?count=0", stack.ns_url());
+    let secret_header = api_secret_sha1();
+    loop {
+        if started.elapsed() > deadline {
+            return Err(format!(
+                "Nightscout auth not ready within {deadline:?}: api-secret kept returning 401"
+            )
+            .into());
+        }
+        match client
+            .get(&entries_url)
+            .header("api-secret", &secret_header)
+            .send()
+            .await
+        {
+            // 200 (entries found) or 404 (empty collection) both signal auth accepted.
+            Ok(r) if r.status() != reqwest::StatusCode::UNAUTHORIZED => return Ok(()),
             _ => tokio::time::sleep(Duration::from_secs(2)).await,
         }
     }

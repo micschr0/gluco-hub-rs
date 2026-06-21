@@ -39,6 +39,11 @@ services:
       INSECURE_USE_HTTP: "true"
       NODE_ENV: "production"
       DISPLAY_UNITS: "mg/dl"
+      # NS 15 defaults can leave the auth module in an indeterminate
+      # state during startup; readable makes unauthenticated status
+      # checks pass while we wait for the api-secret path to become
+      # available.
+      AUTH_DEFAULT_ROLES: "readable"
       # Minimal feature set — most plugins not needed for our entry POST
       # / GET tests.
       ENABLE: "careportal"

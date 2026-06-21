@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Integration tests: Nightscout 401** — `wait_for_ns_ready` only polled `/api/v1/status` (no auth), which returns 200 before NS 15's auth module finishes async initialisation. Added a second polling phase that sends an authenticated `GET /api/v1/entries` and waits until it no longer returns 401. Also added `AUTH_DEFAULT_ROLES: readable` to the test compose file.
+
 ## [2026.621.0] - 2026-06-21
 
 ### Fixed
