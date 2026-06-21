@@ -22,6 +22,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use gluco_hub_core::{CoreError, Reading, Sink};
@@ -49,6 +50,10 @@ pub struct DlqSink {
     /// `(patient_id, timestamp)`; held under a tokio mutex because
     /// every operation crosses an `.await`.
     state: Mutex<Vec<Reading>>,
+    /// Optional shared counter updated after every push so the HTTP
+    /// status endpoint can report the current queue depth without
+    /// reading metrics. `None` when wired without a status endpoint.
+    shared_depth: Option<Arc<AtomicU64>>,
 }
 
 impl DlqSink {
@@ -59,6 +64,17 @@ impl DlqSink {
         inner: Arc<dyn Sink>,
         state_dir: &std::path::Path,
         max_entries: usize,
+    ) -> std::io::Result<Self> {
+        Self::open_with_shared_depth(inner, state_dir, max_entries, None)
+    }
+
+    /// Like `open`, but also keeps `shared_depth` updated after every push
+    /// so the HTTP status endpoint can expose the live queue depth.
+    pub fn open_with_shared_depth(
+        inner: Arc<dyn Sink>,
+        state_dir: &std::path::Path,
+        max_entries: usize,
+        shared_depth: Option<Arc<AtomicU64>>,
     ) -> std::io::Result<Self> {
         let name = inner.name();
         let dlq_dir = state_dir.join("dlq");
@@ -79,6 +95,10 @@ impl DlqSink {
             );
         }
         ::metrics::gauge!(metrics::GAUGE_DLQ_SIZE, "sink" => name).set(queue.len() as f64);
+        // Initialise shared counter with the loaded queue depth.
+        if let Some(ref counter) = shared_depth {
+            counter.fetch_add(queue.len() as u64, Ordering::Relaxed);
+        }
 
         Ok(Self {
             inner,
@@ -86,6 +106,7 @@ impl DlqSink {
             file_path,
             max_entries,
             state: Mutex::new(queue),
+            shared_depth,
         })
     }
 
@@ -161,6 +182,9 @@ impl Sink for DlqSink {
                     );
                 }
                 ::metrics::gauge!(metrics::GAUGE_DLQ_SIZE, "sink" => self.name).set(0.0);
+                if let Some(ref counter) = self.shared_depth {
+                    counter.store(0, Ordering::Relaxed);
+                }
                 ::metrics::counter!(metrics::COUNTER_DLQ_DRAINED, "sink" => self.name)
                     .increment(drained as u64);
                 Ok(())
@@ -182,6 +206,9 @@ impl Sink for DlqSink {
                 }
                 ::metrics::gauge!(metrics::GAUGE_DLQ_SIZE, "sink" => self.name)
                     .set(final_set_len as f64);
+                if let Some(ref counter) = self.shared_depth {
+                    counter.store(final_set_len as u64, Ordering::Relaxed);
+                }
                 debug!(
                     sink = self.name,
                     queue_size = final_set_len,
@@ -197,15 +224,23 @@ impl Sink for DlqSink {
 }
 
 /// Merge `existing` and `batch` into a single set keyed by
-/// `(patient_id, timestamp_secs)`, sorted oldest-first. Later occurrences
-/// (from `batch`) win on collisions — important when LLU later returns a
-/// trend-corrected version of the same timestamp.
+/// `(source_id, patient_id, timestamp_secs)`, sorted oldest-first. Later
+/// occurrences (from `batch`) win on collisions — important when LLU later
+/// returns a trend-corrected version of the same timestamp.
+///
+/// `source_id` is included in the key to prevent silent data loss in
+/// multi-patient / multi-source deployments where two different sources
+/// could produce readings with the same patient_id + timestamp combination.
 fn merge_dedup(existing: &[Reading], batch: &[Reading]) -> Vec<Reading> {
     use std::collections::BTreeMap;
-    let mut map: BTreeMap<(String, i64), Reading> = BTreeMap::new();
+    let mut map: BTreeMap<(String, String, i64), Reading> = BTreeMap::new();
     for r in existing.iter().chain(batch.iter()) {
         map.insert(
-            (r.patient_id.as_str().to_string(), r.timestamp.timestamp()),
+            (
+                r.source_id.as_str().to_string(),
+                r.patient_id.as_str().to_string(),
+                r.timestamp.timestamp(),
+            ),
             r.clone(),
         );
     }
@@ -214,6 +249,10 @@ fn merge_dedup(existing: &[Reading], batch: &[Reading]) -> Vec<Reading> {
 
 /// Drop the oldest entries when over the cap. Returns the trimmed set
 /// and the number of dropped entries.
+///
+/// Relies on the BTreeMap ascending-key-order invariant in `merge_dedup`:
+/// entries are sorted oldest-first (smallest timestamp first), so
+/// `drain(..evicted)` removes the chronologically oldest readings.
 fn enforce_cap(mut set: Vec<Reading>, max: usize) -> (Vec<Reading>, usize) {
     if set.len() <= max {
         return (set, 0);

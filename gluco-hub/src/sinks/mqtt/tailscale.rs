@@ -51,15 +51,17 @@ pub async fn resolve_tailscale_hostname(hostname: &str) -> Option<String> {
         }
     };
 
-    let peers = match status["Peer"].as_array() {
+    // Tailscale local API returns `Peer` as a JSON object keyed by node-key,
+    // not an array — iterate over the map values.
+    let peer_map = match status["Peer"].as_object() {
         Some(p) => p,
         None => {
-            warn!("tailscaled status response has no Peer array");
+            warn!("tailscaled status response has no Peer object");
             return None;
         }
     };
 
-    for peer in peers {
+    for peer in peer_map.values() {
         let dns_name = peer["DNSName"].as_str().unwrap_or("").trim_end_matches('.');
         if (dns_name == hostname || dns_name.starts_with(&format!("{hostname}.")))
             && let Some(ip) = peer["TailscaleIPs"]

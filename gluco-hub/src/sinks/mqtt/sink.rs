@@ -17,6 +17,7 @@
 //!   the poll task best-effort publishes `online: false`, and exits.
 
 use std::io::BufReader;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -79,10 +80,18 @@ impl MqttSink {
     /// inside the poll task; transient connect failures surface via
     /// metrics (`error_code = "MQTT001"` etc.) and the warn-level
     /// reconnect log lines.
-    pub fn new(cfg: &MqttSinkConfig, password: Option<SecretString>) -> Result<Self, MqttError> {
+    ///
+    /// `connected_flag` is an optional shared `AtomicBool` that is set to
+    /// `true` on ConnAck and `false` on connection error, so the HTTP status
+    /// endpoint can report real-time connection state without reading metrics.
+    pub fn new(
+        cfg: &MqttSinkConfig,
+        password: Option<SecretString>,
+        connected_flag: Option<Arc<AtomicBool>>,
+    ) -> Result<Self, MqttError> {
         let (client, eventloop) = build_client(cfg, password)?;
         let cancel = CancellationToken::new();
-        let stats = Arc::new(MqttStatsState::new());
+        let stats = Arc::new(Mutex::new(MqttStatsState::new()));
 
         let health_topic = format!("{}/_health", cfg.topic_prefix);
         let stats_topic = format!("{}/_stats", cfg.topic_prefix);
@@ -126,6 +135,7 @@ impl MqttSink {
             discovery,
             cancel.clone(),
             Arc::clone(&stats),
+            connected_flag,
         ));
 
         let stats_task = tokio::spawn(run_stats_loop(
@@ -395,6 +405,7 @@ async fn run_poll_loop(
     discovery: Vec<DiscoveryPublish>,
     cancel: CancellationToken,
     stats: Arc<Mutex<MqttStatsState>>,
+    connected_flag: Option<Arc<AtomicBool>>,
 ) {
     let mut backoff = BACKOFF_INITIAL;
 
@@ -434,6 +445,9 @@ async fn run_poll_loop(
                                 .lock()
                                 .expect("mqtt stats mutex poisoned")
                                 .record_connect();
+                            if let Some(ref flag) = connected_flag {
+                                flag.store(true, Ordering::Relaxed);
+                            }
                             info!("mqtt connected");
                             if let Err(e) = publish_health(&client, &health_topic, true).await {
                                 warn!(
@@ -464,6 +478,9 @@ async fn run_poll_loop(
                     Ok(Event::Outgoing(_)) => {}
                     Err(ref e) => {
                         let classified = classify_connection_error(e);
+                        if let Some(ref flag) = connected_flag {
+                            flag.store(false, Ordering::Relaxed);
+                        }
                         warn!(
                             error_code = classified.code(),
                             error = %classified,
@@ -750,7 +767,7 @@ mod tests {
     #[tokio::test]
     async fn connack_triggers_health_online_publish() {
         let (port, mut rx) = start_stub_broker().await;
-        let _sink = MqttSink::new(&cfg(port, "test", 60), None).expect("build sink");
+        let _sink = MqttSink::new(&cfg(port, "test", 60), None, None).expect("build sink");
 
         let p = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3))
             .await
@@ -764,7 +781,7 @@ mod tests {
     #[tokio::test]
     async fn push_publishes_glucose_payload_with_v1_schema() {
         let (port, mut rx) = start_stub_broker().await;
-        let sink = MqttSink::new(&cfg(port, "test", 60), None).expect("build sink");
+        let sink = MqttSink::new(&cfg(port, "test", 60), None, None).expect("build sink");
 
         sink.push(&[one_reading()])
             .await
@@ -787,7 +804,7 @@ mod tests {
         use super::PatientSummary;
 
         let (port, mut rx) = start_stub_broker().await;
-        let sink = MqttSink::new(&cfg(port, "test", 60), None).expect("build sink");
+        let sink = MqttSink::new(&cfg(port, "test", 60), None, None).expect("build sink");
 
         // Drain the connect-time _health publish so it doesn't shadow ours.
         let _ = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3)).await;
@@ -825,7 +842,7 @@ mod tests {
         // Construct directly — `MqttSink::new` does not run the
         // validator, so we can drop below the operator-facing minimum
         // (5 s) for a fast test.
-        let sink = MqttSink::new(&cfg(port, "test", 1), None).expect("build sink");
+        let sink = MqttSink::new(&cfg(port, "test", 1), None, None).expect("build sink");
 
         // Drain the connect-time _health publish.
         let _ = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3)).await;
@@ -867,7 +884,7 @@ mod tests {
     #[tokio::test]
     async fn drop_publishes_health_offline_marker() {
         let (port, mut rx) = start_stub_broker().await;
-        let sink = MqttSink::new(&cfg(port, "test", 60), None).expect("build sink");
+        let sink = MqttSink::new(&cfg(port, "test", 60), None, None).expect("build sink");
 
         // Drain the connect-time _health publish.
         let online = wait_for_topic(&mut rx, "test/_health", Duration::from_secs(3))
@@ -895,7 +912,7 @@ mod tests {
         let (port, mut rx) = start_stub_broker().await;
         let mut c = cfg(port, "test", 60);
         c.discovery_enabled = true;
-        let _sink = MqttSink::new(&c, None).expect("build sink");
+        let _sink = MqttSink::new(&c, None, None).expect("build sink");
 
         let glucose_topic = "homeassistant/sensor/gluco_hub_test-client_glucose/config";
         let p = wait_for_topic(&mut rx, glucose_topic, Duration::from_secs(3))
@@ -919,7 +936,7 @@ mod tests {
         let (port, mut rx) = start_stub_broker().await;
         let mut c = cfg(port, "test", 60);
         c.discovery_enabled = true;
-        let _sink = MqttSink::new(&c, None).expect("build sink");
+        let _sink = MqttSink::new(&c, None, None).expect("build sink");
 
         let trend_topic = "homeassistant/sensor/gluco_hub_test-client_trend/config";
         let p = wait_for_topic(&mut rx, trend_topic, Duration::from_secs(3))
@@ -954,7 +971,7 @@ mod tests {
         // publish on the canonical discovery topic over the same window
         // we'd otherwise wait for it.
         let (port, mut rx) = start_stub_broker().await;
-        let _sink = MqttSink::new(&cfg(port, "test", 60), None).expect("build sink");
+        let _sink = MqttSink::new(&cfg(port, "test", 60), None, None).expect("build sink");
 
         // Drain the expected _health publish first so we know the ConnAck
         // round-trip is complete.

@@ -38,6 +38,8 @@ mod tests {
             poll_status_rx: rx,
             clock_tx: std::sync::Arc::new(clock_tx),
             clock_history: crate::api::new_history(),
+            mqtt_connected: None,
+            dlq_depth: None,
         };
         let app = router_with_state(state);
         let resp = app

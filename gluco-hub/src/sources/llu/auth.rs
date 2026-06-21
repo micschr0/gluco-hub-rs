@@ -159,6 +159,7 @@ impl LluAuthClient {
         label: &'static str,
     ) -> Result<reqwest::Response, LluError> {
         const MAX_ATTEMPTS: u32 = 3;
+        let mut last_retry_after: u64 = 5;
         for attempt in 0..MAX_ATTEMPTS {
             let resp = req
                 .try_clone()
@@ -166,7 +167,7 @@ impl LluAuthClient {
                 .send()
                 .await?;
             if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                let retry_after = resp
+                last_retry_after = resp
                     .headers()
                     .get("Retry-After")
                     .and_then(|v| v.to_str().ok())
@@ -174,16 +175,20 @@ impl LluAuthClient {
                     .unwrap_or(5);
                 warn!(
                     attempt = attempt + 1,
-                    retry_after, "LLU {label} 429 rate-limited, retrying"
+                    retry_after = last_retry_after,
+                    "LLU {label} 429 rate-limited, retrying"
                 );
-                tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                tokio::time::sleep(Duration::from_secs(last_retry_after)).await;
                 continue;
             }
             return Ok(resp);
         }
-        Err(LluError::Transport(format!(
-            "{label} rate-limited after {MAX_ATTEMPTS} attempts"
-        )))
+        // Return a distinct error so callers can distinguish rate-limiting
+        // from generic transport failures — enables targeted backoff and
+        // monitoring on the LLU010 error code.
+        Err(LluError::RateLimited {
+            retry_after_secs: last_retry_after,
+        })
     }
 
     /// Authenticate with LibreLink Up. Follows at most one region redirect:
@@ -430,28 +435,27 @@ fn build_tokens(ticket: AuthTicket, user_id: &str) -> LluTokens {
 
 /// Heuristic: does `s` look like a JWT? Checks for two dots, a header
 /// segment starting with `eyJ` (base64url of `{"`), and minimum length.
+///
+/// This is an intentional heuristic. LLU API passwords rarely encode to a
+/// base64url string starting with "eyJ" (the JSON object prefix `{"`),
+/// so false positives are acceptable — at worst the JWT auth path is
+/// attempted and fails gracefully, falling back to a regular login error.
+/// False negatives are prevented by the dot-count and length checks.
 fn is_jwt(s: &str) -> bool {
     s.len() >= 20 && s.matches('.').count() == 2 && s.starts_with("eyJ")
 }
 
-/// Minimal base64url decoder. Accepts standard base64url alphabet
-/// (`-` and `_` as the last two characters) with optional padding.
+/// Base64url decoder (URL-safe alphabet, no padding).
+///
+/// Uses the `base64` crate's `URL_SAFE_NO_PAD` engine so decoding is
+/// correct for arbitrary-length inputs and residue bits are validated.
 fn base64url_decode(input: &str) -> Option<Vec<u8>> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    use base64::Engine as _;
+    // Trim padding characters before decoding with NO_PAD engine.
     let input = input.trim_end_matches('=');
-    let mut buf = Vec::with_capacity(input.len() * 3 / 4);
-    let mut accum: u32 = 0;
-    let mut bits: u32 = 0;
-    for &b in input.as_bytes() {
-        let val = ALPHABET.iter().position(|&c| c == b)? as u32;
-        accum = (accum << 6) | val;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            buf.push((accum >> bits) as u8);
-        }
-    }
-    Some(buf)
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(input)
+        .ok()
 }
 
 /// Extract a user identifier from the JWT payload. Tries common claims:

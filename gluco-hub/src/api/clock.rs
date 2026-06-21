@@ -26,6 +26,7 @@ use axum::response::{IntoResponse, Response};
 use futures::stream::Stream;
 use gluco_hub_core::Trend;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::sync::broadcast;
 
 use super::AppState;
@@ -226,12 +227,45 @@ fn no_store<R: IntoResponse>(inner: R) -> Response {
     resp
 }
 
+/// Medical glucose range for validating `lo`/`hi` query parameters.
+///
+/// Values outside [20, 600] mg/dL are physiologically implausible and
+/// indicate user error or an injection attempt; NaN/Inf would produce
+/// broken JavaScript.
+const GLUCOSE_PARAM_MIN: f64 = 20.0;
+const GLUCOSE_PARAM_MAX: f64 = 600.0;
+
+/// Validate that a float threshold parameter is finite and within the
+/// medical glucose range [20, 600] mg/dL. Returns an error string on
+/// failure so callers can return a 400 with a descriptive message.
+fn validate_glucose_param(value: f64, name: &str) -> Result<f64, String> {
+    if !value.is_finite() {
+        return Err(format!(
+            "invalid {name}: {value} is not a finite number (NaN and Inf are not allowed)"
+        ));
+    }
+    if !(GLUCOSE_PARAM_MIN..=GLUCOSE_PARAM_MAX).contains(&value) {
+        return Err(format!(
+            "invalid {name}: {value} is outside the medical glucose range [{GLUCOSE_PARAM_MIN}, {GLUCOSE_PARAM_MAX}] mg/dL"
+        ));
+    }
+    Ok(value)
+}
+
 /// `GET /clock` — serve the HTML page with `window.CLOCK_CONFIG` injected just
 /// before `</head>`. The config is derived from the query params plus the
 /// current poll interval from the status watch channel.
 pub async fn clock_html(State(state): State<AppState>, Query(q): Query<ClockQuery>) -> Response {
     let lo = q.lo.unwrap_or(DEFAULT_LO);
     let hi = q.hi.unwrap_or(DEFAULT_HI);
+
+    // Validate after applying defaults so NaN/out-of-range explicit values are caught.
+    if let Err(msg) = validate_glucose_param(lo, "lo") {
+        return no_store((StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))));
+    }
+    if let Err(msg) = validate_glucose_param(hi, "hi") {
+        return no_store((StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))));
+    }
     let unit = normalise_unit(&q.unit);
     let eink = flag_truthy(&q.eink);
 
@@ -289,6 +323,13 @@ pub async fn clock_state(State(state): State<AppState>, Query(q): Query<ClockQue
 
     let lo = q.lo.unwrap_or(DEFAULT_LO);
     let hi = q.hi.unwrap_or(DEFAULT_HI);
+
+    if let Err(msg) = validate_glucose_param(lo, "lo") {
+        return no_store((StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))));
+    }
+    if let Err(msg) = validate_glucose_param(hi, "hi") {
+        return no_store((StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))));
+    }
     let unit = normalise_unit(&q.unit).to_string();
 
     let poll = state.poll_status_rx.borrow().clone();
@@ -986,6 +1027,8 @@ mod tests {
             poll_status_rx: rx,
             clock_tx: std::sync::Arc::new(clock_tx),
             clock_history: new_history(),
+            mqtt_connected: None,
+            dlq_depth: None,
         }
     }
 

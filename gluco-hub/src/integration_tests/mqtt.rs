@@ -56,7 +56,7 @@ async fn glucose_payload_published_with_v1_schema() {
         .await
         .expect("subscribe");
 
-    let sink = MqttSink::new(&cfg(&host, port, &client_id, &prefix), None).expect("sink");
+    let sink = MqttSink::new(&cfg(&host, port, &client_id, &prefix), None, None).expect("sink");
     sink.push(&[reading(1_700_000_000, 142.0)])
         .await
         .expect("push");
@@ -89,7 +89,7 @@ async fn health_topic_retained_with_online_marker() {
     // §3.3.1.3.2 only sets RETAIN=1 on messages delivered as a result
     // of a new subscription, so subscribing first sees the live
     // publish with `retain=false` and races the SUBSCRIBE.
-    let _sink = MqttSink::new(&cfg(&host, port, &client_id, &prefix), None).expect("sink");
+    let _sink = MqttSink::new(&cfg(&host, port, &client_id, &prefix), None, None).expect("sink");
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let (mut rx, _cancel) = subscribe_to(&broker, &format!("{prefix}/_health"), "sub-hlth")
@@ -125,7 +125,7 @@ async fn discovery_config_published_when_enabled_and_passes_ha_schema() {
     // Subscribe AFTER the sink so the broker replays the retained
     // discovery config to a new subscriber with `retain=true` — see
     // the matching comment in `health_topic_retained_with_online_marker`.
-    let _sink = MqttSink::new(&c, None).expect("sink");
+    let _sink = MqttSink::new(&c, None, None).expect("sink");
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let (mut rx, _cancel) = subscribe_to(&broker, &discovery_topic, "sub-disc")
@@ -169,7 +169,7 @@ async fn trend_discovery_config_published_when_enabled_and_passes_ha_schema() {
     // `retain=false` on what is in fact a retained topic. Subscribing
     // after the publisher means the broker replays the retained backlog
     // with `retain=true` deterministically.
-    let _sink = MqttSink::new(&c, None).expect("sink");
+    let _sink = MqttSink::new(&c, None, None).expect("sink");
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let (mut rx, _cancel) = subscribe_to(&broker, &trend_topic, "sub-trend")
@@ -233,7 +233,7 @@ async fn discovery_silent_when_disabled() {
         .await
         .expect("subscribe");
 
-    let _sink = MqttSink::new(&cfg(&host, port, &client_id, &prefix), None).expect("sink");
+    let _sink = MqttSink::new(&cfg(&host, port, &client_id, &prefix), None, None).expect("sink");
 
     let saw_discovery = tokio::time::timeout(Duration::from_millis(800), async {
         while let Some(p) = rx.recv().await {
@@ -266,7 +266,7 @@ async fn reading_timestamp_round_trips_unchanged() {
         .await
         .expect("subscribe");
 
-    let sink = MqttSink::new(&cfg(&host, port, &client_id, &prefix), None).expect("sink");
+    let sink = MqttSink::new(&cfg(&host, port, &client_id, &prefix), None, None).expect("sink");
 
     let ts_secs = Utc
         .with_ymd_and_hms(2026, 5, 14, 12, 0, 0)

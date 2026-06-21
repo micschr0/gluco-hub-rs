@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use axum::Router;
 use axum::extract::Request;
@@ -60,6 +61,13 @@ pub struct AppState {
     pub poll_status_rx: watch::Receiver<PollStatus>,
     pub clock_tx: Arc<broadcast::Sender<ClockReadingEvent>>,
     pub clock_history: ClockHistory,
+    /// Reflects whether the MQTT sink's poll loop has an active broker
+    /// connection. Set to `true` on ConnAck, `false` on connection error.
+    /// `None` when the MQTT sink is not configured.
+    pub mqtt_connected: Option<Arc<AtomicBool>>,
+    /// Current DLQ depth across all sinks. Updated by `DlqSink` on every
+    /// push. `None` when the DLQ is not enabled or no sinks are configured.
+    pub dlq_depth: Option<Arc<AtomicU64>>,
 }
 
 /// Build the public HTTP router with state.
@@ -138,6 +146,8 @@ mod tests {
             poll_status_rx: rx,
             clock_tx: Arc::new(clock_tx),
             clock_history: new_history(),
+            mqtt_connected: None,
+            dlq_depth: None,
         }
     }
 

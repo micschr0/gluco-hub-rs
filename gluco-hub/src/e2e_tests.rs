@@ -998,7 +998,7 @@ mod patients_e2e {
         // --- Broker-level: the same summaries reach `<prefix>/_patients`
         //     retained, QoS 1, as a JSON array, on the real MqttSink path.
         let (port, mut broker_rx) = start_stub_broker().await;
-        let sink = MqttSink::new(&mqtt_cfg(port, "b1"), None).expect("build mqtt sink");
+        let sink = MqttSink::new(&mqtt_cfg(port, "b1"), None, None).expect("build mqtt sink");
         // Drain the connect-time `_health` publish so it doesn't shadow ours.
         let _ = wait_for_topic(&mut broker_rx, "b1/_health", Duration::from_secs(3)).await;
 

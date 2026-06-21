@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tailscale MagicDNS resolution** — peer list iteration was broken because the Tailscale local API returns `Peer` as a JSON object (map keyed by node-key), not an array. `as_array()` always returned `None`, silently falling back to the configured `broker_host`. Fixed by using `as_object()?.values()`.
+- **`GET /api/v1/status` — real MQTT and DLQ values** — `mqtt.connected` was hard-coded `true` and `dlq.depth` was hard-coded `0`. Now wired to shared atomics: MQTT connected reflects actual ConnAck/disconnect events; DLQ depth tracks the live queue size across restarts.
+- **`GET /api/v1/status` — `llu.connected` reflects poll failures** — previously derived from `last_successful_reading_at.is_some()` which stays `true` forever after the first poll. Now cleared by a new `last_poll_failed_at` field set on every error/timeout and cleared on the next successful reading.
+- **DLQ dedup key** — `merge_dedup` keyed entries on `(patient_id, timestamp_secs)`. In multi-source deployments two sources can produce readings with the same patient_id + timestamp, causing silent data loss. Added `source_id` as the first key element.
+- **Clock View `lo`/`hi` float validation** — `?lo=NaN` or values outside `[20, 600]` mg/dL produced broken JavaScript in `window.CLOCK_CONFIG`. Both `GET /clock` and `GET /clock/state` now validate parameters and return `400` with a descriptive error.
+- **LLU rate-limit error code** — HTTP 429 responses collapsed into `LluError::Transport` (`[LLU001]`). Added dedicated `LluError::RateLimited` variant with code `[LLU010]` carrying the `Retry-After` value.
+- **Secret file BOM/whitespace** — `resolve_secret_file` only stripped trailing `\r\n`. A UTF-8 BOM (`﻿`) or leading whitespace (from Windows editors / `kubectl`) silently corrupted the secret. Now strips BOM first, then trims all whitespace.
+- **LLU JWT base64url decoding** — replaced hand-rolled base64url decoder (linear scan, ignored residue bits) with the `base64` crate's `URL_SAFE_NO_PAD` engine for correct and validated decoding.
+
 ### Added
 
 - **NS-Socket source scaffold (V6, feature-gated, off by default)** — new `source-ns-socket` Cargo feature and `[source.ns_socket]` config block lay the groundwork for using a Nightscout site as an upstream data source via its Socket.IO real-time feed (a standalone alternative to LibreLink Up). The `NsSocketSource` registers in the binary wiring and implements the `Source` trait, but the actual Socket.IO connect/subscribe loop is **stubbed**: it returns a typed `[NSS001] not yet implemented` error rather than panicking, so the poller surfaces a clean error code until the loop lands. Config supports `auth = "token"` (default, via `GLUCO_HUB__SOURCE__NS_SOCKET__TOKEN`) or `auth = "api_secret"` (via `GLUCO_HUB__SOURCE__NS_SOCKET__API_SECRET`), validated at the boundary; secrets stay in `SecretString` and are never logged. Adds **zero new runtime dependencies**. The verified Nightscout Socket.IO contract (default namespace, `authorize` handshake, `dataUpdate`/`sgvs` payload shape) is documented in the module and in `docs/EXTENDING.md`.
