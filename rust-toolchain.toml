@@ -4,6 +4,6 @@
 # so local dev and CI both build against the project's declared floor.
 # The MSRV CI job uses `cargo +1.95 check` for explicit redundancy.
 [toolchain]
-channel = "1.95"
+channel = "1.96"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
