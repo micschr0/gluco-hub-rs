@@ -40,12 +40,19 @@ pub async fn require_bearer(
 
     let authorized = match provided {
         Some(token) => {
-            let expected = secret.expose_secret().as_bytes();
-            // `ct_eq` for `[u8]` short-circuits on length mismatch; that
-            // length leak is acceptable here because deployment tokens are
-            // a fixed length per operator. If equal length, the per-byte
-            // comparison is constant-time.
-            bool::from(token.as_bytes().ct_eq(expected))
+            // Zero-pad both tokens to a fixed buffer so ct_eq always
+            // compares the same number of bytes — eliminates the length
+            // timing leak that subtle's slice ct_eq has on mismatched
+            // lengths.
+            const BUF: usize = 512;
+            let mut exp_buf = [0u8; BUF];
+            let mut got_buf = [0u8; BUF];
+            let exp = secret.expose_secret();
+            let exp_b = exp.as_bytes();
+            let got_b = token.as_bytes();
+            exp_buf[..exp_b.len().min(BUF)].copy_from_slice(&exp_b[..exp_b.len().min(BUF)]);
+            got_buf[..got_b.len().min(BUF)].copy_from_slice(&got_b[..got_b.len().min(BUF)]);
+            bool::from(exp_buf.ct_eq(&got_buf))
         }
         None => false,
     };

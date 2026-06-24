@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use gluco_hub_core::PatientId;
 
@@ -204,7 +204,7 @@ impl LluAuthClient {
         // paste a pre-obtained token into the `password` config field
         // without changing the schema.
         if is_jwt(password) {
-            info!("LLU password appears to be a JWT — skipping login, using token directly");
+            debug!("LLU password appears to be a JWT — skipping login, using token directly");
 
             let account_id_hash = jwt_claims_user_id(password)
                 .map(|uid| account_id_hash(&uid))

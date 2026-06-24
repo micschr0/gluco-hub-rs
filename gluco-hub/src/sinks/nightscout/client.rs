@@ -85,13 +85,24 @@ pub fn api_secret_header(secret: &SecretString) -> String {
     out
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NightscoutClient {
     base_url: String,
     secret: SecretString,
     http: reqwest::Client,
     device: Option<String>,
     app: Option<String>,
+}
+
+impl std::fmt::Debug for NightscoutClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NightscoutClient")
+            .field("base_url", &self.base_url)
+            .field("secret", &"[REDACTED]")
+            .field("device", &self.device)
+            .field("app", &self.app)
+            .finish()
+    }
 }
 
 impl NightscoutClient {

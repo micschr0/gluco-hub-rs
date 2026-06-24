@@ -11,6 +11,8 @@
 //! falls back to the configured `broker_host` and logs a warning — a
 //! missing tailscaled daemon is a configuration edge case, not a crash.
 
+use std::net::Ipv4Addr;
+
 use tracing::{info, warn};
 
 /// Resolve a Tailscale MagicDNS hostname to a tailnet IP address
@@ -69,6 +71,14 @@ pub async fn resolve_tailscale_hostname(hostname: &str) -> Option<String> {
                 .and_then(|ips| ips.first())
                 .and_then(|ip| ip.as_str())
         {
+            if !is_tailscale_cgnat_ip(ip) {
+                warn!(
+                    hostname = %hostname,
+                    ip = %ip,
+                    "tailscaled returned IP outside Tailscale CGNAT range (100.64.0.0/10); ignoring"
+                );
+                return None;
+            }
             info!(
                 hostname = %hostname,
                 resolved_ip = %ip,
@@ -83,4 +93,14 @@ pub async fn resolve_tailscale_hostname(hostname: &str) -> Option<String> {
          — falling back to configured broker_host"
     );
     None
+}
+
+/// Returns true if `ip` falls within the Tailscale CGNAT range 100.64.0.0/10.
+fn is_tailscale_cgnat_ip(ip: &str) -> bool {
+    ip.parse::<Ipv4Addr>()
+        .map(|a| {
+            let [first, second, ..] = a.octets();
+            first == 100 && (second & 0xC0) == 64
+        })
+        .unwrap_or(false)
 }
