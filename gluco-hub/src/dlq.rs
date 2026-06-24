@@ -170,14 +170,10 @@ impl Sink for DlqSink {
                 *guard = Vec::new();
                 // Best-effort delete — atomic-write would also work but
                 // delete keeps the dir tidy.
-                if let Err(e) = std::fs::remove_file(&self.file_path) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        warn!(
-                            sink = self.name,
-                            error = %e,
-                            "dlq: failed to remove queue file after drain"
-                        );
-                    }
+                if let Err(e) = std::fs::remove_file(&self.file_path)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    warn!(sink = self.name, error = %e, "dlq: failed to remove queue file after drain");
                 }
                 ::metrics::gauge!(metrics::GAUGE_DLQ_SIZE, "sink" => self.name).set(0.0);
                 if let Some(ref counter) = self.shared_depth {

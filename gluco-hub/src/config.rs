@@ -249,7 +249,7 @@ fn validate_http_url(value: &str) -> Result<(), ValidationError> {
     }
     if value.starts_with("http://") {
         // Allow plaintext only for loopback (local dev / tests).
-        let rest = &value["http://".len()..];
+        let rest = value.strip_prefix("http://").unwrap_or("");
         let host = rest
             .split('/')
             .next()
