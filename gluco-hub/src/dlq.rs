@@ -151,9 +151,7 @@ impl Sink for DlqSink {
         if final_set.is_empty() {
             *guard = Vec::new();
             // Best-effort cleanup of any stale file from a prior run.
-            if self.file_path.exists() {
-                let _ = std::fs::remove_file(&self.file_path);
-            }
+            let _ = std::fs::remove_file(&self.file_path);
             return Ok(());
         }
 
@@ -172,18 +170,18 @@ impl Sink for DlqSink {
                 *guard = Vec::new();
                 // Best-effort delete — atomic-write would also work but
                 // delete keeps the dir tidy.
-                if self.file_path.exists()
-                    && let Err(e) = std::fs::remove_file(&self.file_path)
-                {
-                    warn!(
-                        sink = self.name,
-                        error = %e,
-                        "dlq: failed to remove queue file after drain"
-                    );
+                if let Err(e) = std::fs::remove_file(&self.file_path) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        warn!(
+                            sink = self.name,
+                            error = %e,
+                            "dlq: failed to remove queue file after drain"
+                        );
+                    }
                 }
                 ::metrics::gauge!(metrics::GAUGE_DLQ_SIZE, "sink" => self.name).set(0.0);
                 if let Some(ref counter) = self.shared_depth {
-                    counter.store(0, Ordering::Relaxed);
+                    counter.fetch_sub(pre_queue_len as u64, Ordering::Relaxed);
                 }
                 ::metrics::counter!(metrics::COUNTER_DLQ_DRAINED, "sink" => self.name)
                     .increment(drained as u64);
@@ -207,7 +205,13 @@ impl Sink for DlqSink {
                 ::metrics::gauge!(metrics::GAUGE_DLQ_SIZE, "sink" => self.name)
                     .set(final_set_len as f64);
                 if let Some(ref counter) = self.shared_depth {
-                    counter.store(final_set_len as u64, Ordering::Relaxed);
+                    let old = pre_queue_len as u64;
+                    let new = final_set_len as u64;
+                    if new >= old {
+                        counter.fetch_add(new - old, Ordering::Relaxed);
+                    } else {
+                        counter.fetch_sub(old - new, Ordering::Relaxed);
+                    }
                 }
                 debug!(
                     sink = self.name,

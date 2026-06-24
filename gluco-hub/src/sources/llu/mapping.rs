@@ -124,7 +124,7 @@ pub fn reading_from_measurement(
     let glucose = match GlucoseMgDl::new(mgdl) {
         Ok(g) => g,
         Err(_) => {
-            warn!(mgdl, "LLU glucose value out of range, skipping");
+            warn!("LLU glucose value out of range, skipping");
             return None;
         }
     };

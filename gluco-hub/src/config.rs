@@ -244,10 +244,25 @@ pub struct NightscoutSinkConfig {
 }
 
 fn validate_http_url(value: &str) -> Result<(), ValidationError> {
-    if !(value.starts_with("http://") || value.starts_with("https://")) {
-        return Err(ValidationError::new("url_scheme"));
+    if value.starts_with("https://") {
+        return Ok(());
     }
-    Ok(())
+    if value.starts_with("http://") {
+        // Allow plaintext only for loopback (local dev / tests).
+        let rest = &value["http://".len()..];
+        let host = rest
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split(':')
+            .next()
+            .unwrap_or("");
+        if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+            return Ok(());
+        }
+        return Err(ValidationError::new("url_scheme_insecure"));
+    }
+    Err(ValidationError::new("url_scheme"))
 }
 
 /// QoS level for MQTT publishes. Deserialised from a TOML integer
@@ -644,9 +659,7 @@ pub fn load(override_path: Option<&Path>) -> Result<Config, ConfigError> {
     let path = override_path
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_PATH));
-    if path.exists() {
-        builder = builder.add_source(File::from(path).format(FileFormat::Toml));
-    }
+    builder = builder.add_source(File::from(path).format(FileFormat::Toml).required(false));
 
     builder = builder.add_source(
         Environment::with_prefix(ENV_PREFIX)

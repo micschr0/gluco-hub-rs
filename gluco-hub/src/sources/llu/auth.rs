@@ -172,7 +172,8 @@ impl LluAuthClient {
                     .get("Retry-After")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(5);
+                    .unwrap_or(5)
+                    .min(300);
                 warn!(
                     attempt = attempt + 1,
                     retry_after = last_retry_after,
