@@ -120,14 +120,14 @@ jobs:
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: cargo build --release
-        # `option_env!("GLUCO_HUB_GIT_SHA")` in metrics.rs reads this at
-        # compile time. Wiring it on the step env is the idiomatic path
-        # — no build.rs / vergen needed.
+      - name: Install cargo-auditable
+        run: cargo install cargo-auditable --locked
+
+      - name: cargo auditable build --release
         env:
           GLUCO_HUB_GIT_SHA: ${{ github.sha }}
         run: |
-          cargo build --release --locked \
+          cargo auditable build --release --locked \
             --features "source-llu sink-nightscout sink-mqtt" \
             --bin gluco-hub
 

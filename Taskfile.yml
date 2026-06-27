@@ -9,20 +9,21 @@ tasks:
   setup:
     desc: One-time dev setup — install git hooks (fmt on commit, clippy on push)
     cmds:
+      - cargo install cargo-auditable --locked 2>/dev/null || true
       - git config core.hooksPath .githooks
       - echo "✓ git hooks installed (core.hooksPath → .githooks)"
 
   build:
     desc: Build (debug)
-    cmd: cargo build
+    cmd: cargo auditable build
 
   build-release:
     desc: Build (release)
-    cmd: cargo build --release
+    cmd: cargo auditable build --release
 
   build-all:
     desc: Build with all features (llu + nightscout + mqtt)
-    cmd: cargo build --features "source-llu sink-nightscout sink-mqtt"
+    cmd: cargo auditable build --features "source-llu sink-nightscout sink-mqtt"
 
   test:
     desc: Run tests

@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends cmake
 
-RUN cargo install cargo-chef --locked
+RUN cargo install cargo-chef --locked && cargo install cargo-auditable --locked
 
 WORKDIR /src
 
@@ -82,7 +82,7 @@ COPY gluco-hub ./gluco-hub
 # Passing it inline in the RUN command avoids an ENV layer in the image.
 ARG GLUCO_HUB_GIT_SHA=unknown
 RUN GLUCO_HUB_GIT_SHA="${GLUCO_HUB_GIT_SHA}" \
-    cargo build --release --locked \
+    cargo auditable build --release --locked \
     --features "source-llu sink-nightscout sink-mqtt" \
     --bin gluco-hub
 
