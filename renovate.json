@@ -71,6 +71,7 @@
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "groupName": "github-actions",
+      "minimumReleaseAge": "3 days",
       "automerge": true
     },
     {

@@ -108,7 +108,9 @@ jobs:
           # Per-platform cache scope so the two matrix jobs don't evict
           # each other.
           cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
-          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+          # PR builds read the cache but must not write it — prevents a
+          # malicious PR from poisoning the cache used by trusted builds.
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope={0}', env.PLATFORM_PAIR) || '' }}
           # PRs build but don't push. Non-PR runs push by digest only —
           # the merge job assembles the multi-arch manifest with proper
           # tags. `name-canonical=true` ensures the digest is recorded
@@ -141,7 +143,7 @@ jobs:
   scan:
     name: Container CVE scan
     needs: [build]
-    if: github.event_name == 'push' || github.event_name == 'release'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -170,7 +172,7 @@ jobs:
         with:
           image: gluco-hub:scan
           fail-build: true
-          severity-cutoff: critical
+          severity-cutoff: high
           output-format: sarif
 
       - name: Upload SARIF to GitHub Security
@@ -183,7 +185,9 @@ jobs:
   merge:
     name: merge & publish manifest
     if: github.event_name != 'pull_request'
-    needs: build
+    # Gate on the CVE scan too — no manifest is published unless the
+    # Grype scan passed.
+    needs: [build, scan]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -265,15 +269,19 @@ jobs:
           docker buildx imagetools create "${args[@]}"
 
       - name: Inspect manifest
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
           docker buildx imagetools inspect \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+            "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
 
       - name: Resolve manifest digest
         id: manifest
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
           digest=$(docker buildx imagetools inspect \
-            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}" \
+            "${REGISTRY}/${IMAGE_NAME}:${VERSION}" \
             --format '{{json .Manifest.Digest}}' | tr -d '"')
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
@@ -286,11 +294,14 @@ jobs:
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           DIGEST: ${{ steps.manifest.outputs.digest }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+          SHA: ${{ github.sha }}
         run: |
           cosign sign --yes \
-            -a "repo=${{ github.repository }}" \
-            -a "workflow=${{ github.workflow }}" \
-            -a "ref=${{ github.sha }}" \
+            -a "repo=${REPO}" \
+            -a "workflow=${WORKFLOW}" \
+            -a "ref=${SHA}" \
             "${IMAGE}@${DIGEST}"
 
       # Pushes a Sigstore-signed SLSA provenance bundle to the registry,

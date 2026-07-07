@@ -28,7 +28,18 @@ jobs:
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
-          egress-policy: audit
+          egress-policy: block
+          # cargo-deny binary comes from GitHub releases; the advisory DB
+          # is a git fetch from github.com; crate metadata from crates.io.
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            index.crates.io:443
+            static.crates.io:443
+            crates.io:443
+            static.rust-lang.org:443
+            release-assets.githubusercontent.com:443
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
