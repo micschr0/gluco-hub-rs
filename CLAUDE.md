@@ -183,6 +183,12 @@ matches findings by basename internally.
 `release.toml` generates. Currently: CalVer `YYYY.0M0D.PATCH` without `v`
 prefix → glob `'[0-9][0-9][0-9][0-9].[0-9]*.[0-9]*'`. Do not add a
 `v*` or duplicate `tags:` key — the CalVer convention has no `v`.
+**Docker-based actions**: Any job pulling a Docker action (zizmor, grype,
+etc.) MUST include the container registry in allowed-endpoints.
+zizmor uses `ghcr.io:443`; grype uses `ghcr.io:443` as well. Without
+this, the Docker daemon's pull is blocked at the eBPF level and the
+job fails before the action even starts.
+
 
 **Test coverage**: CI splits `--all-features` into: (a) `cargo test` with
 production features in the `test` job, (b) `cargo test --features
