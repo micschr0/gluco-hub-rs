@@ -151,6 +151,49 @@ not API stability.
 **Image channels** are documented in `README.md#container`. Default dev tag
 is `:main`; `:latest` follows highest final release.
 
+## CI Conventions
+
+Rules for every workflow change. These prevent the footguns we fixed in
+the July 2026 pipeline review.
+
+**Timeouts**: Every job MUST have a `timeout-minutes`. Defaults (6 h on
+ubuntu-latest) are too high — a hung test or build blocks the runner
+unnecessarily. Reference values: fmt / zizmor / dep-review 5 min,
+MSRV 10 min, clippy / test / cargo-deny 15 min, build 20 min, scan 20 min,
+integration-tests 30 min, multi-arch Docker build 30 min, renovate 15 min.
+
+**Egress**: `harden-runner` SHOULD use `egress-policy: block` with
+explicit `allowed-endpoints`. `audit` is allowed only when the job
+genuinely needs broad internet access (Renovate, integration tests with
+external container pulls). For Rust jobs the standard endpoint set is:
+`github.com:443 api.github.com:443 objects.githubusercontent.com:443
+index.crates.io:443 static.crates.io:443 crates.io:443
+static.rust-lang.org:443`. Add `*.actions.githubusercontent.com:443`
+and `*.blob.core.windows.net:443` when Rust cache is enabled.
+
+**Grype scan**: The `anchore/scan-action` `severity-cutoff` input
+OVERRIDES `.grype.yaml`'s `fail-on-severity`. Keep them aligned —
+the policy file sets the intent, the workflow action must not be stricter.
+
+**zizmor ignores**: Paths in `zizmor.yml` ignore rules MUST use bare
+workflow filenames (`ci.yml`, not `.github/workflows/ci.yml`). zizmor
+matches findings by basename internally.
+
+**Tag triggers**: Release workflow tag patterns MUST match the format
+`release.toml` generates. Currently: CalVer `YYYY.0M0D.PATCH` without `v`
+prefix → glob `'[0-9][0-9][0-9][0-9].[0-9]*.[0-9]*'`. Do not add a
+`v*` or duplicate `tags:` key — the CalVer convention has no `v`.
+
+**Test coverage**: CI splits `--all-features` into: (a) `cargo test` with
+production features in the `test` job, (b) `cargo test --features
+integration-tests` in the container-backed job (PR→main only), and
+(c) `cargo check --all-features` for compilation coverage. New features
+must be added to at least (a) and (c); container-backed tests add to (b).
+
+**Pinned tool versions**: Every externally-installed tool (cosign, grype,
+cargo-auditable) MUST be pinned to a specific version, not `latest`.
+Reproducibility depends on it.
+
 # Skills
 
 ## Claude Code setup
