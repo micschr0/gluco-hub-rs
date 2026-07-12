@@ -19,10 +19,9 @@ name: Release
 
 on:
   push:
-    branches: [main]
-    # Must match CLAUDE.md "Releasing & Branching" CalVer scheme: vYYYY.0M0D.PATCH
-    tags: ['v*']
-  pull_request:
+    tags: ['[0-9][0-9][0-9][0-9].[0-9]*.[0-9]*']
+    # Matches the CalVer scheme (YYYY.0M0D.PATCH, e.g. 2026.711.0).
+    # release.toml generates plain numeric tags without `v` prefix.
     branches: [main]
   workflow_dispatch:
 
@@ -49,6 +48,7 @@ jobs:
   build:
     name: build (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write       # push image layers by digest (no-op on PRs)
@@ -146,6 +146,7 @@ jobs:
     needs: [build]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
@@ -190,6 +191,7 @@ jobs:
     # Grype scan passed.
     needs: [build, scan]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write       # push manifest list to GHCR
@@ -288,6 +290,8 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.4.3
 
       # Sign the manifest-list digest. One signature covers every tag
       # pointing at the same digest — re-tagging doesn't invalidate it.

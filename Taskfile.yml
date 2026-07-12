@@ -30,7 +30,9 @@ tasks:
     cmd: cargo test
 
   test-all:
-    desc: Run tests with all features
+    desc: Run tests with all features (includes integration-tests — needs Docker)
+    # CI splits this into: production features (test job) + integration-tests
+    # (container-backed job, PR→main only) + check --all-features (compilation).
     cmd: cargo test --all-features
 
   test-verbose:
