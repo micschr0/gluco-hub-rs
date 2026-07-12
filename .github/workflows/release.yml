@@ -20,7 +20,8 @@ name: Release
 on:
   push:
     branches: [main]
-    tags: ['[0-9]*']
+    # Must match CLAUDE.md "Releasing & Branching" CalVer scheme: vYYYY.0M0D.PATCH
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
