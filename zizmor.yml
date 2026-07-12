@@ -1,4 +1,25 @@
+# zizmor — single source of truth for workflow suppressions.
+# No inline `# zizmor: ignore[...]` comments in workflow files.
+# All suppressions live here with rationale.
+
 rules:
+  # ---------- ci.yml ----------
+  #
+  # actions-rust-lang/setup-rust-toolchain is pinned to a commit SHA
+  # that maps to tag v1.16.1. The `# v1.16.1` comment on the `uses:`
+  # line is for humans only; the action does not resolve a branch ref.
+  stale-action-refs:
+    ignore:
+      - ci.yml
+
+  # actions-rust-lang/setup-rust-toolchain installs rustup components
+  # (rustfmt, clippy) that aren't pre-installed on the runner in every
+  # configuration. The action is not redundant with built-in tooling.
+  superfluous-actions:
+    ignore:
+      - ci.yml
+
+  # ---------- ci.yml (container images) ----------
   template-injection:
     ignore: []
   unpinned-images:
