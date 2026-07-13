@@ -312,3 +312,5 @@ jobs:
         with:
           min-severity: medium
           min-confidence: medium
+          advanced-security: false
+          annotations: true
