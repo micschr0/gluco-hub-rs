@@ -1,9 +1,9 @@
 # Pins the Rust toolchain for everyone working in this repo. rustup
 # auto-installs the channel and components on first `cargo` invocation.
-# Channel matches workspace MSRV (`rust-version = "1.95"` in Cargo.toml)
-# so local dev and CI both build against the project's declared floor.
-# The MSRV CI job uses `cargo +1.95 check` for explicit redundancy.
+# Channel tracks latest stable for local dev; the compatibility floor
+# stays at workspace MSRV (`rust-version = "1.95"` in Cargo.toml),
+# verified by the MSRV CI job via `cargo +1.95 check`.
 [toolchain]
-channel = "1.96"
+channel = "1.97"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
