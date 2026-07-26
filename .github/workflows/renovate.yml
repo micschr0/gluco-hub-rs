@@ -40,7 +40,11 @@ jobs:
           owner: "micschr0"
           repositories: "gluco-hub-rs"
           permission-contents: write
-          permission-pull_requests: write
+          permission-pull-requests: write
+          # Needed for Dependency Dashboard issue and PR labels. Missing it:
+          # Renovate logs "integration-unauthorized", creates nothing, step
+          # still reports success.
+          permission-issues: write
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
