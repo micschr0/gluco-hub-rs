@@ -45,6 +45,12 @@ jobs:
           # Renovate logs "integration-unauthorized", creates nothing, step
           # still reports success.
           permission-issues: write
+          # Needed for the renovate/stability-days status check (minimumReleaseAge).
+          # Missing it: 403 "Resource not accessible by integration" -> renovate
+          # aborts the whole run with "repository-changed" before updating the
+          # Dependency Dashboard. Requires the GitHub App to grant
+          # "Commit statuses: Read and write".
+          permission-statuses: write
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
