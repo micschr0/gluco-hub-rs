@@ -44,7 +44,7 @@ metrics-exporter-prometheus = "0.18"
 # Config & secrets
 config = { version = "0.15", default-features = false, features = ["toml"] }
 secrecy = { version = "0.10", features = ["serde"] }
-validator = { version = "0.20", features = ["derive"] }
+validator = { version = "0.21", features = ["derive"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
