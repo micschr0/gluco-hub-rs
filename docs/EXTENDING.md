@@ -144,13 +144,12 @@ Add a branch for your variant to the source-selection code in `main.rs`, which p
 
 ## NS-Socket source (V6) — verified Nightscout Socket.IO contract
 
-The `source-ns-socket` feature (module `gluco-hub/src/sources/ns_socket/`) uses a
-Nightscout site as the **upstream** via its Socket.IO real-time feed. As of this
-writing it is a **scaffold**: the module, config (`[source.ns_socket]`), `Source`
-impl, and `[NSS0xx]` error codes exist, but `NsSocketClient::connect` is stubbed
-and returns `[NSS001]`. The wire contract below was verified against the official
-`cgm-remote-monitor` source so the eventual implementation does not have to
-re-derive it.
+V6 would use a Nightscout site as the **upstream** via its Socket.IO real-time
+feed, a standalone alternative to LibreLink Up. **No code exists yet** — a
+stubbed scaffold was removed rather than left to rot; build it against the
+contract below when a concrete use case arrives. The wire contract was verified
+against the official `cgm-remote-monitor` source, so the implementation does not
+have to re-derive it.
 
 - **Transport / namespace**: Socket.IO **v4** over an Engine.IO websocket, on the
   **default namespace** (`/`) — Nightscout uses no custom namespace. Engine.IO
@@ -178,7 +177,6 @@ Sources: [cgm-remote-monitor](https://github.com/nightscout/cgm-remote-monitor)
 **Dependency note**: a Socket.IO client (candidate
 [`rust-socketio`](https://crates.io/crates/rust-socketio)) must use a **rustls**
 backend (no OpenSSL) and may only be added once `cargo deny check` still passes.
-The scaffold adds zero new runtime deps.
 
 ## Testing
 

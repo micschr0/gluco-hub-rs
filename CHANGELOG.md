@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`build_sinks` test coverage** — the sink-wiring entry point had no tests at
+  all. Two cases now cover it: no `[sink.*]` block yields zero routers, and one
+  configured sink yields exactly one router with the DLQ layer both on and off.
+
+### Removed
+
+- **NS-Socket source scaffold (`source-ns-socket`)** — the V6 scaffold added in
+  the previous release never produced data: `NsSocketClient::connect` was
+  stubbed and every poll returned `[NSS001] not yet implemented`. The Cargo
+  feature, the `[source.ns_socket]` config block, and the module are gone.
+  Operators who enabled the feature should drop `[source.ns_socket]` from their
+  config: it is now an unknown section and, like any unknown section, is
+  **silently ignored** rather than reported (it previously raised `[CFG006]`
+  when the feature was off). `check-config` will not flag it. The verified
+  Nightscout Socket.IO wire contract is retained in `docs/EXTENDING.md` so a
+  real implementation does not have to re-derive it.
+- **MQTT `<prefix>/_patients` topic** — documented as retained and live, but no
+  production code path ever published it; the wiring was deferred on
+  2026-06-07 and only tests kept `publish_patients` / `PatientSummary` /
+  `connection_summaries` alive. Removed along with the stale topic
+  documentation in `README.md`, `docs/OPERATIONS.md`, `docs/ARCHITECTURE.md`,
+  and `docs/VERIFICATION.md`. No subscriber can have been receiving it.
+- **`docs/ci/` and `docs/superpowers/`** — `docs/ci/*.yml` were stale copies of
+  workflows already installed under `.github/workflows/` (3 revisions behind);
+  `docs/superpowers/plans/` held one completed plan for work shipped in V3.
+
 ### Fixed
 
 - **Integration tests: Nightscout 401** — `wait_for_ns_ready` only polled `/api/v1/status` (no auth), which returns 200 before NS 15's auth module finishes async initialisation. Added a second polling phase that sends an authenticated `GET /api/v1/entries` and waits until it no longer returns 401. Also added `AUTH_DEFAULT_ROLES: readable` to the test compose file.
