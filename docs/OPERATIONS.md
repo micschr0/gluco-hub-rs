@@ -43,14 +43,8 @@ Requires `--features sink-mqtt` and a `[sink.mqtt]` config block.
 | `<prefix>/glucose` | No       | `{"v":1,"glucose_mgdl":…,"trend":…,"timestamp_utc":…}`    |
 | `<prefix>/_health` | Yes      | `{"online":true}` · LWT: `{"online":false}`                |
 | `<prefix>/_stats`  | No       | periodic stats payload                                     |
-| `<prefix>/_patients` | Yes    | `[{"id":…,"display_name":"Anna M.","is_active":…}, …]` after LLU login |
 
 `<prefix>` is `topic_prefix` from `[sink.mqtt]` (e.g. `gluco-hub/gluco-hub-1`).
-
-The `_patients` list is published (LLU source only) after each successful
-`list_connections()` so consumers can discover patient UUIDs without a UI.
-`display_name` is abbreviated to first name + last initial (PHI: no full
-surname, no birthdate ever leaves the bridge).
 
 Home Assistant auto-discovery via MQTT is planned for V3.
 
@@ -221,16 +215,7 @@ cargo deny check
 
 ## Continuous integration
 
-Two GitHub Actions workflows still live under [`docs/ci/`](./ci/) pending a token with the `workflow` scope. Install them with such a token:
-
-```bash
-mkdir -p .github/workflows
-cp docs/ci/ci-workflow.yml   .github/workflows/ci.yml
-cp docs/ci/deny-workflow.yml .github/workflows/deny.yml
-git add .github/workflows/
-git commit -m "ci: install build + cargo-deny workflows"
-git push
-```
+Workflows live in [`.github/workflows/`](../.github/workflows/): `ci.yml`, `deny.yml`, `release.yml`, `renovate.yml`. Validate any change with `actionlint .github/workflows/*.yml` before pushing.
 
 - **`ci.yml`** — `fmt` / `clippy` / `test` / release `build` on every push and PR. Wires `GLUCO_HUB_GIT_SHA=${{ github.sha }}` into the release build. Concurrency group cancels superseded PR runs; cache saves only on `main`.
 - **`deny.yml`** — `cargo deny --all-features` on every push, PR, and weekly cron. Renovate is also configured — see [`renovate.json`](../renovate.json) — with grouped tokio / serde / axum+tower / tracing PRs, weekly `lockFileMaintenance`, and automerge gated on green CI.

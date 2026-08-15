@@ -8,7 +8,7 @@ Rust stable, edition 2024. Tokio + axum. reqwest with rustls (no OpenSSL). thise
 
 Always latest minor versions via Renovate. No exact pins outside `Cargo.lock`.
 
-MSRV pinned to Rust 1.95 (see `Cargo.toml` workspace `rust-version`). Optional `mock-source` feature replaces LLU with an in-memory fixture for offline tests.
+MSRV 1.95 (`Cargo.toml` workspace `rust-version`, checked in CI via `cargo +1.95 check`); the local dev channel is pinned to 1.97 in `rust-toolchain.toml`. Both must move together. Optional `mock-source` feature replaces LLU with an in-memory fixture for offline tests.
 
 ## Architecture
 
@@ -25,7 +25,8 @@ Trait-based design — adding a source or sink means one new file and a Cargo fe
 
 Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task build-all`, `task lint`, `task test-all`, `task check`). Raw cargo commands:
 
-- Build: `cargo build` / `cargo build --release`
+- One-time setup: `task setup` — installs `.githooks` (fmt on commit, clippy on push)
+- Build: `cargo auditable build` / `--release` (Taskfile default; plain `cargo build` skips the SBOM)
 - Build with all sinks: `cargo build --features "source-llu sink-nightscout sink-mqtt"`
 - Test: `cargo test`
 - Test all features: `cargo test --all-features`
@@ -57,11 +58,13 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 ## Files map
 
 - `gluco-hub-core/src/{model,source,sink,error,cache,mock}.rs` — domain layer
-- `gluco-hub/src/{main,config,metrics}.rs` — binary entry points
-- `gluco-hub/src/api/{mod,health,glucose,auth,metrics}.rs` — axum routes
+- `gluco-hub/src/{main,config,metrics,dlq,sink_router,poll_status}.rs` — binary, routing, DLQ
+- `gluco-hub/src/api/{mod,health,glucose,auth,metrics,status,clock}.rs` — axum routes
 - `gluco-hub/src/sources/llu/` — LibreLink Up source impl
 - `gluco-hub/src/sinks/{nightscout,mqtt}/` — Nightscout and MQTT sink impls
 - `gluco-hub/src/e2e_tests.rs` — integration tests (wiremock)
+- `gluco-hub/src/integration_tests/` — container-backed tests (`--features integration-tests`)
+- `scripts/*-dryrun.sh` — offline LLU/NS verification, no image build
 - `config.example.toml` — config schema reference
 - `docs/ARCHITECTURE.md` — Mermaid data-flow and sequence diagrams
 - `docs/EXTENDING.md` — how to add a new Source or Sink (read before scaffolding)
@@ -81,9 +84,14 @@ Use `task <name>` (Taskfile.yml) for the canonical workflow shortcuts (`task bui
 - **V1** ✓: LLU source + Nightscout sink + HTTP API + optional Bearer
 - **V2** ✓: MQTT sink (v5, LWT, schema `v: 1`, topics `_health` and `_stats`)
 - **V3** ✓: HA MQTT auto-discovery, per-sink watermark backfill (SinkRouter), persistent DLQ (DlqSink). Pre-merge gate: `docs/V3_VALIDATION.md` checklist run against real infrastructure with the `:main` image (or a `:sha-<short>` snapshot).
+- **V4** ✓: Clock View (`GET /` serves `clock.html` directly — no redirect, HA Ingress-safe; plus `GET /clock`, `/clock/state`) and `GET /api/v1/status` backed by live atomics (MQTT connected, DLQ depth, `last_poll_failed_at`).
 - **V5** ✓: mTLS for MQTT, JWT-as-password, Tailscale MagicDNS discovery (shipped 2026.606.0). Tailscale resolves via the local `tailscaled` HTTP API at startup — the lighter approach that shipped instead of the originally-planned embedded `tailscale-rs`.
-- **V6** (scaffolded): NS-Socket source — Nightscout as an alternative data source via Socket.IO (NS becomes the upstream; gluco-hub fans out to MQTT / HA / Webhook). Standalone alternative to LLU; multi-source coexistence stays deferred. Feature `source-ns-socket` + `[source.ns_socket]` config landed (#45); the Socket.IO connect/subscribe loop is still **stubbed** (returns `NSS001 not yet implemented`).
 - **Deferred** (revisit when a concrete use case emerges):
+  - NS-Socket source (V6) — Nightscout as upstream via Socket.IO. The stubbed
+    scaffold from #45 was removed 2026-08-15 (it only ever returned `NSS001`);
+    the verified wire contract survives in `docs/EXTENDING.md`.
+  - MQTT `_patients` publisher — `publish_patients` / `PatientSummary` removed
+    2026-08-15, unreachable since the wiring was deferred 2026-06-07.
   - TUI
   - Webhook sink
   - Multi-source routing (LLU + NS-Socket simultaneously)

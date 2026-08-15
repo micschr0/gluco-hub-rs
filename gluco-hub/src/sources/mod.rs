@@ -5,6 +5,3 @@
 
 #[cfg(feature = "source-llu")]
 pub mod llu;
-
-#[cfg(feature = "source-ns-socket")]
-pub mod ns_socket;

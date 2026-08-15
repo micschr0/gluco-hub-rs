@@ -249,7 +249,7 @@ async fn serve(cfg: config::Config) -> Result<()> {
     let dlq_depth: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
     let sources = build_default_source(&cfg)?;
     let source_names: Vec<String> = sources.iter().map(|(n, _)| n.clone()).collect();
-    let built_sinks = build_sinks(
+    let sinks = build_sinks(
         &cfg,
         &source_names,
         Arc::clone(&mqtt_connected),
@@ -270,7 +270,6 @@ async fn serve(cfg: config::Config) -> Result<()> {
         mqtt_connected: mqtt_connected_state,
         dlq_depth: dlq_depth_state,
     };
-    let sinks = built_sinks.routed;
     info!(sink_count = sinks.len(), "sinks configured");
     if sinks.is_empty() && !cfg.http.enabled {
         warn!(
@@ -351,10 +350,8 @@ fn resolve_bearer_token(cfg: &config::Config) -> Option<secrecy::SecretString> {
 
 /// Build sources to drive the poller. Priority order:
 /// 1. `source-llu` feature + `[source]` blocks configured.
-/// 2. `source-ns-socket` feature + `[source.ns_socket]` block (only when no
-///    LLU source was configured — coexistence stays deferred).
-/// 3. `mock-source` feature → MockSource fixture.
-/// 4. Otherwise, empty vec (HTTP API stays up; data endpoints serve 503).
+/// 2. `mock-source` feature → MockSource fixture.
+/// 3. Otherwise, empty vec (HTTP API stays up; data endpoints serve 503).
 ///
 /// Returns a list of `(name, source)` pairs. Legacy `[source.llu]` is named
 /// `"default"`; multi-source `[source.sources]` entries use their map key.
@@ -363,11 +360,7 @@ fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Sou
     // used so the no-default-features build doesn't warn.
     let _ = cfg;
     #[cfg_attr(
-        not(any(
-            feature = "source-llu",
-            feature = "source-ns-socket",
-            feature = "mock-source"
-        )),
+        not(any(feature = "source-llu", feature = "mock-source")),
         allow(unused_mut)
     )]
     let mut sources: Vec<(String, Arc<dyn Source>)> = Vec::new();
@@ -390,18 +383,6 @@ fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Sou
         }
     }
 
-    // NS-Socket is a standalone alternative to LLU; coexistence stays
-    // deferred, so it only contributes when no LLU source was configured.
-    #[cfg(feature = "source-ns-socket")]
-    if sources.is_empty()
-        && let Some(ns) = cfg.source.ns_socket.as_ref()
-    {
-        sources.push((
-            "default".to_string(),
-            build_ns_socket_source(ns).context("build NS-Socket source")?,
-        ));
-    }
-
     #[cfg(feature = "mock-source")]
     if sources.is_empty() {
         let mock =
@@ -410,46 +391,6 @@ fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Sou
     }
 
     Ok(sources)
-}
-
-/// Resolve `[source.ns_socket]` into a wired `NsSocketSource`.
-///
-/// V6 scaffold: the source compiles and registers, but its Socket.IO loop is
-/// stubbed (`[NSS001]`), so the poller surfaces a typed source error on each
-/// tick rather than producing readings. The credential is resolved from the
-/// environment-injected `SecretString` (never logged).
-#[cfg(feature = "source-ns-socket")]
-fn build_ns_socket_source(ns: &config::NsSocketSourceConfig) -> Result<Arc<dyn Source>> {
-    use config::NsSocketAuthMode;
-    use gluco_hub_core::SourceId;
-    use secrecy::SecretString;
-    use sources::ns_socket::client::{NsAuthMode, NsSocketClient};
-    use sources::ns_socket::source::NsSocketSource;
-
-    let (auth_mode, secret): (NsAuthMode, SecretString) = match ns.auth {
-        NsSocketAuthMode::Token => (
-            NsAuthMode::Token,
-            ns.token
-                .clone()
-                .context("[source.ns_socket] token required when auth = \"token\"")?,
-        ),
-        NsSocketAuthMode::ApiSecret => (
-            NsAuthMode::ApiSecret,
-            ns.api_secret
-                .clone()
-                .context("[source.ns_socket] api_secret required when auth = \"api_secret\"")?,
-        ),
-    };
-
-    let client = NsSocketClient::new(ns.base_url.clone(), auth_mode, secret, ns.history_hours);
-    let id = SourceId::new("ns_socket").context("build SourceId")?;
-    info!(
-        base_url = %ns.base_url,
-        auth = ?ns.auth,
-        history_hours = ns.history_hours,
-        "ns_socket source configured (V6 scaffold — Socket.IO loop stubbed)"
-    );
-    Ok(Arc::new(NsSocketSource::new(id, client)))
 }
 
 /// Resolve `[source.llu]` into a wired `LluAuthClient` + `LluCredentials`
@@ -950,14 +891,6 @@ fn extract_error_code(message: &str) -> String {
     "UNKNOWN".to_string()
 }
 
-/// Outcome of `build_sinks`: the layered sink chain plus, when the MQTT
-/// sink is compiled in *and* configured, a concrete `Arc<MqttSink>` handle.
-/// The handle lets the caller call MQTT-specific methods (e.g.
-/// `publish_patients`) on the *same* sink instance the reading pipeline
-/// uses, without opening a second broker connection.
-struct BuiltSinks {
-    routed: Vec<Arc<sink_router::SinkRouter>>,
-}
 /// Build the configured sinks, each layered as
 /// `SinkRouter (watermark)` → `DlqSink (persistence)` → real sink.
 /// Order is config-driven; future sinks (webhook, …) slot in as
@@ -973,7 +906,7 @@ async fn build_sinks(
     source_names: &[String],
     mqtt_connected: Arc<AtomicBool>,
     dlq_depth: Arc<AtomicU64>,
-) -> Result<BuiltSinks> {
+) -> Result<Vec<Arc<sink_router::SinkRouter>>> {
     let _ = cfg;
     let _ = source_names;
     // Used only when feature-gated sink branches are compiled in.
@@ -1047,7 +980,7 @@ async fn build_sinks(
             .collect()
     };
 
-    Ok(BuiltSinks { routed })
+    Ok(routed)
 }
 /// Build the MQTT sink and return it as `Arc<MqttSink>` so the caller can
 /// share it between the `Sink` trait path (glucose readings) and direct
@@ -1123,35 +1056,6 @@ fn build_nightscout_sink(ns: &config::NightscoutSinkConfig) -> Result<Arc<dyn Si
         .with_app(app);
     info!(base_url = %ns.base_url, device, app, "nightscout sink configured");
     Ok(Arc::new(NightscoutSink::new(client)))
-}
-
-/// Map a raw LLU connections list into PHI-safe `PatientSummary` records.
-///
-/// PHI rule: only `id`, an abbreviated display name (first name + last
-/// initial), and `is_active` ever leave this function — never a full
-/// surname or birthdate. `is_active` is `true` for exactly the connection
-/// the poll loop fetches, as resolved by the source's `selection`.
-#[cfg(all(feature = "source-llu", feature = "sink-mqtt"))]
-// Only exercised by the e2e test today: the binary caller (MQTT patients
-// publisher) is deferred, so the non-test binary build sees it as dead.
-// Retained for when the publisher is revived; allow dead_code until then.
-#[cfg_attr(not(test), allow(dead_code))]
-fn connection_summaries(
-    connections: &[sources::llu::wire::Connection],
-    selection: &sources::llu::source::ConnectionSelection,
-) -> Vec<sinks::mqtt::wire::PatientSummary> {
-    let active_id = selection.resolve_active_id(connections);
-    connections
-        .iter()
-        .map(|c| {
-            sinks::mqtt::wire::PatientSummary::new(
-                c.patient_id.clone(),
-                c.first_name.as_deref(),
-                c.last_name.as_deref(),
-                active_id.as_deref() == Some(c.patient_id.as_str()),
-            )
-        })
-        .collect()
 }
 
 async fn shutdown_signal() {
@@ -1465,5 +1369,69 @@ mod tests {
         assert_eq!(to_n(mk("[NS003]")), to_n(ExitCode::from(5)));
         assert_eq!(to_n(mk("[NS004]")), to_n(ExitCode::from(5)));
         assert_eq!(to_n(mk("totally unrelated panic")), to_n(ExitCode::FAILURE));
+    }
+
+    /// Write a config TOML into `dir` and load it. `extra` is appended
+    /// verbatim so each test adds only the block it cares about.
+    fn cfg_with(dir: &std::path::Path, extra: &str) -> config::Config {
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "[http]\nbind = \"127.0.0.1:9000\"\n\n\
+                 [poller]\ninterval_secs = 60\n\n\
+                 [state]\ndir = \"{}\"\n\n{extra}",
+                dir.join("state").display()
+            ),
+        )
+        .expect("write config");
+        config::load(Some(&path)).expect("load config")
+    }
+
+    async fn routers_for(cfg: &config::Config) -> Vec<Arc<sink_router::SinkRouter>> {
+        build_sinks(
+            cfg,
+            &["default".to_string()],
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+        .expect("build_sinks must succeed")
+    }
+
+    /// No `[sink.*]` block configured → no routers. The HTTP API still
+    /// runs; `serve` only warns. Guards the caller contract that
+    /// `build_sinks` returns the router list directly.
+    #[tokio::test]
+    async fn build_sinks_returns_empty_list_when_no_sink_configured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = cfg_with(dir.path(), "[dlq]\nenabled = false\n");
+        assert!(
+            routers_for(&cfg).await.is_empty(),
+            "unconfigured build must yield zero routers"
+        );
+    }
+
+    /// One configured sink yields exactly one router whether or not the
+    /// DLQ layer is inserted — enabling the DLQ wraps each sink, it must
+    /// never duplicate or drop one.
+    #[cfg(feature = "sink-nightscout")]
+    #[tokio::test]
+    async fn build_sinks_wraps_each_sink_once_with_and_without_dlq() {
+        const NS: &str = "[sink.nightscout]\n\
+                          base_url = \"https://ns.example.com\"\n\
+                          api_secret = \"dummy-test-secret\"\n";
+
+        let no_dlq = tempfile::tempdir().expect("tempdir");
+        let cfg = cfg_with(no_dlq.path(), &format!("[dlq]\nenabled = false\n\n{NS}"));
+        assert_eq!(routers_for(&cfg).await.len(), 1, "dlq off: one router");
+
+        let with_dlq = tempfile::tempdir().expect("tempdir");
+        let cfg = cfg_with(with_dlq.path(), &format!("[dlq]\nenabled = true\n\n{NS}"));
+        assert_eq!(routers_for(&cfg).await.len(), 1, "dlq on: still one router");
+        assert!(
+            with_dlq.path().join("state").is_dir(),
+            "enabling the DLQ must create the configured state dir"
+        );
     }
 }
