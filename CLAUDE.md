@@ -211,4 +211,10 @@ git clone git@github.com:micschr0/claude-configs.git ~/projects/claude-configs
 ln -s ~/projects/claude-configs/gluco-hub-rs .claude
 ```
 
-@.claude/skills/rust-developer/SKILL.md
+Project-agnostic skills (`rust-developer`, `renovate-github`) live in
+`claude-configs/_shared/skills/` and are symlinked into each project's
+`skills/` directory — edit them there, never through the symlink.
+
+Skills load on demand from their own `description`; don't `@`-import a
+`SKILL.md` here. An import pays its full token cost in every session,
+whether or not the topic comes up.
