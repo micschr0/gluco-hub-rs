@@ -71,12 +71,6 @@ pub fn parse_llu_timestamp(raw: &str, source_tz: Tz) -> Result<DateTime<Utc>, Ll
     Ok(local.with_timezone(&Utc))
 }
 
-/// Build a normalised `Reading` from an LLU `GlucoseMeasurement` and the
-/// owning patient/source identifiers.
-///
-/// Out-of-range glucose values (sensor errors / sentinel readings) are
-/// rejected as `LluError::Protocol` rather than silently clamped — the
-/// poller's error counter then carries the `error_code = "LLU004"` label.
 /// Pick the measurement with the newest parseable timestamp from a
 /// graph-data slice. Returns `None` when the slice is empty or every
 /// timestamp fails to parse. Centralised here so callers (the dryrun
@@ -94,6 +88,14 @@ pub fn newest_measurement(
         })
         .max_by_key(|(t, _)| *t)
 }
+
+/// Build a normalised `Reading` from an LLU `GlucoseMeasurement` and the
+/// owning patient/source identifiers.
+///
+/// Malformed input (missing `Timestamp`/`ValueInMgPerDl`, an unparseable
+/// timestamp, or an out-of-range glucose value) is logged at `warn` and
+/// skipped — the function returns `None` rather than an error, so one bad
+/// measurement in a `graphData` batch never aborts the rest of the poll.
 pub fn reading_from_measurement(
     m: &GlucoseMeasurement,
     patient_id: &PatientId,
