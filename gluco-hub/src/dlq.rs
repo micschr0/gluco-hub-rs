@@ -224,22 +224,26 @@ impl Sink for DlqSink {
 }
 
 /// Merge `existing` and `batch` into a single set keyed by
-/// `(source_id, patient_id, timestamp_secs)`, sorted oldest-first. Later
-/// occurrences (from `batch`) win on collisions — important when LLU later
-/// returns a trend-corrected version of the same timestamp.
+/// `(timestamp_secs, source_id, patient_id)`, sorted oldest-first —
+/// `timestamp_secs` leads the tuple so the `BTreeMap`'s ascending-key
+/// order is chronological across every source/patient, not grouped by
+/// `source_id` first. Later occurrences (from `batch`) win on collisions
+/// — important when LLU later returns a trend-corrected version of the
+/// same timestamp.
 ///
-/// `source_id` is included in the key to prevent silent data loss in
-/// multi-patient / multi-source deployments where two different sources
-/// could produce readings with the same patient_id + timestamp combination.
+/// `source_id` and `patient_id` stay in the key (as tie-breakers) to
+/// prevent silent data loss in multi-patient / multi-source deployments
+/// where two different sources could produce readings with the same
+/// patient_id + timestamp combination.
 fn merge_dedup(existing: &[Reading], batch: &[Reading]) -> Vec<Reading> {
     use std::collections::BTreeMap;
-    let mut map: BTreeMap<(String, String, i64), Reading> = BTreeMap::new();
+    let mut map: BTreeMap<(i64, String, String), Reading> = BTreeMap::new();
     for r in existing.iter().chain(batch.iter()) {
         map.insert(
             (
+                r.timestamp.timestamp(),
                 r.source_id.as_str().to_string(),
                 r.patient_id.as_str().to_string(),
-                r.timestamp.timestamp(),
             ),
             r.clone(),
         );
@@ -320,6 +324,16 @@ mod tests {
         Reading {
             patient_id: PatientId::new("p1").unwrap(),
             source_id: SourceId::new("llu").unwrap(),
+            timestamp: Utc.timestamp_opt(secs, 0).unwrap(),
+            glucose: GlucoseMgDl::new(110.0).unwrap(),
+            trend: Trend::Flat,
+        }
+    }
+
+    fn reading_for(source_id: &str, secs: i64) -> Reading {
+        Reading {
+            patient_id: PatientId::new("p1").unwrap(),
+            source_id: SourceId::new(source_id).unwrap(),
             timestamp: Utc.timestamp_opt(secs, 0).unwrap(),
             glucose: GlucoseMgDl::new(110.0).unwrap(),
             trend: Trend::Flat,
@@ -502,6 +516,31 @@ mod tests {
         assert_eq!(kept.len(), 3);
         assert_eq!(kept[0].timestamp.timestamp(), 300);
         assert_eq!(kept[2].timestamp.timestamp(), 500);
+    }
+
+    #[test]
+    fn enforce_cap_evicts_chronologically_oldest_across_sources() {
+        // Source "a" sorts before "b" alphabetically but its readings are
+        // NEWER — a prior bug keyed the merge map (source_id, patient_id,
+        // timestamp), so the BTreeMap grouped by source_id first and
+        // `drain(..evicted)` dropped ALL of source "a"'s entries (even the
+        // newest) while source "b"'s genuinely-oldest entries survived.
+        let set = merge_dedup(
+            &[
+                reading_for("a", 400),
+                reading_for("a", 500),
+                reading_for("b", 100),
+                reading_for("b", 200),
+            ],
+            &[reading_for("b", 300)],
+        );
+        let (kept, evicted) = enforce_cap(set, 3);
+        assert_eq!(evicted, 2);
+        assert_eq!(kept.len(), 3);
+        // The two chronologically oldest (b@100, b@200) must be dropped;
+        // a@400, a@500, and b@300 survive regardless of source_id.
+        let kept_secs: Vec<i64> = kept.iter().map(|r| r.timestamp.timestamp()).collect();
+        assert_eq!(kept_secs, vec![300, 400, 500]);
     }
 
     #[tokio::test]
