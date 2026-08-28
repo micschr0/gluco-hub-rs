@@ -48,23 +48,6 @@ impl From<Trend> for NsDirection {
     }
 }
 
-/// Nightscout's trend integer scheme — kept as a private mapping for
-/// future use, but NOT serialised. Relying on `direction` alone keeps us
-/// aligned with what NS dashboards expect.
-#[allow(dead_code)]
-fn ns_trend_int(t: Trend) -> u8 {
-    match t {
-        Trend::DoubleUp => 1,
-        Trend::SingleUp => 2,
-        Trend::FortyFiveUp => 3,
-        Trend::Flat => 4,
-        Trend::FortyFiveDown => 5,
-        Trend::SingleDown => 6,
-        Trend::DoubleDown => 7,
-        Trend::NotComputable | Trend::RateOutOfRange => 0,
-    }
-}
-
 /// One Nightscout v3 entry. The `type` field must be a literal `"sgv"`
 /// for sensor-glucose-value entries.
 ///

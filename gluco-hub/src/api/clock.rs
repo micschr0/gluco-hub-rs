@@ -183,15 +183,16 @@ fn trend_to_num_label(trend: Trend) -> (u8, &'static str) {
 
 /// Query parameters accepted by `GET /clock`. All optional; missing values
 /// fall back to the documented defaults (`lo=70`, `hi=180`, unit `mgdl`).
+///
+/// `kiosk` and `pin` (the client-side kiosk-mode PIN overlay in
+/// `clock.html`) are read directly from `location.search` by the page's
+/// own JS — the server never needs to see them, so they are deliberately
+/// not modeled here.
 #[derive(Debug, Deserialize, Default)]
 pub struct ClockQuery {
     eink: Option<String>,
     lo: Option<f64>,
     hi: Option<f64>,
-    #[allow(dead_code)]
-    kiosk: Option<String>,
-    #[allow(dead_code)]
-    pin: Option<String>,
     unit: Option<String>,
     dark: Option<String>,
 }

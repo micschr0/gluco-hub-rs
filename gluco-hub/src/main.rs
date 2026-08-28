@@ -448,9 +448,8 @@ fn resolve_source_tz(llu: &config::LluSourceConfig) -> Result<chrono_tz::Tz> {
         })
 }
 
-/// Build an `LluSource` without wrapping it in `Arc<dyn Source>`, giving
-/// the caller a chance to attach additional wiring (e.g. the connections
-/// watch channel for the `_patients` MQTT publisher) before erasure.
+/// Build an `LluSource` and immediately erase it behind `Arc<dyn Source>`
+/// for the poller's `Vec<(String, Arc<dyn Source>)>`.
 #[cfg(feature = "source-llu")]
 fn build_llu_source(name: &str, llu: &config::LluSourceConfig) -> Result<Arc<dyn Source>> {
     use chrono_tz::Tz;
@@ -940,13 +939,13 @@ async fn build_sinks(
                 let sink = build_mqtt_sink(mqtt, Some(name), connected_flag)
                     .await
                     .context(format!("build MQTT sink for '{name}'"))?;
-                sink_list.push(sink as Arc<dyn Sink>);
+                sink_list.push(sink);
             }
         } else {
             let sink = build_mqtt_sink(mqtt, None, Some(Arc::clone(&mqtt_connected)))
                 .await
                 .context("build MQTT sink")?;
-            sink_list.push(sink as Arc<dyn Sink>);
+            sink_list.push(sink);
         }
     }
 
@@ -982,9 +981,7 @@ async fn build_sinks(
 
     Ok(routed)
 }
-/// Build the MQTT sink and return it as `Arc<MqttSink>` so the caller can
-/// share it between the `Sink` trait path (glucose readings) and direct
-/// method calls (e.g. `publish_patients`).
+/// Build the MQTT sink and erase it behind `Arc<dyn Sink>`.
 ///
 /// `connected_flag` is an optional `AtomicBool` that the MQTT poll loop
 /// will set to `true` on ConnAck and `false` on connection error. Used by
@@ -994,7 +991,7 @@ async fn build_mqtt_sink(
     cfg: &config::MqttSinkConfig,
     source_name: Option<&str>,
     connected_flag: Option<Arc<AtomicBool>>,
-) -> Result<Arc<sinks::mqtt::MqttSink>> {
+) -> Result<Arc<dyn Sink>> {
     use sinks::mqtt::MqttSink;
 
     let password = cfg.password.clone();
@@ -1037,7 +1034,7 @@ async fn build_mqtt_sink(
 
     // Build with the potentially-resolved broker host.
     MqttSink::new(&resolved_cfg, password, connected_flag)
-        .map(Arc::new)
+        .map(|s| Arc::new(s) as Arc<dyn Sink>)
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
