@@ -1,11 +1,11 @@
-# Verification Runbook — Ingress, MQTT `_patients`, and Clock View
+# Verification Runbook — Ingress, MQTT, and Clock View
 
 How to verify the Sprint A–C + polished Clock View feature set end to end.
 The automated layers run in CI; the three numbered steps below close the gaps
 that need a real environment (Docker socket, a browser, a live Home Assistant).
 
-Related PRs: gluco-hub-rs `#33` (PollStatus + `/api/v1/status`), `#34`
-(`_patients`), `#35` (Clock View), `#36` (polished UI + `/clock/history`);
+Related PRs: gluco-hub-rs `#33` (PollStatus + `/api/v1/status`), `#35`
+(Clock View), `#36` (polished UI + `/clock/history`);
 ha-libre-glucose-mqtt branch `feat/ingress-clock-view` (Ingress, `panel_admin`,
 docs).
 
@@ -17,11 +17,10 @@ cargo clippy --workspace -- -D warnings                                 # defaul
 cargo test  --workspace --all-features                                  # see step 1 caveat
 ```
 
-What this covers without any external service: zone logic, `PatientSummary`
-serialization + abbreviated `display_name`, `PollStatus` 503/200 + `no-store`,
-the readings ring buffer + `/clock/history` shape, the SSE `reading` field set,
-the e-ink throttle, `/clock` HTML config injection, and a wiremock LLU →
-retained `_patients` publish (in-process MQTT stub broker — no Docker).
+What this covers without any external service: zone logic, `PollStatus`
+503/200 + `no-store`, the readings ring buffer + `/clock/history` shape, the
+SSE `reading` field set, the e-ink throttle, `/clock` HTML config injection,
+and the MQTT publish path against an in-process stub broker (no Docker).
 
 ## 1. Docker testcontainer suite (needs a Docker host)
 
@@ -37,7 +36,7 @@ cargo test --workspace --all-features integration_tests
 ```
 
 This is the real-broker confirmation of the MQTT publish path (glucose,
-`_health`, `_stats`, `_patients`, HA discovery).
+`_health`, `_stats`, HA discovery).
 
 ## 2. Clock View frontend E2E (needs a browser)
 
@@ -74,8 +73,6 @@ place the Ingress proxy behavior is real. Run it against the `:main` image in HA
 3. Set LibreLink Up credentials + `topic_prefix`; start the add-on.
 4. Verify:
    - `sensor.gluco_hub_<client_id>_glucose` appears (MQTT auto-discovery).
-   - Retained `<topic_prefix>/_patients` carries `[{id, display_name,
-     is_active}]` with abbreviated names (MQTT *Listen to topic*).
    - `GET /api/v1/status` shows `last_poll_attempt_at` vs
      `last_successful_reading_at`.
    - The sidebar **Glucose Bridge** panel (admin-only via `panel_admin`) opens
