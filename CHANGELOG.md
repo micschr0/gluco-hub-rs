@@ -12,6 +12,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   all. Two cases now cover it: no `[sink.*]` block yields zero routers, and one
   configured sink yields exactly one router with the DLQ layer both on and off.
 
+### Security
+
+- **Clock View unauthenticated PHI exposure** — `/clock/state`,
+  `/clock/history`, and `/clock/events` (SSE) served the same glucose value,
+  trend, and history as `/glucose/*`, but the Bearer middleware only wrapped
+  `/glucose/*`. An operator who set `GLUCO_HUB__HTTP__BEARER_TOKEN` and
+  exposed the service beyond localhost got a false sense that readings were
+  gated. Now gated behind the same optional Bearer middleware; the PHI-free
+  HTML shell (`/clock`, `/`) stays public.
+
+### Fixed
+
+- **Multi-source silent data loss** — `SinkRouter` held one watermark per
+  sink, but multiple `[source.sources]` entries share the same `SinkRouter`
+  instances. One source's advancing watermark could permanently filter out
+  another source's genuinely-new readings. The watermark is now keyed per
+  `source_id`.
+- **Nightscout cross-patient dedup bug** — `NightscoutSink`'s pre-upload
+  dedup checked NS's *instance-global* newest-entry timestamp, so one
+  patient's push could silently mark another patient's new readings as
+  already-uploaded before they were ever POSTed. Removed the client-side
+  check; `SinkRouter`'s per-source watermark already filters correctly, and
+  Nightscout dedupes server-side by `(deviceId, date)`.
+- **DLQ eviction order** — `merge_dedup`'s `BTreeMap` was keyed
+  `(source_id, patient_id, timestamp)`, so `enforce_cap` evicted every entry
+  of whichever `source_id` sorts alphabetically first — even its newest —
+  instead of the chronologically oldest entries across all sources. Key
+  reordered to `(timestamp, source_id, patient_id)`.
+- **MQTT username-only auth silently dropped** — `build_client` only sent
+  credentials when both a username and a password were configured, so a
+  username-only broker setup sent no credentials at all.
+- **Tailscale + TLS always fails** — `tailscale_hostname` resolves the
+  broker to a raw tailnet IP; TLS certificate verification against a
+  `tailscale cert`-issued certificate (DNS SAN only, never an IP SAN)
+  always fails against that IP. Now rejected at config load with an
+  actionable message instead of an endlessly-retried connection failure.
+- **`[source.sources]` precedence doc was backwards** — documented as
+  "`llu` ignored when `sources` is non-empty"; the code has always done the
+  opposite. Doc corrected; a startup warning now fires when both blocks are
+  configured.
+- **`validate_http_url` never actually accepted `::1`** — the loopback
+  allow-list's `"::1"` branch was unreachable for any syntactically valid
+  URL (bracketed or not) because the host/port split ran before stripping
+  IPv6 brackets.
+- **Integration tests: Nightscout 401** — `wait_for_ns_ready` only polled `/api/v1/status` (no auth), which returns 200 before NS 15's auth module finishes async initialisation. Added a second polling phase that sends an authenticated `GET /api/v1/entries` and waits until it no longer returns 401. Also added `AUTH_DEFAULT_ROLES: readable` to the test compose file.
+
 ### Removed
 
 - **NS-Socket source scaffold (`source-ns-socket`)** — the V6 scaffold added in
@@ -30,13 +76,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `connection_summaries` alive. Removed along with the stale topic
   documentation in `README.md`, `docs/OPERATIONS.md`, `docs/ARCHITECTURE.md`,
   and `docs/VERIFICATION.md`. No subscriber can have been receiving it.
+- **`_patients` publisher leftover plumbing** — a follow-up pass over the
+  removal above: `LluSource::connections_tx` + its notify block,
+  `subscribe_connections()`, and `ConnectionSelection::resolve_active_id()`
+  had zero production callers, only their own tests. `ns_trend_int` in
+  `nightscout/wire.rs` had zero callers anywhere.
 - **`docs/ci/` and `docs/superpowers/`** — `docs/ci/*.yml` were stale copies of
   workflows already installed under `.github/workflows/` (3 revisions behind);
   `docs/superpowers/plans/` held one completed plan for work shipped in V3.
-
-### Fixed
-
-- **Integration tests: Nightscout 401** — `wait_for_ns_ready` only polled `/api/v1/status` (no auth), which returns 200 before NS 15's auth module finishes async initialisation. Added a second polling phase that sends an authenticated `GET /api/v1/entries` and waits until it no longer returns 401. Also added `AUTH_DEFAULT_ROLES: readable` to the test compose file.
 
 ## [2026.621.0] - 2026-06-21
 
