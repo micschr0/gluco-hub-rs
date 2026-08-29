@@ -240,7 +240,7 @@ impl NightscoutClient {
                     attempt += 1;
                     let delay = retry_backoff(attempt);
                     ::metrics::counter!(
-                        "cgm_sink_post_retry_total",
+                        crate::metrics::COUNTER_SINK_RETRY,
                         "sink" => "nightscout",
                         "attempt" => attempt.to_string(),
                     )
