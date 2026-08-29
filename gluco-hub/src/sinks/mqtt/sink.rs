@@ -273,8 +273,12 @@ fn build_client(
     opts.set_clean_start(true);
     opts.set_session_expiry_interval(Some(cfg.session_expiry_secs));
 
-    if let (Some(user), Some(pw)) = (cfg.username.as_deref(), password.as_ref()) {
-        opts.set_credentials(user, pw.expose_secret());
+    if let Some(user) = cfg.username.as_deref() {
+        let pw = password
+            .as_ref()
+            .map(|p| p.expose_secret().to_string())
+            .unwrap_or_default();
+        opts.set_credentials(user, pw);
     }
 
     if cfg.tls {
@@ -605,7 +609,7 @@ mod tests {
 
     use crate::config::{MqttGlucoseUnit, MqttQos, MqttSinkConfig};
 
-    use super::MqttSink;
+    use super::{MqttSink, build_client};
 
     /// Spin a single-connection MQTT v5 stub broker on `127.0.0.1:0`.
     /// Returns the bound port and a receiver of every received PUBLISH
@@ -930,5 +934,22 @@ mod tests {
             !saw_discovery,
             "discovery topic must not be published when discovery_enabled = false"
         );
+    }
+
+    #[test]
+    fn build_client_sends_username_without_password() {
+        // A broker that only checks the username (no password configured
+        // on its side) is a common MQTT setup. A prior bug only called
+        // `set_credentials` when BOTH username and password were `Some`,
+        // so a username-only config silently sent no credentials at all.
+        let mut c = cfg(1883, "test", 60);
+        c.username = Some("bridge".to_string());
+        let (_client, eventloop) = build_client(&c, None).expect("build client");
+        let login = eventloop
+            .options
+            .credentials()
+            .expect("username-only config must still set credentials");
+        assert_eq!(login.username, "bridge");
+        assert_eq!(login.password, "");
     }
 }
