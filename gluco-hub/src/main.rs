@@ -367,6 +367,12 @@ fn build_default_source(cfg: &config::Config) -> Result<Vec<(String, Arc<dyn Sou
 
     #[cfg(feature = "source-llu")]
     if let Some(llu) = cfg.source.llu.as_ref() {
+        if !cfg.source.sources.is_empty() {
+            warn!(
+                "both [source.llu] and [source.sources] are configured; \
+                 [source.llu] wins and every [source.sources.*] entry is ignored"
+            );
+        }
         sources.push((
             "default".to_string(),
             build_llu_source("default", llu).context("build LLU source")?,

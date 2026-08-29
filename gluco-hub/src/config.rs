@@ -137,7 +137,9 @@ pub struct SourceConfig {
 
     /// Named multi-source blocks: each key becomes the source name
     /// (used in MQTT topic prefixes, client IDs, log context).
-    /// When `sources` is non-empty, `llu` is ignored.
+    /// When `[source.llu]` is present, `sources` is ignored — the legacy
+    /// block wins at wiring time (`build_default_source` in main.rs logs a
+    /// warning when both are configured together).
     #[serde(default)]
     #[validate(nested)]
     pub sources: HashMap<String, LluSourceConfig>,
@@ -191,13 +193,15 @@ fn validate_http_url(value: &str) -> Result<(), ValidationError> {
     if value.starts_with("http://") {
         // Allow plaintext only for loopback (local dev / tests).
         let rest = value.strip_prefix("http://").unwrap_or("");
-        let host = rest
-            .split('/')
-            .next()
-            .unwrap_or("")
-            .split(':')
-            .next()
-            .unwrap_or("");
+        let host_port = rest.split('/').next().unwrap_or("");
+        // Bracketed IPv6 (`[::1]:8080`) must be unwrapped before the
+        // `:port` split below — an IPv6 address itself contains colons,
+        // so splitting on ':' first would truncate at the first segment.
+        let host = if let Some(inner) = host_port.strip_prefix('[') {
+            inner.split(']').next().unwrap_or("")
+        } else {
+            host_port.split(':').next().unwrap_or("")
+        };
         if matches!(host, "localhost" | "127.0.0.1" | "::1") {
             return Ok(());
         }
@@ -1168,5 +1172,15 @@ region = "EU"
         assert!(cfg.source.llu.is_some(), "llu should be present");
         assert_eq!(cfg.source.sources.len(), 1);
         assert!(cfg.source.sources.contains_key("alice"));
+    }
+
+    #[test]
+    fn validate_http_url_accepts_bracketed_ipv6_loopback() {
+        assert!(validate_http_url("http://[::1]:8080/api").is_ok());
+        assert!(validate_http_url("http://[::1]/api").is_ok());
+        assert!(validate_http_url("http://localhost:8080/api").is_ok());
+        assert!(validate_http_url("http://127.0.0.1:8080/api").is_ok());
+        assert!(validate_http_url("http://example.com/api").is_err());
+        assert!(validate_http_url("https://example.com/api").is_ok());
     }
 }
