@@ -106,17 +106,6 @@ async fn mount_llu(server: &MockServer) {
 
 async fn mount_nightscout(server: &MockServer) {
     // sha1("e2e-secret") = 631a0d6c3813ee3a11e19b0a37a10ad75bbe8a0c
-    // The sink calls `GET /api/v1/entries?count=1` first to read the
-    // high-water mark; a 404 means "no prior entries, post everything".
-    Mock::given(method("GET"))
-        .and(path("/api/v1/entries.json"))
-        .and(header(
-            "api-secret",
-            "631a0d6c3813ee3a11e19b0a37a10ad75bbe8a0c",
-        ))
-        .respond_with(ResponseTemplate::new(404))
-        .mount(server)
-        .await;
     Mock::given(method("POST"))
         .and(path("/api/v1/entries"))
         .and(header(
@@ -188,11 +177,6 @@ async fn full_pipeline_pulls_from_llu_and_pushes_to_nightscout() {
         .iter()
         .filter(|r| r.url.path() == "/llu/connections/patient-42/graph")
         .count();
-    // Dedup adds a GET hit before the POST; assert each verb separately.
-    let entries_get = requests
-        .iter()
-        .filter(|r| r.method.as_str() == "GET" && r.url.path() == "/api/v1/entries.json")
-        .count();
     let entries_post = requests
         .iter()
         .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/v1/entries")
@@ -200,7 +184,6 @@ async fn full_pipeline_pulls_from_llu_and_pushes_to_nightscout() {
     assert_eq!(logins, 1, "exactly one /auth/login");
     assert_eq!(connections, 1, "exactly one /connections");
     assert_eq!(graphs, 1, "exactly one /graph");
-    assert_eq!(entries_get, 1, "exactly one GET /api/v1/entries (dedup)");
     assert_eq!(entries_post, 1, "exactly one POST /api/v1/entries");
 
     // --- Inspect the NS request body in detail.
@@ -274,7 +257,7 @@ async fn full_pipeline_survives_nightscout_502_and_keeps_cache_fresh() {
     assert_eq!(cache.latest().unwrap().glucose.get(), 142.0);
 
     let router = std::sync::Arc::new(crate::sink_router::SinkRouter::new(sink));
-    crate::fan_out_to_sinks(&[router], &batch, Duration::from_secs(2)).await;
+    crate::fan_out_to_sinks(&[router], "llu", &batch, Duration::from_secs(2)).await;
 
     // Cache state must be unchanged after the failed sink push — the
     // poll loop does NOT roll back on sink errors.
@@ -355,19 +338,6 @@ mod dlq_e2e {
         }
     }
 
-    /// Mount the read-side `GET /api/v1/entries` (always 404 = "NS empty,
-    /// post everything"). Tests mount the POST mock separately so each
-    /// test can control success/failure on its own.
-    async fn mount_ns_get_empty(server: &MockServer) {
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entries.json"))
-            .and(header("api-secret", API_SECRET_SHA1))
-            .respond_with(ResponseTemplate::new(404))
-            .named("GET /api/v1/entries always-404")
-            .mount(server)
-            .await;
-    }
-
     /// Build the production-shape layered sink stack pointing at
     /// `server`'s URL and using `state_dir` for DLQ persistence.
     /// Returns the `SinkRouter` (what `fan_out_to_sinks` expects); the
@@ -402,7 +372,6 @@ mod dlq_e2e {
     #[tokio::test]
     async fn outage_then_recovery_drains_dlq() {
         let server = MockServer::start().await;
-        mount_ns_get_empty(&server).await;
 
         let state = TempDir::new().unwrap();
         let dlq_file = state.path().join("dlq").join("nightscout.jsonl");
@@ -425,6 +394,7 @@ mod dlq_e2e {
         ];
         crate::fan_out_to_sinks(
             std::slice::from_ref(&router),
+            "llu",
             &batch1,
             Duration::from_secs(5),
         )
@@ -438,7 +408,7 @@ mod dlq_e2e {
             "DLQ should hold exactly 2 readings after cycle 1: {lines:?}"
         );
         assert!(
-            router.watermark().is_none(),
+            router.watermark("llu").is_none(),
             "watermark must not advance on failure"
         );
 
@@ -454,6 +424,7 @@ mod dlq_e2e {
         let batch2 = vec![reading_at(1_700_000_300, 115.0)];
         crate::fan_out_to_sinks(
             std::slice::from_ref(&router),
+            "llu",
             &batch2,
             Duration::from_secs(5),
         )
@@ -461,7 +432,7 @@ mod dlq_e2e {
 
         assert!(!dlq_file.exists(), "DLQ file must be deleted after drain");
         assert_eq!(
-            router.watermark().map(|t| t.timestamp()),
+            router.watermark("llu").map(|t| t.timestamp()),
             Some(1_700_000_300),
             "watermark advances to newest reading after success"
         );
@@ -510,7 +481,6 @@ mod dlq_e2e {
     #[tokio::test]
     async fn dlq_survives_simulated_restart() {
         let server = MockServer::start().await;
-        mount_ns_get_empty(&server).await;
 
         let state = TempDir::new().unwrap();
         let dlq_file = state.path().join("dlq").join("nightscout.jsonl");
@@ -533,6 +503,7 @@ mod dlq_e2e {
             ];
             crate::fan_out_to_sinks(
                 std::slice::from_ref(&router),
+                "llu",
                 &batch,
                 Duration::from_secs(5),
             )
@@ -568,6 +539,7 @@ mod dlq_e2e {
         ];
         crate::fan_out_to_sinks(
             std::slice::from_ref(&router2),
+            "llu",
             &replay_batch,
             Duration::from_secs(5),
         )
@@ -575,7 +547,7 @@ mod dlq_e2e {
 
         assert!(!dlq_file.exists(), "DLQ file removed after drain");
         assert_eq!(
-            router2.watermark().map(|t| t.timestamp()),
+            router2.watermark("llu").map(|t| t.timestamp()),
             Some(1_700_000_400),
             "watermark advanced to newest reading after drain+replay"
         );
@@ -625,7 +597,6 @@ mod dlq_e2e {
     #[tokio::test]
     async fn dlq_cap_evicts_oldest_during_outage() {
         let server = MockServer::start().await;
-        mount_ns_get_empty(&server).await;
         Mock::given(method("POST"))
             .and(path("/api/v1/entries"))
             .and(header("api-secret", API_SECRET_SHA1))
@@ -648,6 +619,7 @@ mod dlq_e2e {
         ];
         crate::fan_out_to_sinks(
             std::slice::from_ref(&router),
+            "llu",
             &batch,
             Duration::from_secs(5),
         )

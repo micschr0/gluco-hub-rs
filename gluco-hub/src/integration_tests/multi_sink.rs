@@ -84,8 +84,12 @@ async fn one_reading_fans_out_to_both_ns_and_mqtt() {
     // -- Fan-out one fresh reading.
     let ts = chrono::Utc::now().timestamp() - 60;
     let r = reading(ts, 124.0);
-    let (_ns_outcome, ns_result) = ns_router.push_filtered(std::slice::from_ref(&r)).await;
-    let (_mq_outcome, mq_result) = mqtt_router.push_filtered(std::slice::from_ref(&r)).await;
+    let (_ns_outcome, ns_result) = ns_router
+        .push_filtered("itest", std::slice::from_ref(&r))
+        .await;
+    let (_mq_outcome, mq_result) = mqtt_router
+        .push_filtered("itest", std::slice::from_ref(&r))
+        .await;
     ns_result.expect("ns push");
     mq_result.expect("mqtt push");
 
@@ -169,13 +173,13 @@ async fn watermark_drops_duplicates_across_both_sinks_in_steady_state() {
         .map(|i| reading(now - 60 - (i as i64) * 30, 100.0 + (i as f64) * 5.0))
         .collect();
 
-    let (first_ns, _) = ns_router.push_filtered(&batch).await;
-    let (first_mq, _) = mqtt_router.push_filtered(&batch).await;
+    let (first_ns, _) = ns_router.push_filtered("itest", &batch).await;
+    let (first_mq, _) = mqtt_router.push_filtered("itest", &batch).await;
     assert_eq!(first_ns.pushed, 3);
     assert_eq!(first_mq.pushed, 3);
 
-    let (second_ns, _) = ns_router.push_filtered(&batch).await;
-    let (second_mq, _) = mqtt_router.push_filtered(&batch).await;
+    let (second_ns, _) = ns_router.push_filtered("itest", &batch).await;
+    let (second_mq, _) = mqtt_router.push_filtered("itest", &batch).await;
     assert_eq!(second_ns.pushed, 0, "watermark must filter all 3 readings");
     assert_eq!(second_mq.pushed, 0, "watermark must filter all 3 readings");
     assert_eq!(second_ns.filtered, 3);
