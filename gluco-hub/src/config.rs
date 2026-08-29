@@ -249,6 +249,7 @@ impl TryFrom<u8> for MqttQos {
 /// `[sink.mqtt]` block. Supply the password via
 /// `GLUCO_HUB__SINK__MQTT__PASSWORD`; do not embed it in TOML.
 #[derive(Debug, Clone, Deserialize, Validate)]
+#[validate(schema(function = "validate_mqtt_tailscale_tls"))]
 #[cfg_attr(not(feature = "sink-mqtt"), allow(dead_code))]
 pub struct MqttSinkConfig {
     /// Broker hostname or IP — no scheme prefix.
@@ -417,6 +418,31 @@ fn validate_file_path(value: &str) -> Result<(), ValidationError> {
     }
     if value.trim().is_empty() {
         return Err(ValidationError::new("file_path_empty"));
+    }
+    Ok(())
+}
+
+/// Struct-level validator: `tailscale_hostname` resolves the broker to a
+/// raw tailnet IP (100.64.0.0/10), replacing `broker_host` for the
+/// connection. `rumqttc` derives the TLS `ServerName` from that same
+/// connect address, and a `tailscale cert`-issued certificate carries
+/// only a DNS SAN for the MagicDNS hostname — never an IP SAN — so
+/// certificate verification always fails when both `tailscale_hostname`
+/// and `tls` are set. Fail fast at config load instead of a silent,
+/// endlessly-retried TLS handshake failure at connect time. Tailscale's
+/// own WireGuard tunnel already authenticates and encrypts the link, so
+/// `tls = false` is the correct setting for a Tailscale-resolved broker.
+fn validate_mqtt_tailscale_tls(cfg: &MqttSinkConfig) -> Result<(), ValidationError> {
+    if cfg.tailscale_hostname.is_some() && cfg.tls {
+        return Err(
+            ValidationError::new("tailscale_requires_tls_false").with_message(
+                "tailscale_hostname resolves to a raw tailnet IP; TLS certificate \
+             verification against a MagicDNS-only certificate will always fail \
+             — set tls = false (Tailscale's WireGuard tunnel already \
+             encrypts the link)"
+                    .into(),
+            ),
+        );
     }
     Ok(())
 }
@@ -1036,6 +1062,64 @@ region = "EU"
         .unwrap();
         let err = load(Some(&path)).expect_err("must reject");
         assert!(matches!(err, ConfigError::Validate(_)));
+    }
+
+    #[test]
+    fn validation_rejects_tailscale_hostname_with_tls_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[http]
+bind = "127.0.0.1:9000"
+
+[poller]
+interval_secs = 60
+
+[sink.mqtt]
+broker_host = "broker.example.com"
+broker_port = 1883
+client_id = "gluco-hub"
+topic_prefix = "gluco-hub"
+tailscale_hostname = "broker.tailnet-name.ts.net"
+"#,
+        )
+        .unwrap();
+        // tls defaults to true, which is incompatible with a
+        // Tailscale-resolved (raw-IP) broker_host.
+        let err = load(Some(&path)).expect_err("must reject tailscale_hostname + tls=true");
+        assert!(matches!(err, ConfigError::Validate(_)));
+    }
+
+    #[test]
+    fn validation_accepts_tailscale_hostname_with_tls_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[http]
+bind = "127.0.0.1:9000"
+
+[poller]
+interval_secs = 60
+
+[sink.mqtt]
+broker_host = "broker.example.com"
+broker_port = 1883
+client_id = "gluco-hub"
+topic_prefix = "gluco-hub"
+tailscale_hostname = "broker.tailnet-name.ts.net"
+tls = false
+"#,
+        )
+        .unwrap();
+        let cfg = load(Some(&path)).expect("tailscale_hostname + tls=false must be accepted");
+        assert_eq!(
+            cfg.sink.mqtt.unwrap().tailscale_hostname.as_deref(),
+            Some("broker.tailnet-name.ts.net")
+        );
     }
 
     #[test]

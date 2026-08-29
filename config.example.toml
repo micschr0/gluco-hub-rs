@@ -91,10 +91,11 @@ interval_secs = 60
 # mTLS (V5): when both files are set, the sink presents a client
 # certificate during the TLS handshake for mutual TLS auth.
 # client_cert_file = "/path/to/client.crt"
-# client_key_file  = "/path/to/client.key"
-#
 # Tailscale (V5): set to a MagicDNS name to resolve the broker's
-# tailnet IP via the local tailscaled daemon at startup.
+# tailnet IP via the local tailscaled daemon at startup. Requires
+# tls = false above -- a Tailscale-issued certificate has no IP SAN,
+# so TLS verification against the resolved IP always fails; Tailscale's
+# own WireGuard tunnel already encrypts the link.
 # tailscale_hostname = "mqtt-broker"
 #
 # Home Assistant MQTT auto-discovery (opt-in). When `true`, the sink
