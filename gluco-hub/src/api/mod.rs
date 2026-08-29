@@ -74,10 +74,14 @@ pub struct AppState {
 ///
 /// Routing layout:
 /// - `/healthz` and `/metrics` are always public.
-/// - `/glucose/*` runs through the Bearer middleware. If
-///   `bearer_token` is `None` the middleware short-circuits to
-///   passthrough so unauthenticated local-dev usage still works.
-/// - `/api/v1/status` is public (Cache-Control: no-store).
+/// - `/glucose/*` and the Clock View data endpoints (`/clock/state`,
+///   `/clock/history`, `/clock/events`) run through the Bearer
+///   middleware. If `bearer_token` is `None` the middleware
+///   short-circuits to passthrough so unauthenticated local-dev usage
+///   still works.
+/// - `/api/v1/status` and the Clock View HTML shell (`/clock`, `/`) are
+///   always public — the shell embeds display config only, never a
+///   reading.
 pub fn router(state: AppState) -> Router {
     router_with_state(state)
 }
@@ -96,15 +100,31 @@ pub(crate) fn router_with_state(state: AppState) -> Router {
 
     let api_v1 = Router::new().route("/status", get(status::status));
 
+    // Clock View data endpoints carry the same PHI (glucose value, trend,
+    // history) as `/glucose/*` and run through the identical optional
+    // Bearer middleware — passthrough when `bearer_token` is `None`,
+    // `401` on mismatch otherwise. Only the static HTML shell (`/clock`,
+    // `/`) stays unconditionally public: it embeds display config only,
+    // never a reading (see `clock_html`'s `patientLabel:null` — PHI is
+    // fetched client-side from the routes below, never server-embedded).
+    let clock_data = Router::new()
+        .route("/state", get(clock::clock_state))
+        .route("/history", get(clock::clock_history))
+        .route("/events", get(clock::clock_events_sse))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_bearer,
+        ));
+
     public
         .nest("/glucose", glucose)
         .nest("/api/v1", api_v1)
-        // Clock View routes are registered at the top level so the bare
-        // `/clock` path (no trailing slash) resolves under the Ingress proxy.
+        .nest("/clock", clock_data)
+        // The bare `/clock` path (no trailing slash) is registered
+        // separately so it resolves under the Ingress proxy; it is the
+        // PHI-free HTML shell and intentionally not behind `/clock`'s
+        // auth-gated nest above (which only covers `/clock/*`).
         .route("/clock", get(clock::clock_html))
-        .route("/clock/state", get(clock::clock_state))
-        .route("/clock/history", get(clock::clock_history))
-        .route("/clock/events", get(clock::clock_events_sse))
         // Ingress proxy support: HA sidebar opens `/hassio/ingress/<slug>/`
         // which proxies to the add-on at `/`. The same clock.html is served
         // at the root so the sidebar renders the clock view directly instead
@@ -278,5 +298,70 @@ mod tests {
                 .and_then(|h| h.to_str().ok()),
             Some("not-for-medical-use"),
         );
+    }
+
+    #[tokio::test]
+    async fn clock_state_unauthorized_without_header() {
+        let app = router(state(Some("supersecret")));
+        let resp = app
+            .oneshot(Request::get("/clock/state").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn clock_history_and_events_unauthorized_without_header() {
+        for path in ["/clock/history", "/clock/events"] {
+            let app = router(state(Some("supersecret")));
+            let resp = app
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn clock_state_passes_with_correct_token() {
+        let app = router(state(Some("supersecret")));
+        let resp = app
+            .oneshot(
+                Request::get("/clock/state")
+                    .header(header::AUTHORIZATION, "Bearer supersecret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Token accepted; handler runs; cache empty → 503, not 401.
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn clock_state_passthrough_when_auth_disabled() {
+        let app = router(state(None));
+        let resp = app
+            .oneshot(Request::get("/clock/state").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // No bearer set → middleware passthrough; cache empty → 503.
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// The HTML shell (bare `/clock` and root `/`) must stay reachable
+    /// even with `bearer_token` set — it embeds display config only,
+    /// never a reading, and Home Assistant Ingress cannot attach a
+    /// custom `Authorization` header to the page navigation.
+    #[tokio::test]
+    async fn clock_html_and_root_stay_public_when_auth_enabled() {
+        for path in ["/clock", "/"] {
+            let app = router(state(Some("supersecret")));
+            let resp = app
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        }
     }
 }

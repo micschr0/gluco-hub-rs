@@ -105,9 +105,11 @@ flowchart TB
     Glucose -->|"/latest"| G["200 reading or 503 API001"]
 ```
 
-`/glucose/*` runs through `axum::middleware::from_fn_with_state` only
-when `GLUCO_HUB__HTTP__BEARER_TOKEN` is set. `/healthz` and
-`/metrics` always stay public.
+`/glucose/*` and the Clock View data endpoints (`/clock/state`,
+`/clock/history`, `/clock/events`) run through
+`axum::middleware::from_fn_with_state` only when
+`GLUCO_HUB__HTTP__BEARER_TOKEN` is set. `/healthz`, `/metrics`, and the
+Clock View HTML shell (`/clock`, `/`) always stay public.
 
 ## Error-code namespaces
 
@@ -209,7 +211,7 @@ environment variables — never embed them in TOML.
 | TOML path                           | Type     | Required | Validation | Notes |
 | ----------------------------------- | -------- | -------- | ---------- | ----- |
 | `[http] bind`                       | SocketAddr | yes (default `127.0.0.1:8080`) | parsed | |
-| `[http] bearer_token`               | SecretString | no | — | supply via `GLUCO_HUB__HTTP__BEARER_TOKEN`; when set, /glucose/* requires `Authorization: Bearer <token>` |
+| `[http] bearer_token`               | SecretString | no | — | supply via `GLUCO_HUB__HTTP__BEARER_TOKEN`; when set, /glucose/* and the Clock View data endpoints require `Authorization: Bearer <token>` |
 | `[poller] interval_secs`            | u64      | yes (default `60`) | range 30..=600 | LLU updates every ~60 s |
 | `[source.llu] email`                | string   | yes (LLU only) | email format | |
 | `[source.llu] password`             | SecretString | one of `password`/`password_file` required | — | supply via `GLUCO_HUB__SOURCE__LLU__PASSWORD` |

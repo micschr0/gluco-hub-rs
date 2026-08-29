@@ -141,7 +141,7 @@ For a file-based setup, copy `config.example.toml` and uncomment the sections yo
 [http]
 # enabled = false              # MQTT-only deployments: skip TCP listener entirely
 bind = "0.0.0.0:8080"
-# Bearer auth for /glucose/*: set GLUCO_HUB__HTTP__BEARER_TOKEN=<token>
+# Bearer auth for /glucose/* and Clock View data endpoints: set GLUCO_HUB__HTTP__BEARER_TOKEN=<token>
 
 [poller]
 interval_secs = 60              # min 30, max 600; LLU updates every ~60 s
@@ -185,7 +185,7 @@ GLUCO_HUB__HTTP__BIND=0.0.0.0:9090 GLUCO_HUB__POLLER__INTERVAL_SECS=30 ./gluco-h
 | `GET /metrics`        | public          | Prometheus text exposition (v0.0.4)        |
 | `GET /glucose/latest` | optional Bearer | Latest cached reading, or `503` + `API001` |
 
-Setting `GLUCO_HUB__HTTP__BEARER_TOKEN` puts `/glucose/*` behind Bearer auth. Every response also carries the header `X-Disclaimer: not-for-medical-use` — that header is the canonical machine-readable disclaimer signal; long-form text lives in `DISCLAIMER.md`. Example reading response:
+Setting `GLUCO_HUB__HTTP__BEARER_TOKEN` puts `/glucose/*` and the Clock View data endpoints (`/clock/state`, `/clock/history`, `/clock/events`) behind Bearer auth; the Clock View HTML shell (`/clock`, `/`) always stays public. Every response also carries the header `X-Disclaimer: not-for-medical-use` — that header is the canonical machine-readable disclaimer signal; long-form text lives in `DISCLAIMER.md`. Example reading response:
 
 ```json
 {
