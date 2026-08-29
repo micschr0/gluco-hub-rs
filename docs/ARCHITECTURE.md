@@ -241,7 +241,7 @@ environment variables — never embed them in TOML.
 | `[sink.mqtt] device_name`           | string   | no | 1..=128 chars | friendly device name in HA; defaults to `Gluco Hub (<client_id>)` |
 | `[sink.mqtt] client_cert_file`      | string   | no | 1..=512 chars, path to PEM file | mTLS client certificate (pair with `client_key_file`) |
 | `[sink.mqtt] client_key_file`       | string   | no | 1..=512 chars, path to PEM file | mTLS client private key (pair with `client_cert_file`) |
-| `[sink.mqtt] tailscale_hostname`    | string   | no | 1..=253 chars, Tailscale MagicDNS name | resolve broker IP via tailscaled Local API at startup |
+| `[sink.mqtt] tailscale_hostname`    | string   | no | 1..=253 chars, Tailscale MagicDNS name; rejected together with `tls = true` | resolve broker IP via tailscaled Local API at startup |
 
 ### Sink layering: SinkRouter → DlqSink → real sink (V3)
 

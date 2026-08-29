@@ -10,6 +10,13 @@
 //! If the daemon is unreachable or the hostname is not found, the sink
 //! falls back to the configured `broker_host` and logs a warning — a
 //! missing tailscaled daemon is a configuration edge case, not a crash.
+//!
+//! `config::validate_mqtt_tailscale_tls` rejects `tailscale_hostname`
+//! together with `tls = true` at config load: rumqttc derives the TLS
+//! `ServerName` from the same connect address, and a `tailscale
+//! cert`-issued certificate carries only a DNS SAN for the MagicDNS
+//! hostname — never an IP SAN — so verifying against the resolved IP
+//! always fails.
 
 use std::net::Ipv4Addr;
 
