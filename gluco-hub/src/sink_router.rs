@@ -23,18 +23,28 @@
 //! once — matching the prior behaviour. Persisting the watermark across
 //! restarts is out of scope here and tracked under V3 DLQ.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use gluco_hub_core::{CoreError, Reading, Sink};
 use tracing::debug;
 
-/// Wraps a `Sink` with the per-sink watermark.
+/// Wraps a `Sink` with a watermark per upstream source.
 pub struct SinkRouter {
     sink: std::sync::Arc<dyn Sink>,
     /// Highest `timestamp` of any reading successfully pushed to the
-    /// wrapped sink. `None` until the first successful push.
-    watermark: Mutex<Option<DateTime<Utc>>>,
+    /// wrapped sink, keyed by the `source_id` of the batch it came from.
+    /// Keyed per-source (rather than one shared watermark) because
+    /// multiple sources fan out to the same shared `SinkRouter` instances
+    /// — see `main.rs`'s `sinks_for_poller`, cloned into every per-source
+    /// poll loop — and their readings are not chronologically comparable
+    /// across sources (different patients' sensors, different clocks).
+    /// A single shared watermark would let one source's advancing
+    /// timestamp permanently filter out another source's older-but-new
+    /// readings. `None` for a given key until that source's first
+    /// successful push.
+    watermarks: Mutex<HashMap<String, DateTime<Utc>>>,
 }
 
 /// What `push_filtered` did this cycle — surfaced so the caller can
@@ -56,7 +66,7 @@ impl SinkRouter {
     pub fn new(sink: std::sync::Arc<dyn Sink>) -> Self {
         Self {
             sink,
-            watermark: Mutex::new(None),
+            watermarks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -65,17 +75,26 @@ impl SinkRouter {
     }
 
     /// Visible for tests and the HTTP API.
-    pub fn watermark(&self) -> Option<DateTime<Utc>> {
-        *self.watermark.lock().expect("watermark mutex poisoned")
+    pub fn watermark(&self, source_id: &str) -> Option<DateTime<Utc>> {
+        self.watermarks
+            .lock()
+            .expect("watermark mutex poisoned")
+            .get(source_id)
+            .copied()
     }
 
-    /// Filter `batch` down to readings strictly newer than the current
-    /// watermark, push them through the wrapped sink, and — only on a
-    /// successful push — advance the watermark to the max timestamp in
-    /// the attempted slice. On failure the watermark stays put so the
-    /// next cycle retries the same window.
-    pub async fn push_filtered(&self, batch: &[Reading]) -> (PushOutcome, Result<(), CoreError>) {
-        let wm_before = self.watermark();
+    /// Filter `batch` (all readings from `source_id`) down to readings
+    /// strictly newer than that source's current watermark, push them
+    /// through the wrapped sink, and — only on a successful push —
+    /// advance that source's watermark to the max timestamp in the
+    /// attempted slice. On failure the watermark stays put so the next
+    /// cycle retries the same window.
+    pub async fn push_filtered(
+        &self,
+        source_id: &str,
+        batch: &[Reading],
+    ) -> (PushOutcome, Result<(), CoreError>) {
+        let wm_before = self.watermark(source_id);
         let to_push: Vec<Reading> = match wm_before {
             None => batch.to_vec(),
             Some(wm) => batch.iter().filter(|r| r.timestamp > wm).cloned().collect(),
@@ -95,6 +114,7 @@ impl SinkRouter {
         if to_push.is_empty() {
             debug!(
                 sink = self.sink.name(),
+                source_id,
                 filtered = outcome.filtered,
                 "sink router: nothing new to push"
             );
@@ -108,11 +128,15 @@ impl SinkRouter {
                 .map(|r| r.timestamp)
                 .max()
                 .expect("non-empty after early-return guard above");
-            let mut guard = self.watermark.lock().expect("watermark mutex poisoned");
+            let mut guard = self.watermarks.lock().expect("watermark mutex poisoned");
             // Only advance — never regress (defensive, in case the source
             // ever returns an out-of-order batch).
-            if guard.is_none_or(|cur| new_wm > cur) {
-                *guard = Some(new_wm);
+            let advance = match guard.get(source_id) {
+                Some(&cur) => new_wm > cur,
+                None => true,
+            };
+            if advance {
+                guard.insert(source_id.to_string(), new_wm);
             }
         }
         (outcome, result)
@@ -185,7 +209,7 @@ mod tests {
         let router = SinkRouter::new(sink.clone());
 
         let batch = vec![reading_at(100), reading_at(200), reading_at(300)];
-        let (outcome, result) = router.push_filtered(&batch).await;
+        let (outcome, result) = router.push_filtered("llu", &batch).await;
 
         assert!(result.is_ok());
         assert_eq!(outcome.pushed, 3);
@@ -193,7 +217,7 @@ mod tests {
         assert_eq!(outcome.replayed, 0, "first push is not replay");
         assert_eq!(sink.pushes().len(), 1);
         assert_eq!(sink.pushes()[0].len(), 3);
-        assert_eq!(router.watermark().map(|t| t.timestamp()), Some(300));
+        assert_eq!(router.watermark("llu").map(|t| t.timestamp()), Some(300));
     }
 
     #[tokio::test]
@@ -202,7 +226,7 @@ mod tests {
         let router = SinkRouter::new(sink.clone());
 
         let first = vec![reading_at(100), reading_at(200), reading_at(300)];
-        let _ = router.push_filtered(&first).await;
+        let _ = router.push_filtered("llu", &first).await;
 
         // Same batch + one new reading — only the new one should reach the sink.
         let second = vec![
@@ -211,7 +235,7 @@ mod tests {
             reading_at(300),
             reading_at(400),
         ];
-        let (outcome, _) = router.push_filtered(&second).await;
+        let (outcome, _) = router.push_filtered("llu", &second).await;
         assert_eq!(outcome.pushed, 1);
         assert_eq!(outcome.filtered, 3);
         assert_eq!(
@@ -223,7 +247,7 @@ mod tests {
         assert_eq!(pushes.len(), 2);
         assert_eq!(pushes[1].len(), 1);
         assert_eq!(pushes[1][0].timestamp.timestamp(), 400);
-        assert_eq!(router.watermark().map(|t| t.timestamp()), Some(400));
+        assert_eq!(router.watermark("llu").map(|t| t.timestamp()), Some(400));
     }
 
     #[tokio::test]
@@ -232,17 +256,17 @@ mod tests {
         let router = SinkRouter::new(sink.clone());
 
         // Initial successful push.
-        let _ = router.push_filtered(&[reading_at(100)]).await;
-        assert_eq!(router.watermark().map(|t| t.timestamp()), Some(100));
+        let _ = router.push_filtered("llu", &[reading_at(100)]).await;
+        assert_eq!(router.watermark("llu").map(|t| t.timestamp()), Some(100));
 
         // Sink fails on the next cycle (e.g. broker offline). Two new readings.
         sink.set_fail(true);
         let cycle2 = vec![reading_at(100), reading_at(200), reading_at(300)];
-        let (outcome2, result2) = router.push_filtered(&cycle2).await;
+        let (outcome2, result2) = router.push_filtered("llu", &cycle2).await;
         assert!(result2.is_err());
         assert_eq!(outcome2.pushed, 2, "tried to push the 2 new readings");
         assert_eq!(
-            router.watermark().map(|t| t.timestamp()),
+            router.watermark("llu").map(|t| t.timestamp()),
             Some(100),
             "watermark must NOT advance on failure"
         );
@@ -256,7 +280,7 @@ mod tests {
             reading_at(300),
             reading_at(400),
         ];
-        let (outcome3, result3) = router.push_filtered(&cycle3).await;
+        let (outcome3, result3) = router.push_filtered("llu", &cycle3).await;
         assert!(result3.is_ok());
         assert_eq!(
             outcome3.pushed, 3,
@@ -272,7 +296,7 @@ mod tests {
             "first success + recovery push (failure left no record)"
         );
         assert_eq!(pushes[1].len(), 3);
-        assert_eq!(router.watermark().map(|t| t.timestamp()), Some(400));
+        assert_eq!(router.watermark("llu").map(|t| t.timestamp()), Some(400));
     }
 
     #[tokio::test]
@@ -280,9 +304,9 @@ mod tests {
         let sink = RecordingSink::new("rec");
         let router = SinkRouter::new(sink.clone());
 
-        let _ = router.push_filtered(&[reading_at(100)]).await;
+        let _ = router.push_filtered("llu", &[reading_at(100)]).await;
         // Identical batch — entirely filtered.
-        let (outcome, result) = router.push_filtered(&[reading_at(100)]).await;
+        let (outcome, result) = router.push_filtered("llu", &[reading_at(100)]).await;
         assert!(result.is_ok());
         assert_eq!(outcome.pushed, 0);
         assert_eq!(outcome.filtered, 1);
@@ -298,13 +322,48 @@ mod tests {
         let sink = RecordingSink::new("rec");
         let router = SinkRouter::new(sink.clone());
 
-        let _ = router.push_filtered(&[reading_at(500)]).await;
+        let _ = router.push_filtered("llu", &[reading_at(500)]).await;
         // Out-of-order batch with one new (600) and one stale (450) reading.
         // Filter drops the stale; watermark advances to 600 (not 450).
         let (outcome, _) = router
-            .push_filtered(&[reading_at(450), reading_at(600)])
+            .push_filtered("llu", &[reading_at(450), reading_at(600)])
             .await;
         assert_eq!(outcome.pushed, 1, "stale 450 filtered, only 600 sent");
-        assert_eq!(router.watermark().map(|t| t.timestamp()), Some(600));
+        assert_eq!(router.watermark("llu").map(|t| t.timestamp()), Some(600));
+    }
+
+    #[tokio::test]
+    async fn watermarks_are_isolated_per_source() {
+        // Two sources fan out to the SAME SinkRouter instance (as they do
+        // in main.rs: sinks_for_poller is cloned into every per-source
+        // poll loop). Source "a"'s readings are chronologically ahead of
+        // source "b"'s. A prior bug used one shared watermark, so "a"
+        // advancing it would silently and permanently filter out every
+        // later batch from "b" — even ones "b" had never sent before.
+        let sink = RecordingSink::new("rec");
+        let router = SinkRouter::new(sink.clone());
+
+        let _ = router.push_filtered("a", &[reading_at(1_000)]).await;
+        assert_eq!(router.watermark("a").map(|t| t.timestamp()), Some(1_000));
+        assert_eq!(router.watermark("b"), None, "b has not pushed yet");
+
+        // "b"'s reading is far older than "a"'s watermark but brand new
+        // for "b" — it must still go through.
+        let (outcome, result) = router.push_filtered("b", &[reading_at(100)]).await;
+        assert!(result.is_ok());
+        assert_eq!(
+            outcome.pushed, 1,
+            "b's own-older reading must not be filtered by a's watermark"
+        );
+        assert_eq!(router.watermark("b").map(|t| t.timestamp()), Some(100));
+        assert_eq!(
+            router.watermark("a").map(|t| t.timestamp()),
+            Some(1_000),
+            "a's watermark must be unaffected by b's push"
+        );
+
+        let pushes = sink.pushes();
+        assert_eq!(pushes.len(), 2);
+        assert_eq!(pushes[1][0].timestamp.timestamp(), 100);
     }
 }

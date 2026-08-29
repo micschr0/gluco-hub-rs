@@ -62,7 +62,6 @@ Exported on `/metrics`:
 | `cgm_sink_push_success_total`    | counter    | `sink`                      |
 | `cgm_sink_push_errors_total`     | counter    | `sink`, `error_code`        |
 | `cgm_sink_post_retry_total`      | counter    | `sink`, `attempt`           |
-| `cgm_sink_dedup_skipped_total`   | counter    | `sink`                      |
 | `cgm_glucose_mgdl`               | gauge      | `patient_id`, `source_id`   |
 | `gluco_hub_build_info`          | gauge (=1) | `version`, `git_sha`, `features` |
 

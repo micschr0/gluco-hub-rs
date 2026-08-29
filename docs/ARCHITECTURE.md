@@ -25,7 +25,7 @@ flowchart LR
         Poll["poll_loop\n(tokio task)"]
         Cache["ReadingCache\nArc&lt;RwLock&lt;Option&lt;Reading&gt;&gt;&gt;"]
         FanOut["fan_out_to_sinks\n(parallel, per-sink timeout)"]
-        Router["SinkRouter\nper-sink watermark"]
+        Router["SinkRouter\nper-source watermark"]
         API["axum HTTP API\n/healthz /glucose/latest /metrics"]
         Metrics["PrometheusHandle"]
     end
@@ -34,7 +34,7 @@ flowchart LR
     Poll -->|"Vec&lt;Reading&gt;"| Cache
     Poll -->|"Vec&lt;Reading&gt;"| FanOut
     FanOut -->|"per-sink filter\n(timestamp &gt; watermark)"| Router
-    Router -->|"POST /api/v3/entries\n(after dedup)"| NS
+    Router -->|"POST /api/v3/entries"| NS
     Router -->|"PUBLISH &lt;prefix&gt;/glucose\n(schema v:1)"| MQTT_B
     Cache --> API
     Metrics --> API
@@ -261,15 +261,18 @@ NightscoutSink / MqttSink       ← actual transport
 + live batch) returns `Ok` — so the watermark is always at-or-behind
 "all readings confirmed delivered to the wire".
 
-### Per-sink watermark backfill (V3)
+### Per-source watermark backfill (V3)
 
 Every `Sink` is wrapped in a [`SinkRouter`](../gluco-hub/src/sink_router.rs)
-that holds a per-sink `last_pushed_ts` watermark. The fan-out passes the
-full source batch (LLU returns ~24 h of `graphData` per poll) through
-each router, which drops readings `<= watermark` before calling
-`Sink::push`. On a successful push the watermark advances to the highest
-timestamp in the attempted slice; on failure it stays put and the next
-poll-cycle naturally replays the missed window.
+that holds a `last_pushed_ts` watermark keyed per upstream `source_id`
+(not one shared watermark — multiple sources fan out to the same
+`SinkRouter` instances in a multi-source deployment, and their readings
+are not chronologically comparable across sources). The fan-out passes
+each source's own batch (LLU returns ~24 h of `graphData` per poll)
+through each router, which drops readings `<= that source's watermark`
+before calling `Sink::push`. On a successful push the watermark advances
+to the highest timestamp in the attempted slice; on failure it stays put
+and the next poll-cycle naturally replays the missed window.
 
 Two operational properties fall out:
 
@@ -300,7 +303,8 @@ windows longer than LLU's 24 h `graphData` history.
 On each `push(batch)`:
 
 1. Merge the in-memory queue with `batch`, deduplicated by
-   `(patient_id, timestamp)` and sorted oldest-first.
+   `(source_id, patient_id, timestamp)` and sorted oldest-first across
+   every source sharing this DLQ.
 2. Enforce `max_entries` cap — overflow drops the oldest entries and
    bumps `cgm_dlq_evicted_total`.
 3. Try the inner sink. On success: clear the queue, delete the file,
@@ -386,7 +390,7 @@ gluco-hub/src/
 │                           poll loop + fan-out, source/sink builders
 ├── config.rs               Config + validators + resolve_secret_file
 ├── metrics.rs              Prometheus recorder + counter/gauge names
-├── sink_router.rs          SinkRouter — per-sink watermark filter (V3)
+├── sink_router.rs          SinkRouter — per-source watermark filter (V3)
 ├── dlq.rs                  DlqSink — persistent per-sink dead-letter queue (V3)
 ├── api/
 │   ├── mod.rs              router + AppState
@@ -411,7 +415,7 @@ gluco-hub/src/
 │   │   ├── mod.rs          re-exports
 │   │   ├── wire.rs         NsEntry + NsDirection
 │   │   ├── client.rs       NightscoutClient: post_entries, fetch_last_entry_date
-│   │   └── sink.rs         NightscoutSink: pre-upload dedup + Sink impl
+│   │   └── sink.rs         NightscoutSink: Sink impl (no client-side dedup — see SinkRouter)
 │   └── mqtt/
 │       ├── mod.rs          re-exports + topic-layout doc
 │       ├── error.rs        MqttError (MQTT001..MQTT007)

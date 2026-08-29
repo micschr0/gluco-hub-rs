@@ -757,7 +757,7 @@ async fn poll_loop_single(
                 }
 
                 if !sinks.is_empty() {
-                    fan_out_to_sinks(&sinks, &batch, sink_timeout).await;
+                    fan_out_to_sinks(&sinks, &source_id, &batch, sink_timeout).await;
                 }
             }
         }
@@ -804,6 +804,7 @@ fn sink_push_timeout(interval: Duration) -> Duration {
 /// blocks the next poll tick.
 async fn fan_out_to_sinks(
     sinks: &[Arc<sink_router::SinkRouter>],
+    source_id: &str,
     batch: &[Reading],
     timeout: Duration,
 ) {
@@ -814,7 +815,8 @@ async fn fan_out_to_sinks(
         let batch_owned: Vec<Reading> = batch.to_vec();
         async move {
             let name = router.name();
-            match tokio::time::timeout(timeout, router.push_filtered(&batch_owned)).await {
+            match tokio::time::timeout(timeout, router.push_filtered(source_id, &batch_owned)).await
+            {
                 Ok((outcome, Ok(()))) => {
                     if outcome.filtered > 0 {
                         ::metrics::counter!(
@@ -1155,7 +1157,7 @@ mod tests {
                 delay: None,
             })),
         ];
-        fan_out_to_sinks(&sinks, &[one_reading()], Duration::from_secs(5)).await;
+        fan_out_to_sinks(&sinks, "llu", &[one_reading()], Duration::from_secs(5)).await;
         assert_eq!(*calls_a.lock().unwrap(), 1);
         assert_eq!(*calls_b.lock().unwrap(), 1);
     }
@@ -1179,7 +1181,7 @@ mod tests {
             })),
         ];
         // The function returns `()`; failures are absorbed.
-        fan_out_to_sinks(&sinks, &[one_reading()], Duration::from_secs(5)).await;
+        fan_out_to_sinks(&sinks, "llu", &[one_reading()], Duration::from_secs(5)).await;
         assert_eq!(*calls_ok.lock().unwrap(), 1);
         assert_eq!(*calls_bad.lock().unwrap(), 1);
     }
@@ -1203,7 +1205,7 @@ mod tests {
             })),
         ];
         let started = std::time::Instant::now();
-        fan_out_to_sinks(&sinks, &[one_reading()], Duration::from_millis(50)).await;
+        fan_out_to_sinks(&sinks, "llu", &[one_reading()], Duration::from_millis(50)).await;
         // Total wall time bounded by the timeout, not by the slow sink.
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(*calls_fast.lock().unwrap(), 1);
