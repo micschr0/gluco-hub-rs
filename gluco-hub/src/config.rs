@@ -109,9 +109,12 @@ pub struct HttpConfig {
 
     pub bind: SocketAddr,
 
-    /// Optional Bearer token. When set, `/glucose/*` requires
-    /// `Authorization: Bearer <token>`. Supply via
-    /// `GLUCO_HUB__HTTP__BEARER_TOKEN`. `/healthz` and `/metrics` stay public.
+    /// Optional Bearer token. When set, `/glucose/*` and the Clock View
+    /// data endpoints (`/clock/state`, `/clock/history`, `/clock/events`)
+    /// require `Authorization: Bearer <token>`. Supply via
+    /// `GLUCO_HUB__HTTP__BEARER_TOKEN`. `/healthz`, `/metrics`, and the
+    /// Clock View HTML shell (`/clock`, `/`) stay public regardless — the
+    /// shell embeds display config only, never a reading.
     /// Ignored (with a startup warning) when `enabled = false`.
     #[serde(default)]
     pub bearer_token: Option<SecretString>,

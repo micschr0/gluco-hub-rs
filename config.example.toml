@@ -18,10 +18,12 @@
 # enabled = true
 # Address the HTTP API listens on. Ignored when enabled = false.
 bind = "0.0.0.0:8080"
-# Optional: when set, /glucose/* requires `Authorization: Bearer <token>`
-# where the token equals the value of GLUCO_HUB__HTTP__BEARER_TOKEN.
-# /healthz and /metrics stay public. Ignored (with a startup warning)
-# when enabled = false.
+# Optional: when set, /glucose/* and the Clock View data endpoints
+# (/clock/state, /clock/history, /clock/events) require
+# `Authorization: Bearer <token>` where the token equals the value of
+# GLUCO_HUB__HTTP__BEARER_TOKEN. /healthz, /metrics, and the Clock View
+# HTML shell (/clock, /) stay public regardless. Ignored (with a
+# startup warning) when enabled = false.
 # (set GLUCO_HUB__HTTP__BEARER_TOKEN=<secret> in the environment to enable)
 
 [poller]
