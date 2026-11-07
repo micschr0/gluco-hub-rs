@@ -316,3 +316,40 @@ jobs:
           min-confidence: medium
           advanced-security: false
           annotations: true
+
+  clock-browser:
+    name: clock browser (Chromium)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: gluco-hub/tests/e2e/clock
+    steps:
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          # Browser and apt mirrors vary; retain egress evidence in audit mode.
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: gluco-hub/tests/e2e/clock/.node-version
+          package-manager-cache: false
+
+      - run: npm ci
+      - run: npm run test:unit
+      - run: npx playwright install --with-deps chromium
+      - run: npm test -- --project=chromium
+
+      - name: Upload clock browser evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clock-browser-evidence
+          path: |
+            gluco-hub/tests/e2e/clock/artifacts/
+            gluco-hub/tests/e2e/clock/test-results/
+          retention-days: 7
