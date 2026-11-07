@@ -114,8 +114,20 @@ also passes. The production/mock suite passes 222 tests; a focused rerun
 passes seven TLS/configuration tests, including the five added MQTT tests.
 These checks use the pinned Rust 1.98 toolchain with `RUSTUP_TOOLCHAIN` unset.
 
-Container-backed integration tests remain outstanding: local Docker is
-unavailable, and the existing CI container job runs only for PRs targeting
-`main`, while this branch targets `staging`. Compilation and the local TLS
-handshake test do not establish container acceptance. Keep the PR draft until
-a Docker-capable runner records the container suite against its current head.
+Container-backed acceptance remains outstanding after the recovery run on
+2026-11-08. Docker's local socket responds, but the MQTT fixture exits before
+startup: Mosquitto reports `Config file '/mosquitto/config/mosquitto.conf' is a
+directory.` The daemon does not see the test runner's temporary fixture file
+at its bind-mount source path. This is a runner filesystem problem, not TLS
+verification evidence. Restore shared fixture-path visibility before rerunning
+`cargo test --all-features --locked -- --test-threads=1`.
+The existing CI container job runs only for PRs targeting `main`, while this
+branch targets `staging`. Keep the PR draft until a Docker-capable runner
+records the container suite against its current head.
+
+The recovery run passes formatting, all-feature Clippy/check, all 222
+production/mock tests and seven focused TLS/configuration tests. The full
+all-feature run was interrupted after eight container failures and stalled
+Nightscout startup; it is not a passing suite. Cargo-deny still passes all
+four categories at the same RustSec revision. Removing the rumqttc wrapper
+exception from a temporary policy correctly rejects WebPKI 0.102.8.
