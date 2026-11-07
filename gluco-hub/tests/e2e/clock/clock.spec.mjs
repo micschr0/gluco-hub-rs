@@ -277,11 +277,8 @@ test('eink: data-preset=eink set, opacity stays 1, stale-label element present',
   expect(parseFloat(opacity)).toBeCloseTo(1, 1);
 
   // --- Assertion 4d: no CSS transition on glucose-value (eink disables transitions) ---
-  const transition = await page.locator('.glucose-value').evaluate((el) =>
-    window.getComputedStyle(el).transition
-  );
-  // In eink mode transition is "none" (all 0s)
-  expect(transition).toMatch(/0s/);
+  // Check the longhand: Chromium may serialize the shorthand as "none".
+  await expect(page.locator('.glucose-value')).toHaveCSS('transition-duration', '0s');
 
   // --- Assertion 4e: .stale-label element exists in DOM (it's shown in eink ctx) ---
   const staleLabel = page.locator('#stale-label');
