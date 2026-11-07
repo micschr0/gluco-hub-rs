@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Build and release tasks select explicit Cargo tool versions with locked dependencies;
+  release tasks install the selected cargo-release before running.
+
 ### Added
 
 - **`build_sinks` test coverage** — the sink-wiring entry point had no tests at

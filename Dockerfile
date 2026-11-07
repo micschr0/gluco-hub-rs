@@ -41,7 +41,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends cmake
 
-RUN cargo install cargo-chef --locked && cargo install cargo-auditable --locked
+RUN cargo install cargo-chef --version 0.1.78 --locked \
+    && cargo install cargo-auditable --version 0.7.7 --locked
 
 WORKDIR /src
 
