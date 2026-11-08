@@ -52,6 +52,26 @@ jobs:
         with:
           fail-on-severity: high
 
+  container-build:
+    name: container build (no push)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          # Docker pulls and build-stage downloads need broad registry access.
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build complete runtime image with selected Cargo tools
+        run: docker build --progress=plain --tag gluco-hub:ci .
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -204,7 +224,7 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-auditable
-        run: cargo install cargo-auditable --locked
+        run: cargo install cargo-auditable --version 0.7.7 --locked
 
       - name: cargo auditable build --release
         env:
