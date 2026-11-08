@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Build and release tasks select explicit Cargo tool versions with locked dependencies;
+  release tasks install the selected cargo-release before running.
+
 ### Added
 
 - **`build_sinks` test coverage** — the sink-wiring entry point had no tests at
@@ -23,6 +28,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   HTML shell (`/clock`, `/`) stays public.
 
 ### Fixed
+
+- **TLS advisory assessment** — distinguish rumqttc's unused legacy WebPKI error
+  type from the patched active verifier, correct operator-PEM exposure, and
+  document separate container-test maintenance exceptions. Reject vulnerable
+  WebPKI dependencies outside the reviewed rumqttc path.
 
 - **Multi-source silent data loss** — `SinkRouter` held one watermark per
   sink, but multiple `[source.sources]` entries share the same `SinkRouter`

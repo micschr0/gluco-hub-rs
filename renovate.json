@@ -23,6 +23,16 @@
     "schedule": ["after 8am and before 6pm on Sunday"]
   },
 
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^Dockerfile$/", "/^Taskfile\\.yml$/", "/^CLAUDE\\.md$/", "/^\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": ["cargo install (?<depName>cargo-(?:chef|auditable|release)) --version (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) --locked"],
+      "datasourceTemplate": "crate",
+      "versioningTemplate": "semver"
+    }
+  ],
+
   "packageRules": [
     {
       "description": "Never pin Cargo crate versions to exact '=' — project convention keeps latest minor ranges in Cargo.toml, pins live only in Cargo.lock. Docker digests and GitHub Actions SHAs are still pinned via config:best-practices.",
