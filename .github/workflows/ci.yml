@@ -301,7 +301,7 @@ jobs:
         # Pulling in serial up-front avoids parallel test boots racing
         # for the same image layer.
         run: |
-          docker pull eclipse-mosquitto:2
+          docker pull eclipse-mosquitto:2.1.2-alpine@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
           docker pull mongo:8.0.34@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
           docker pull nightscout/cgm-remote-monitor:15.0.9@sha256:28ec928271a293745724f934df2ed9f2cddaf66442de734c2780662171b611a2
 
