@@ -1,6 +1,6 @@
 # TLS advisory assessment
 
-Reviewed 2026-11-07 for issue #128, using `Cargo.lock` from base `428b919`,
+Reviewed 2026-11-08 for issue #128, using `Cargo.lock` from base `428b919`,
 Cargo 1.98.1, cargo-deny 0.20.2 and RustSec database commit
 `309392b18f6b17022f82c701f300433126901068`. No dependency upgrade or client
 migration is needed for the active verifier in this lockfile.
@@ -106,28 +106,43 @@ containing only a certificate. The fixture key is a public test identity, never
 a deployment credential. These tests exercise configuration and handshake/error
 paths; they are not exploit reproductions for the five upstream advisories.
 
-## Verification status (2026-11-07)
+## Container runner compatibility
 
-The locked, all-feature graph passes cargo-deny 0.20.2 (advisories, bans,
-licenses and sources) with the RustSec revision named above. All-feature Clippy
-also passes. The production/mock suite passes 222 tests; a focused rerun
-passes seven TLS/configuration tests, including the five added MQTT tests.
-These checks use the pinned Rust 1.98 toolchain with `RUSTUP_TOOLCHAIN` unset.
+The Mosquitto fixture mounts its temporary config **directory**, keeping
+`mosquitto.conf` beneath the mount. A single-file mount fails on this gVisor
+runner: `O_DIRECTORY` incorrectly succeeds on the file, so Mosquitto/musl
+reports it as a directory. The file is visible and readable; the earlier
+fixture-visibility diagnosis was incorrect. The existing publish test fails
+before this change and passes with the directory mount and named network.
 
-Container-backed acceptance remains outstanding after the recovery run on
-2026-11-08. Docker's local socket responds, but the MQTT fixture exits before
-startup: Mosquitto reports `Config file '/mosquitto/config/mosquitto.conf' is a
-directory.` The daemon does not see the test runner's temporary fixture file
-at its bind-mount source path. This is a runner filesystem problem, not TLS
-verification evidence. Restore shared fixture-path visibility before rerunning
-`cargo test --all-features --locked -- --test-threads=1`.
-The existing CI container job runs only for PRs targeting `main`, while this
-branch targets `staging`. Keep the PR draft until a Docker-capable runner
-records the container suite against its current head.
+For a runner without Docker's default bridge, select an existing test network:
 
-The recovery run passes formatting, all-feature Clippy/check, all 222
-production/mock tests and seven focused TLS/configuration tests. The full
-all-feature run was interrupted after eight container failures and stalled
-Nightscout startup; it is not a passing suite. Cargo-deny still passes all
-four categories at the same RustSec revision. Removing the rumqttc wrapper
-exception from a temporary policy correctly rejects WebPKI 0.102.8.
+```sh
+GLUCO_HUB_TEST_DOCKER_NETWORK=gluco-super-board-recovery \
+  cargo test --all-features --locked -- --test-threads=1
+```
+
+This optional variable affects only the Mosquitto test fixture through
+[testcontainers 0.27.3 `ImageExt::with_network`](https://docs.rs/crate/testcontainers/0.27.3/source/src/core/image/image_ext.rs).
+When unset, Docker's normal network selection is unchanged. Empty/non-Unicode
+values fail explicitly. Nightscout retains its isolated Compose network.
+No production networking or image selection changes.
+
+This runner also fails Docker service-name lookup (`mongo` gives `EAI_AGAIN`),
+while direct sibling-IP TCP succeeds. Its local test launcher maps each new
+Nightscout container's `mongo` hostname to the actual MongoDB sibling IP in
+`/etc/hosts`, scoped to this worktree's Compose file and project. It changes
+only name resolution in disposable containers, without replacing service
+responses or assertions. Normal CI needs neither this launcher nor the
+network override. The PR handoff records its exact command and retained log.
+
+## Verification status (2026-11-08)
+
+The locked all-feature graph passes cargo-deny 0.20.2 at the RustSec revision
+above. The baseline policy fails on 2026-0382, 2026-0440 and 2024-0449; removing
+the rumqttc wrapper allowance rejects WebPKI 0.102.8. Formatting, all-feature
+Clippy and compilation pass on Rust 1.98.1. The full suite passes 240 tests (231 binary, 9 core), with no failures or
+ignored tests, using the network selection and scoped hosts launcher above.
+All six Nightscout stacks received the sibling-IP mapping without errors.
+The production/mock suite passes 222 tests; the HTTP smoke check also passes.
+Earlier interrupted runs remain failure evidence, not reused passing results.
