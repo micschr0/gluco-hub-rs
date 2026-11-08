@@ -6,7 +6,7 @@ on:
   # Run on every PR regardless of base branch so stacked feature→feature
   # PRs get fmt/clippy/test/build too — formatting drift on an inner branch
   # of a stack must not stay invisible until it retargets main. The heavy
-  # container `integration-tests` job below self-gates to base==main.
+  # container `integration-tests` job below self-gates to main/staging PRs.
   pull_request:
 
 # Cancel superseded runs on the same branch / PR — but never on main,
@@ -147,7 +147,7 @@ jobs:
       # The `integration-tests` feature pulls in the testcontainers
       # surface; lint it explicitly too so changes there don't slip
       # past clippy on main pushes (the dedicated `integration-tests`
-      # job below only runs for PRs to main).
+      # job below only runs for PRs to main or staging).
       - name: clippy --features integration-tests
         run: cargo clippy --all-targets --features integration-tests --locked -- -D warnings
 
@@ -183,7 +183,7 @@ jobs:
 
       # Run production features explicitly rather than `--all-features`
       # to avoid pulling in the container-backed `integration-tests`
-      # feature, which has its own dedicated job below (PRs to main only).
+      # feature, which has its own dedicated job below (PRs to main/staging).
       # `cargo check --all-features` (below) still verifies that every
       # feature gate compiles, including integration-tests.
       - name: test (production features)
@@ -269,11 +269,11 @@ jobs:
 
   # Container-backed integration tests (Mosquitto, Nightscout + MongoDB,
   # combined fan-out). Slow — ~5 minutes per test boot of NS — so gated
-  # to PRs against `main` only. main pushes get fmt/clippy/test/build
+  # to PRs against `main` or `staging`. main pushes get fmt/clippy/test/build
   # but not this lane.
   integration-tests:
     name: integration-tests (container-backed)
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    if: github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'staging')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

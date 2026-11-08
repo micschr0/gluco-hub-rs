@@ -216,15 +216,19 @@ cargo deny check
 
 Workflows live in [`.github/workflows/`](../.github/workflows/): `ci.yml`, `deny.yml`, `release.yml`, `renovate.yml`. Validate any change with `actionlint .github/workflows/*.yml` before pushing.
 
-- **`ci.yml`** — `fmt` / `clippy` / `test` / release `build` on every push and PR. Wires `GLUCO_HUB_GIT_SHA=${{ github.sha }}` into the release build. Concurrency group cancels superseded PR runs; cache saves only on `main`.
-- **`deny.yml`** — `cargo deny --all-features` on every push, PR, and weekly cron. Renovate is also configured — see [`renovate.json`](../renovate.json) — with grouped tokio / serde / axum+tower / tracing PRs, weekly `lockFileMaintenance`, and automerge gated on green CI.
+- **`ci.yml`** — `fmt` / `clippy` / `test` / release `build` on main pushes and every PR. PRs also build the complete runtime container without publishing. Container-backed integration tests run for PRs targeting `staging` or `main`; stacked feature PRs retain the lighter checks. Cache saves only on `main`.
+- **`deny.yml`** — `cargo deny --all-features` on main pushes, PRs targeting `staging` or `main`, and the daily advisory cron. The dependency policy in `deny.toml` applies unchanged.
+- **`renovate.json`** — future dependency PRs target `staging`, including lock-file maintenance, with Renovate automerge disabled. Dependency PRs go through the existing QA/review merge gate; green CI alone does not authorize a merge. Before merging, require successful `cargo deny check`, `container build (no push)` and `integration-tests (container-backed)` results alongside the existing checks, on the current PR head. A skipped integration job is not staging validation.
+
+Repository branch settings and the merge gate remain unchanged. Existing PRs are not retargeted by this change; maintainers decide their disposition individually. Promotion from `staging` to `main` remains a human decision, and only existing main/tag triggers publish images. Renovate reads repository configuration from the default branch: the routing policy becomes active when this configuration reaches that branch through the normal human promotion, without a separate bot run or bulk PR edit here.
 
 ```mermaid
 graph LR
-    Push[git push / PR] --> CI[ci.yml\nfmt · clippy · test · build]
-    Push --> Deny[deny.yml\ncargo deny check]
-    Cron[weekly cron] --> Deny
-    Renovate[Renovate bot] --> Push
-    CI -->|green| Automerge[automerge\nRenovate PRs]
-    Deny -->|green| Automerge
+    Renovate[Renovate bot] --> PR[Dependency PR to staging]
+    PR --> CI[ci.yml including containers]
+    PR --> Deny[deny.yml]
+    CI --> Gate[QA / review / merge gate]
+    Deny --> Gate
+    Gate --> Staging[staging]
+    Staging --> Human[Human promotion to main]
 ```
