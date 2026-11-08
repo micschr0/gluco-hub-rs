@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Per-source MQTT topics and Home Assistant entities now receive only their selected source; shared MQTT and Nightscout destinations still receive all sources.
+
 - **Multi-source silent data loss** — `SinkRouter` held one watermark per
   sink, but multiple `[source.sources]` entries share the same `SinkRouter`
   instances. One source's advancing watermark could permanently filter out
