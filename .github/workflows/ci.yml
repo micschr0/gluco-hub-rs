@@ -274,7 +274,9 @@ jobs:
   integration-tests:
     name: integration-tests (container-backed)
     if: github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'staging')
-    runs-on: ubuntu-latest
+    # Mongo 8.0.34 rejects the 7.0 kernels on current 24.04/26.04 runners.
+    # Use 22.04 temporarily; see SERVER-121912 and the exit plan in OPERATIONS.md.
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -295,7 +297,9 @@ jobs:
       - name: verify Docker is available
         # GH ubuntu-latest images ship Docker but make the version
         # explicit in the log so failures are easy to root-cause.
-        run: docker version
+        run: |
+          uname -srmo
+          docker version
 
       - name: pre-pull container images
         # Pulling in serial up-front avoids parallel test boots racing
@@ -304,25 +308,6 @@ jobs:
           docker pull eclipse-mosquitto:2
           docker pull mongo:8.0.34@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
           docker pull nightscout/cgm-remote-monitor:15.0.9@sha256:28ec928271a293745724f934df2ed9f2cddaf66442de734c2780662171b611a2
-
-      - name: Diagnose pinned Mongo startup
-        # Temporary same-runner probe; preserve the exact fixture and exit status.
-        run: |
-          compose=(docker compose -p "mongo-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -f gluco-hub/tests/fixtures/nightscout-compose.yml)
-          cleanup() {
-            result=$?
-            "${compose[@]}" logs --no-color --tail 200 mongo || true
-            container=$("${compose[@]}" ps -aq mongo)
-            if [ -n "$container" ]; then
-              docker inspect --format 'exit={{.State.ExitCode}} error={{.State.Error}} image={{.Image}}' "$container" || true
-            fi
-            "${compose[@]}" down --volumes || true
-            exit "$result"
-          }
-          trap cleanup EXIT
-          uname -srmo
-          cat /etc/os-release
-          "${compose[@]}" up --wait --wait-timeout 120 mongo
 
       - name: cargo test --features integration-tests
         # --test-threads=1 serialises tests because NS startup is heavy
