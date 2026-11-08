@@ -1,0 +1,51 @@
+941a796efcb58acd60b8a6c57b467ff09a6c1784
+v26.13.0
+11.20.0
+
+added 3 packages, and audited 4 packages in 1s
+
+found 0 vulnerabilities
+
+> gluco-hub-clock-e2e@1.0.0 test:unit
+> node clockUrl.unit.test.mjs
+
+  PASS  Ingress prefix /api/hassio_ingress/TESTTOKEN/clock -> state URL preserves prefix
+  PASS  Ingress prefix /api/hassio_ingress/TESTTOKEN/clock -> events URL preserves prefix
+  PASS  Ingress prefix /api/hassio_ingress/TESTTOKEN/clock -> history URL preserves prefix
+  PASS  Ingress prefix with trailing slash /api/hassio_ingress/TESTTOKEN/clock/ -> state
+  PASS  Direct /clock -> base is /
+  PASS  Direct /clock -> state is /clock/state
+  PASS  Direct /clock/ -> state is /clock/state
+  PASS  Longer token /api/hassio_ingress/abc123def456/clock -> prefix preserved
+  PASS  Ingress path MUST NOT produce bare /clock/state (regression)
+
+clockUrl unit tests: 9 passed, 0 failed
+
+> gluco-hub-clock-e2e@1.0.0 test
+> npx playwright test --project=chromium
+
+
+Running 5 tests using 1 worker
+
+(node:130) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 [chromium] › clock.spec.mjs:82:1 › direct load: value renders with correct zone, SSE update changes value and zone (2.8s)
+  ✓  2 [chromium] › clock.spec.mjs:144:1 › sparkline: history SVG has drawn geometry after tap (1.6s)
+localStorage keys found: [ 'gluco_unit' ]
+localStorage values: {"gluco_unit":"mmol"}
+  ✓  3 [chromium] › clock.spec.mjs:185:1 › settings: unit toggle converts 120 to 6.7 mmol/L; localStorage has no PHI (1.0s)
+  ✓  4 [chromium] › clock.spec.mjs:259:1 › eink: data-preset=eink set, opacity stays 1, stale-label element present (740ms)
+Captured API requests: [
+  'http://127.0.0.1:9744/api/hassio_ingress/TESTTOKEN/clock/history',
+  'http://127.0.0.1:9744/api/hassio_ingress/TESTTOKEN/clock/state',
+  'http://127.0.0.1:9744/api/hassio_ingress/TESTTOKEN/clock/events'
+]
+
+=== Ingress request URLs observed ===
+  http://127.0.0.1:9744/api/hassio_ingress/TESTTOKEN/clock/history
+  http://127.0.0.1:9744/api/hassio_ingress/TESTTOKEN/clock/state
+  http://127.0.0.1:9744/api/hassio_ingress/TESTTOKEN/clock/events
+  ✓  5 [chromium] › clock.spec.mjs:304:1 › ingress prefix: all clock API requests preserve /api/hassio_ingress/TESTTOKEN/ prefix (1.4s)
+
+  5 passed (9.2s)
+exit-code: 0
