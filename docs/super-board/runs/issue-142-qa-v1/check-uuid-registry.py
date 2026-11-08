@@ -32,9 +32,11 @@ stable = []
 for entry in records:
     version = entry.get('vers', '')
     match = re.fullmatch(r'1\.(\d+)\.(\d+)', version)
-    if match and entry.get('yanked') is False:
+    entry_rust = entry.get('rust_version')
+    compatible = not entry_rust or tuple(map(int, entry_rust.split('.'))) <= (1, 95)
+    if match and entry.get('yanked') is False and compatible:
         stable.append((int(match.group(1)), int(match.group(2)), version))
 latest = max(stable)
 if locked['version'] != latest[2]:
-    raise SystemExit(f'locked uuid {locked["version"]} is not current non-yanked stable uuid 1.x ({latest[2]})')
-print(f'PASS: uuid {locked["version"]}; manifest requirement {req!r}; current latest non-yanked stable 1.x; yanked=false; rust_version={rust}; checksum matches Cargo.lock')
+    raise SystemExit(f'locked uuid {locked["version"]} is not current non-yanked stable uuid 1.x compatible with Rust 1.95 ({latest[2]})')
+print(f'PASS: uuid {locked["version"]}; manifest requirement {req!r}; current latest non-yanked stable 1.x compatible with Rust 1.95; yanked=false; rust_version={rust}; checksum matches Cargo.lock')

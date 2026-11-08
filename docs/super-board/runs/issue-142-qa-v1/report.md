@@ -7,7 +7,7 @@ PR #146 targets `staging`. This QA commit adds evidence documentation only.
 
 | AC | Result | Evidence |
 |---|---|---|
-| Compatible, non-yanked uuid patch; no exact manifest pin | Pass | `gluco-hub/Cargo.toml:85` keeps the dev-dependency requirement at `1`. `Cargo.lock` resolves `1.29.1` with the current official crates.io sparse-index checksum. The live index lists it as non-yanked, Rust 1.89.0 minimum, and the latest non-yanked stable uuid 1.x. Check script: `docs/super-board/runs/issue-142-qa-v1/check-uuid-registry.py`; official source: https://index.crates.io/uu/id/uuid. |
+| Compatible, non-yanked uuid patch; no exact manifest pin | Pass | `gluco-hub/Cargo.toml:85` keeps the dev-dependency requirement at `1`. `Cargo.lock` resolves `1.29.1` with the current official crates.io sparse-index checksum. The live index lists it as non-yanked, Rust 1.89.0 minimum, and the latest non-yanked stable uuid 1.x compatible with Rust 1.95. Check script: `docs/super-board/runs/issue-142-qa-v1/check-uuid-registry.py`; official source: https://index.crates.io/uu/id/uuid. |
 | Relevant tests, MSRV and cargo-deny pass | Pass | The production-feature test suite passed (213 binary + 9 core tests); `cargo +1.95 check --all-features --locked` passed; `cargo deny check` passed all advisory, ban, license and source checks. The required repository Clippy gate also passed. |
 
 The PR diff at the tested product head changes only the uuid lock entry version and checksum. All other lock entries and the manifest requirement remain unchanged. No application API or runtime behavior changed.
@@ -20,7 +20,7 @@ The PR diff at the tested product head changes only the uuid lock entry version 
 | `cargo +1.95 check --all-features --locked` | exit 0 |
 | `cargo deny check` | advisories, bans, licenses and sources OK; exit 0 |
 | `cargo clippy --all-targets --all-features --locked -- -D warnings` | exit 0 |
-| `python3 docs/super-board/runs/issue-142-qa-v1/check-uuid-registry.py` | latest stable 1.x, non-yanked, Rust 1.89.0, checksum match; exit 0 |
+| `python3 docs/super-board/runs/issue-142-qa-v1/check-uuid-registry.py` | latest Rust-1.95-compatible stable 1.x, non-yanked, Rust 1.89.0, checksum match; exit 0 |
 
 Local tests: `cargo test --locked --features 'source-llu sink-nightscout sink-mqtt mock-source'`
 
