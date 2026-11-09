@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Per-source MQTT topics and Home Assistant entities now receive only their selected source; source-scoped retry files prevent cross-source replay after restart and preserve ambiguous legacy queues. Shared MQTT and Nightscout destinations still receive all sources.
 - **TLS advisory assessment** — distinguish rumqttc's unused legacy WebPKI error
   type from the patched active verifier, correct operator-PEM exposure, and
   document separate container-test maintenance exceptions. Reject vulnerable
