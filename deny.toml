@@ -10,39 +10,28 @@ targets = []
 [advisories]
 version = 2
 yanked = "deny"
-# Add per-CVE waivers here, NEVER as broad `ignore = ["*"]`.
-#
-# All current waivers chain back to a single root: `rumqttc 0.25.1`
-# pins old transitive `tokio-rustls 0.26` → `rustls 0.23` →
-# `rustls-webpki 0.102.x` + `rustls-pemfile 2.x`. Both have been
-# superseded upstream (rustls-webpki 0.103.13, pemfile parsing moved
-# into rustls-pki-types ≥ 1.9), but rumqttc has not yet released a
-# bump. gluco-hub is an outbound MQTT v5 client connecting to a
-# single, operator-controlled broker; it never parses CRLs and never
-# uses URI-typed name constraints, so each of the four issues below
-# is unreachable in this deployment. Revisit on every rumqttc release.
-# TODO(rumqttc): close each waiver below after bumping rumqttc to a release
-# that pulls in rustls ≥ 0.24 / rustls-webpki ≥ 0.103. Run `cargo deny check`
-# to confirm before removing an entry.
+# Reviewed 2026-11-07 against the locked graph and upstream source.
+# Evidence, feature matrix and removal criteria: docs/security/tls-advisories.md.
+# Keep individual advisory IDs; do not suppress a whole advisory category.
+# rumqttc 0.25.1 directly depends on WebPKI 0.102.8 ONLY for tls::Error::WebPki.
+# Actual TLS verification uses tokio-rustls 0.26.6 / rustls 0.23.46 /
+# WebPKI 0.103.16. The bans rule below prevents an old verifier via another parent.
+# Reassess on every rumqttc/TLS upgrade; no broker-pinning assumption is made.
 ignore = [
-    # rustls-pemfile is unmaintained but the code is identical to the
-    # PEM parser in rustls-pki-types. We only feed it platform-native
-    # CA bytes from `rustls-native-certs` — no operator-supplied PEM.
-    { id = "RUSTSEC-2025-0134", reason = "thin wrapper around live rustls-pki-types code; only platform-CA input" },
-    # CRL distributionPoint handling: only kicks in when a CRL is
-    # consulted. `TlsConfiguration::default()` (the only path we use)
-    # builds a rustls ClientConfig without revocation checking.
-    { id = "RUSTSEC-2026-0049", reason = "gluco-hub does not consult CRLs; unreachable" },
-    # URI-typed name constraints. Our broker certs use DNS names; the
-    # rustls API we touch does not expose URI-name assertions.
-    { id = "RUSTSEC-2026-0098", reason = "gluco-hub does not use URI name constraints; unreachable" },
-    # Wildcard handling inside DNS-name name-constraint subtrees.
-    # Reachable only after signature verification of a misissued cert;
-    # gluco-hub talks to one operator-pinned broker, so no path.
-    { id = "RUSTSEC-2026-0099", reason = "outbound MQTT, single operator-controlled broker; not reachable" },
-    # Panic in BorrowedCertRevocationList::from_der parsing — same
-    # root as 2026-0049, gated on CRL parsing we never invoke.
-    { id = "RUSTSEC-2026-0104", reason = "gluco-hub does not parse CRLs; unreachable" },
+    # Active PEM parsing reads operator-supplied mTLS certificates and keys.
+    # This is maintenance debt, not an unreachable-input claim. Direct migration
+    # is tracked in #127; rumqttc also retains the parser transitively.
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0 delegates to maintained rustls-pki-types; operator mTLS PEM is parsed; temporary maintenance exception pending #127 and rumqttc cleanup" },
+    { id = "RUSTSEC-2026-0049", reason = "WebPKI 0.102.8 is only rumqttc 0.25.1's error type; CRL verification uses no code from it; active rustls uses patched 0.103.16" },
+    { id = "RUSTSEC-2026-0098", reason = "WebPKI 0.102.8 is only rumqttc 0.25.1's error type; URI name constraints are processed by patched 0.103.16, not waived based on DNS-only usage" },
+    { id = "RUSTSEC-2026-0099", reason = "WebPKI 0.102.8 is only rumqttc 0.25.1's error type; active certificate verification uses patched 0.103.16, not broker pinning" },
+    { id = "RUSTSEC-2026-0104", reason = "WebPKI 0.102.8 is only rumqttc 0.25.1's error type; no CRL parser from it is called; active rustls uses patched 0.103.16" },
+    { id = "RUSTSEC-2026-0382", reason = "WebPKI 0.102.8 is only rumqttc 0.25.1's error type; actual TLS verification uses 0.103.16 with the distrusted-intermediate fix" },
+    # Separate dev-only maintenance exceptions, not vulnerability waivers.
+    # Reassess when testcontainers/compose dependencies change; never accept
+    # untrusted archives or compose files on the strength of these exceptions.
+    { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar 0.6.4 is testcontainers 0.27.3 archive support, dev/test only; no patched release; temporary exception pending upstream replacement" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml 0.2.11 via serde_yaml/docker-compose-types/testcontainers parses the repository's Nightscout test fixture, dev/test only; no patched release; pending upstream replacement" },
 ]
 
 [licenses]
@@ -80,6 +69,10 @@ allow-wildcard-paths = true
 # Per CLAUDE.md: rustls only, no OpenSSL anywhere in the tree.
 # Adding any of these to a Cargo.toml fails this check loudly.
 deny = [
+    # Advisory ignores are global IDs in cargo-deny 0.20.2. Restrict vulnerable
+    # stable WebPKI versions to rumqttc's reviewed error-type dependency so a
+    # downgrade of rustls's active verifier still fails `cargo deny check`.
+    { name = "rustls-webpki", version = "<0.103.16", wrappers = ["rumqttc"], reason = "only rumqttc's unused WebPki error variant may retain the old crate; active TLS verification must be patched" },
     { name = "openssl" },
     { name = "openssl-sys" },
     { name = "native-tls" },
