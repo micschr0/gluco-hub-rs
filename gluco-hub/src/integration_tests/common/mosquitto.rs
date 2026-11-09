@@ -2,7 +2,7 @@
 
 //! Eclipse Mosquitto v5 broker for integration tests.
 //!
-//! `eclipse-mosquitto:2` ships with `allow_anonymous false` by default,
+//! `eclipse-mosquitto:2.1.2-alpine` ships with `allow_anonymous false` by default,
 //! so we mount a minimal `mosquitto.conf` via a temp dir to enable a
 //! single anonymous listener on 1883.
 //!
@@ -18,6 +18,9 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
 const MQTT_PORT: u16 = 1883;
+// Keep this reference in sync with the CI image prepull.
+const MOSQUITTO_TAG: &str =
+    "2.1.2-alpine@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98";
 
 /// Wrapper around a running Mosquitto container plus the temp dir
 /// holding its config. The temp dir lives as long as the container so
@@ -69,7 +72,7 @@ pub async fn start_mosquitto() -> Result<Mosquitto, Box<dyn std::error::Error + 
         .ok_or("non-UTF8 path for mosquitto config directory")?
         .to_string();
 
-    let image = GenericImage::new("eclipse-mosquitto", "2")
+    let image = GenericImage::new("eclipse-mosquitto", MOSQUITTO_TAG)
         .with_exposed_port(MQTT_PORT.tcp())
         .with_wait_for(WaitFor::message_on_stdout("mosquitto version 2."));
 
