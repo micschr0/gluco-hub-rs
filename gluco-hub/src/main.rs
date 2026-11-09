@@ -26,6 +26,9 @@ mod integration_tests;
 #[cfg(all(test, feature = "source-llu", feature = "sink-nightscout"))]
 mod e2e_tests;
 
+#[cfg(all(test, feature = "sink-mqtt", feature = "sink-nightscout"))]
+mod sink_routing_tests;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "gluco-hub",
