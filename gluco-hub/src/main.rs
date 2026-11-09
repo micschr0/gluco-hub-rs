@@ -979,6 +979,13 @@ async fn build_sinks(
             sink_cnt = sink_list.len(),
             "dlq: enabled — wrapping sinks with persistent DLQ",
         );
+        if sink_list
+            .iter()
+            .any(|(sink, source)| sink.name() == "mqtt" && source.is_some())
+            && cfg.state.dir.join("dlq/mqtt.jsonl").exists()
+        {
+            warn!("dlq: legacy MQTT queue left untouched because its destination is unknown");
+        }
         sink_list
             .into_iter()
             .map(|(inner, source)| {
@@ -987,6 +994,7 @@ async fn build_sinks(
                     &cfg.state.dir,
                     cfg.dlq.max_entries,
                     Some(Arc::clone(&dlq_depth)),
+                    source.as_ref(),
                 )
                 .with_context(|| format!("open DLQ at {}", cfg.state.dir.display()))?;
                 Ok::<Arc<sink_router::SinkRouter>, anyhow::Error>(Arc::new(

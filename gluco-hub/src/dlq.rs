@@ -65,7 +65,7 @@ impl DlqSink {
         state_dir: &std::path::Path,
         max_entries: usize,
     ) -> std::io::Result<Self> {
-        Self::open_with_shared_depth(inner, state_dir, max_entries, None)
+        Self::open_with_shared_depth(inner, state_dir, max_entries, None, None)
     }
 
     /// Like `open`, but also keeps `shared_depth` updated after every push
@@ -75,11 +75,25 @@ impl DlqSink {
         state_dir: &std::path::Path,
         max_entries: usize,
         shared_depth: Option<Arc<AtomicU64>>,
+        source: Option<&gluco_hub_core::SourceId>,
     ) -> std::io::Result<Self> {
         let name = inner.name();
         let dlq_dir = state_dir.join("dlq");
         std::fs::create_dir_all(&dlq_dir)?;
-        let file_path = dlq_dir.join(format!("{name}.jsonl"));
+        // Hex encoding keeps arbitrary configured names distinct and path-safe.
+        let file_name = match source {
+            Some(source) => {
+                let encoded: String = source
+                    .as_str()
+                    .as_bytes()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                format!("{name}-source-{encoded}.jsonl")
+            }
+            None => format!("{name}.jsonl"),
+        };
+        let file_path = dlq_dir.join(file_name);
 
         let queue = if file_path.exists() {
             load_queue(&file_path)?
@@ -374,6 +388,45 @@ mod tests {
                     message: "test: unscripted call".into(),
                 }))
         }
+    }
+
+    #[tokio::test]
+    async fn source_queues_survive_restart_without_cross_replay() {
+        let dir = TempDir::new().unwrap();
+        let a = gluco_hub_core::SourceId::new("a/../b").unwrap();
+        let b = gluco_hub_core::SourceId::new("b").unwrap();
+        let failed = ScriptedSink::new(
+            "mqtt",
+            vec![Err(CoreError::Sink {
+                message: "offline".into(),
+            })],
+        );
+        let queue =
+            DlqSink::open_with_shared_depth(failed, dir.path(), 1000, None, Some(&a)).unwrap();
+        assert!(queue.push(&[reading_at(100)]).await.is_err());
+        drop(queue);
+
+        let target_b = ScriptedSink::new("mqtt", vec![Ok(())]);
+        let queue_b =
+            DlqSink::open_with_shared_depth(target_b.clone(), dir.path(), 1000, None, Some(&b))
+                .unwrap();
+        queue_b.push(&[reading_at(200)]).await.unwrap();
+        assert_eq!(target_b.pushes()[0].len(), 1);
+        assert_eq!(target_b.pushes()[0][0].timestamp.timestamp(), 200);
+
+        let target_a = ScriptedSink::new("mqtt", vec![Ok(())]);
+        let queue_a =
+            DlqSink::open_with_shared_depth(target_a.clone(), dir.path(), 1000, None, Some(&a))
+                .unwrap();
+        queue_a.push(&[reading_at(300)]).await.unwrap();
+        let replay = target_a.pushes();
+        assert_eq!(
+            replay[0]
+                .iter()
+                .map(|r| r.timestamp.timestamp())
+                .collect::<Vec<_>>(),
+            [100, 300]
+        );
     }
 
     #[tokio::test]

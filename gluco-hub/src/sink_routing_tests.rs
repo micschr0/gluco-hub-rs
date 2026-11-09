@@ -256,3 +256,57 @@ async fn shared_destinations_receive_both_sources() {
     check_routing(false, false).await;
     check_routing(false, true).await;
 }
+
+#[tokio::test]
+async fn legacy_queue_is_not_replayed_to_a_per_source_topic() {
+    let mut broker = Broker::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    std::fs::create_dir_all(state.join("dlq")).unwrap();
+    let old = Reading {
+        source_id: SourceId::new("sensor-a").unwrap(),
+        patient_id: PatientId::new("patient-a").unwrap(),
+        timestamp: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+        glucose: GlucoseMgDl::new(110.0).unwrap(),
+        trend: Trend::Flat,
+    };
+    let legacy = state.join("dlq/mqtt.jsonl");
+    let contents = format!("{}\n", serde_json::json!({"v": 1, "reading": old}));
+    std::fs::write(&legacy, &contents).unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[state]
+dir = "{}"
+[dlq]
+enabled = true
+[sink.mqtt]
+broker_host = "127.0.0.1"
+broker_port = {}
+client_id = "legacy-test"
+topic_prefix = "test"
+tls = false
+per_source = true
+"#,
+            state.display(),
+            broker.port
+        ),
+    )
+    .unwrap();
+    let cfg = config::load(Some(&config_path)).unwrap();
+    let sinks = build_sinks(
+        &cfg,
+        &["a".into(), "b".into()],
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicU64::new(0)),
+    )
+    .await
+    .unwrap();
+    poll_once("b", sinks, 1_700_000_100, 220.0).await;
+    let (topic, body) = broker.publication("/glucose").await;
+    assert_eq!(topic, "test/b/glucose");
+    assert_eq!(body["source"], "sensor-b", "legacy A must not reach B");
+    assert_eq!(std::fs::read_to_string(legacy).unwrap(), contents);
+}
