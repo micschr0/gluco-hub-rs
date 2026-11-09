@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Staging PRs run dependency-policy and container integration checks; future Renovate
+  updates target staging and use the existing review merge gate.
+
 - Build and release tasks select explicit Cargo tool versions with locked dependencies;
   release tasks install the selected cargo-release before running.
 
