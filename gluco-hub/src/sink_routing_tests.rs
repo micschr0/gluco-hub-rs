@@ -258,16 +258,16 @@ async fn shared_destinations_receive_both_sources() {
 }
 
 #[tokio::test]
-async fn legacy_queue_is_not_replayed_to_a_per_source_topic() {
+async fn scoped_queues_restart_and_drain_without_cross_replay_or_legacy_loss() {
     let mut broker = Broker::start().await;
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     std::fs::create_dir_all(state.join("dlq")).unwrap();
     let old = Reading {
-        source_id: SourceId::new("sensor-a").unwrap(),
+        source_id: SourceId::new("sensor-a/../b").unwrap(),
         patient_id: PatientId::new("patient-a").unwrap(),
         timestamp: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
-        glucose: GlucoseMgDl::new(110.0).unwrap(),
+        glucose: GlucoseMgDl::new(99.0).unwrap(),
         trend: Trend::Flat,
     };
     let legacy = state.join("dlq/mqtt.jsonl");
@@ -296,17 +296,80 @@ per_source = true
     )
     .unwrap();
     let cfg = config::load(Some(&config_path)).unwrap();
-    let sinks = build_sinks(
-        &cfg,
-        &["a".into(), "b".into()],
-        Arc::new(AtomicBool::new(false)),
-        Arc::new(AtomicU64::new(0)),
-    )
-    .await
+    let names = vec!["a/../b".into(), "b".into()];
+    let construct = |cfg: config::Config, names: Vec<String>| async move {
+        build_sinks(
+            &cfg,
+            &names,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+        .unwrap()
+    };
+    // Shutting down the transport runtime closes real MQTT request channels,
+    // making push return an error (a broker outage alone only queues requests).
+    let failed_cfg = cfg.clone();
+    let failed_names = names.clone();
+    let sinks = std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(construct(failed_cfg, failed_names))
+    })
+    .join()
     .unwrap();
-    poll_once("b", sinks, 1_700_000_100, 220.0).await;
-    let (topic, body) = broker.publication("/glucose").await;
-    assert_eq!(topic, "test/b/glucose");
-    assert_eq!(body["source"], "sensor-b", "legacy A must not reach B");
-    assert_eq!(std::fs::read_to_string(legacy).unwrap(), contents);
+    poll_once("a/../b", sinks.clone(), 1_700_000_100, 110.0).await;
+    poll_once("b", sinks.clone(), 1_700_000_000, 220.0).await;
+    drop(sinks);
+    let a_path = state.join("dlq/mqtt-source-612f2e2e2f62.jsonl");
+    let b_path = state.join("dlq/mqtt-source-62.jsonl");
+    let a_queue = std::fs::read(&a_path).expect("A persisted at a path-safe filename");
+    let b_queue = std::fs::read(&b_path).expect("B persisted independently");
+    for (bytes, expected) in [(&a_queue, "sensor-a/../b"), (&b_queue, "sensor-b")] {
+        let entry: Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(entry["reading"]["source_id"], expected);
+    }
+    assert_eq!(std::fs::read_to_string(&legacy).unwrap(), contents);
+
+    let sinks = construct(cfg.clone(), names).await;
+    poll_once("a/../b", sinks.clone(), 1_700_000_200, 111.0).await;
+    for mgdl in [110.0, 111.0] {
+        let (topic, body) = broker.publication("/glucose").await;
+        assert_eq!(topic, "test/a/../b/glucose");
+        assert_eq!(body["source"], "sensor-a/../b");
+        assert_eq!(body["mgdl"], mgdl);
+    }
+    assert!(!a_path.exists(), "A drained its own persisted queue");
+    assert_eq!(std::fs::read(&b_path).unwrap(), b_queue);
+    poll_once("b", sinks.clone(), 1_700_000_100, 221.0).await;
+    for mgdl in [220.0, 221.0] {
+        let (topic, body) = broker.publication("/glucose").await;
+        assert_eq!(topic, "test/b/glucose");
+        assert_eq!(body["source"], "sensor-b");
+        assert_eq!(body["mgdl"], mgdl);
+    }
+    assert!(!b_path.exists(), "B recovered its own batch");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), broker.publication("/glucose"))
+            .await
+            .is_err(),
+        "No legacy or cross-source publications"
+    );
+    assert_eq!(std::fs::read_to_string(&legacy).unwrap(), contents);
+    drop(sinks);
+
+    // Shared and unsuffixed single-instance destinations keep legacy compatibility.
+    for per_source in [false, true] {
+        std::fs::write(&legacy, &contents).unwrap();
+        let mut shared = cfg.clone();
+        shared.sink.mqtt.as_mut().unwrap().per_source = per_source;
+        let sinks = construct(shared, vec![]).await;
+        poll_once("b", sinks, 1_700_000_300, 222.0).await;
+        for mgdl in [99.0, 222.0] {
+            let (topic, body) = broker.publication("/glucose").await;
+            assert_eq!(topic, "test/glucose");
+            assert_eq!(body["mgdl"], mgdl);
+        }
+        assert!(!legacy.exists(), "shared destination drained legacy queue");
+    }
 }

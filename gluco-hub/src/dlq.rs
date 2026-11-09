@@ -14,7 +14,8 @@
 //! DLQ entries.
 //!
 //! On-disk format: one JSON-encoded `Reading` per line at
-//! `<state_dir>/dlq/<sink>.jsonl`. Atomic writes via
+//! `<state_dir>/dlq/<sink>.jsonl` for shared destinations, or
+//! `<sink>-source-<hex-configured-name>.jsonl` for selected destinations. Atomic writes via
 //! `tempfile::NamedTempFile::persist` so a crash mid-write never
 //! corrupts the file. Bounded by `max_entries` — on overflow the oldest
 //! readings (lowest timestamps) are evicted and counted in
@@ -70,6 +71,8 @@ impl DlqSink {
 
     /// Like `open`, but also keeps `shared_depth` updated after every push
     /// so the HTTP status endpoint can expose the live queue depth.
+    /// A selected source uses its own file; legacy queues have unknown ownership
+    /// and are only loaded for shared destinations.
     pub fn open_with_shared_depth(
         inner: Arc<dyn Sink>,
         state_dir: &std::path::Path,
