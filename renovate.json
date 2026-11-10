@@ -25,6 +25,9 @@
     "schedule": ["after 8am and before 6pm on Sunday"]
   },
 
+  "ignorePaths": ["**/node_modules/**", "**/bower_components/**", "**/vendor/**", "**/examples/**", "**/__tests__/**", "**/test/**", "**/__fixtures__/**"],
+  "docker-compose": {"managerFilePatterns": ["/(^|/)nightscout-compose\\.ya?ml$/"]},
+
   "customManagers": [
     {
       "customType": "regex",
@@ -32,6 +35,29 @@
       "matchStrings": ["cargo install (?<depName>cargo-(?:chef|auditable|release)) --version (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) --locked"],
       "datasourceTemplate": "crate",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/ci\\.yml$/"
+      ],
+      "matchStrings": [
+        "docker pull (?<depName>[a-z0-9/-]+):(?<currentValue>[a-zA-Z0-9.\\-_]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^gluco-hub\\/src\\/integration_tests\\/common\\/mosquitto\\.rs$/"
+      ],
+      "matchStrings": [
+        "const MOSQUITTO_TAG: &str =\\s*\"(?<currentValue>[a-zA-Z0-9.\\-_]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "depNameTemplate": "eclipse-mosquitto",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
 
