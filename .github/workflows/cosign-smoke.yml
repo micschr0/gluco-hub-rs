@@ -74,4 +74,4 @@ jobs:
             exit 1
           fi
           cat /tmp/cosign-negative.log
-          grep -Ei 'certificate subject.*(does not match|not match)|identity.*(does not match|not match)' /tmp/cosign-negative.log
+          grep -F 'none of the expected identities matched what was in the certificate' /tmp/cosign-negative.log
