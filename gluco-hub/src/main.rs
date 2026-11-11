@@ -26,6 +26,9 @@ mod integration_tests;
 #[cfg(all(test, feature = "source-llu", feature = "sink-nightscout"))]
 mod e2e_tests;
 
+#[cfg(all(test, feature = "sink-mqtt", feature = "sink-nightscout"))]
+mod sink_routing_tests;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "gluco-hub",
@@ -626,6 +629,12 @@ async fn poll_loop_single(
     poll_status_tx: std::sync::Arc<tokio::sync::watch::Sender<poll_status::PollStatus>>,
     clock_sink: api::ClockSink,
 ) {
+    // Select by configured poller name: the mock fixture's ID is "mock"
+    // while its poller is named "default". Watermarks still use the source ID.
+    let sinks: Vec<_> = sinks
+        .into_iter()
+        .filter(|sink| sink.accepts_source(&name))
+        .collect();
     let source_id = source.id().as_str().to_string();
     let sink_timeout = sink_push_timeout(interval);
     let poll_interval_secs = interval.as_secs();
@@ -923,11 +932,15 @@ async fn build_sinks(
         not(any(feature = "sink-nightscout", feature = "sink-mqtt")),
         allow(unused_mut)
     )]
-    let mut sink_list: Vec<Arc<dyn Sink>> = Vec::new();
+    // ponytail: one optional source per destination; no routing framework.
+    let mut sink_list: Vec<(Arc<dyn Sink>, Option<gluco_hub_core::SourceId>)> = Vec::new();
 
     #[cfg(feature = "sink-nightscout")]
     if let Some(ns) = cfg.sink.nightscout.as_ref() {
-        sink_list.push(build_nightscout_sink(ns).context("build Nightscout sink")?);
+        sink_list.push((
+            build_nightscout_sink(ns).context("build Nightscout sink")?,
+            None,
+        ));
     }
 
     #[cfg(feature = "sink-mqtt")]
@@ -947,13 +960,15 @@ async fn build_sinks(
                 let sink = build_mqtt_sink(mqtt, Some(name), connected_flag)
                     .await
                     .context(format!("build MQTT sink for '{name}'"))?;
-                sink_list.push(sink);
+                let source = gluco_hub_core::SourceId::new(name.as_str())
+                    .context("build MQTT destination SourceId")?;
+                sink_list.push((sink, Some(source)));
             }
         } else {
             let sink = build_mqtt_sink(mqtt, None, Some(Arc::clone(&mqtt_connected)))
                 .await
                 .context("build MQTT sink")?;
-            sink_list.push(sink);
+            sink_list.push((sink, None));
         }
     }
 
@@ -964,18 +979,26 @@ async fn build_sinks(
             sink_cnt = sink_list.len(),
             "dlq: enabled — wrapping sinks with persistent DLQ",
         );
+        if sink_list
+            .iter()
+            .any(|(sink, source)| sink.name() == "mqtt" && source.is_some())
+            && cfg.state.dir.join("dlq/mqtt.jsonl").exists()
+        {
+            warn!("dlq: legacy MQTT queue left untouched because its destination is unknown");
+        }
         sink_list
             .into_iter()
-            .map(|inner| {
+            .map(|(inner, source)| {
                 let dlq = dlq::DlqSink::open_with_shared_depth(
                     inner,
                     &cfg.state.dir,
                     cfg.dlq.max_entries,
                     Some(Arc::clone(&dlq_depth)),
+                    source.as_ref(),
                 )
                 .with_context(|| format!("open DLQ at {}", cfg.state.dir.display()))?;
                 Ok::<Arc<sink_router::SinkRouter>, anyhow::Error>(Arc::new(
-                    sink_router::SinkRouter::new(Arc::new(dlq)),
+                    sink_router::SinkRouter::new(Arc::new(dlq)).with_source(source),
                 ))
             })
             .collect::<Result<_>>()?
@@ -983,7 +1006,7 @@ async fn build_sinks(
         info!("dlq: disabled — sink failures will not be persisted");
         sink_list
             .into_iter()
-            .map(|s| Arc::new(sink_router::SinkRouter::new(s)))
+            .map(|(s, source)| Arc::new(sink_router::SinkRouter::new(s).with_source(source)))
             .collect()
     };
 
