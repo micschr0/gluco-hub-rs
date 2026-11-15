@@ -12,7 +12,7 @@ version: "3.8"
 
 services:
   mongo:
-    image: mongo:6
+    image: mongo:8.0.34@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
     environment:
       # No auth — the test stack is ephemeral and not exposed to the
       # host network beyond the random port testcontainers assigns.
@@ -24,7 +24,7 @@ services:
       retries: 20
 
   nightscout:
-    image: nightscout/cgm-remote-monitor:15.0.3
+    image: nightscout/cgm-remote-monitor:15.0.9@sha256:28ec928271a293745724f934df2ed9f2cddaf66442de734c2780662171b611a2
     depends_on:
       mongo:
         condition: service_healthy

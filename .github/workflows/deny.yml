@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, staging]
   schedule:
     # Re-run daily so new advisories against unchanged dep trees still
     # surface — the runtime tree won't change but the advisory database

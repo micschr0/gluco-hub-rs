@@ -698,6 +698,120 @@ mod tests {
         }
     }
 
+    // Public test identity only; never trust or deploy this key/certificate.
+    const TLS_CERT: &[u8] = include_bytes!("../../../tests/fixtures/tls/untrusted-cert.pem");
+    const TLS_KEY: &[u8] = include_bytes!("../../../tests/fixtures/tls/untrusted-key.pem");
+
+    fn init_tls_test_provider() {
+        // Dev-only testcontainers enables ring alongside production's AWS-LC.
+        // Match the production provider when testing without an HTTP client.
+        let _ =
+            rumqttc::tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
+
+    #[tokio::test]
+    async fn tls_rejects_untrusted_broker_with_handshake_error() {
+        use rumqttc::tokio_rustls::{TlsAcceptor, rustls};
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
+
+        init_tls_test_provider();
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from_pem_slice(TLS_CERT).unwrap()],
+                PrivateKeyDer::from_pem_slice(TLS_KEY).unwrap(),
+            )
+            .unwrap();
+        let acceptor = TlsAcceptor::from(std::sync::Arc::new(server_config));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = cfg(listener.local_addr().unwrap().port(), "tls-test", 0);
+        config.tls = true;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            acceptor.accept(stream).await
+        });
+        let (_client, mut eventloop) = build_client(&config, None).unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(5), eventloop.poll())
+            .await
+            .expect("TLS handshake must finish")
+            .expect_err("untrusted broker must be rejected");
+        assert!(
+            matches!(
+                super::classify_connection_error(&error),
+                super::MqttError::TlsHandshake { .. }
+            ),
+            "expected MQTT002, got {error:?}"
+        );
+        assert!(error.to_string().contains("UnknownIssuer"), "{error}");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    fn mtls_config(cert: &[u8], key: &[u8]) -> (MqttSinkConfig, tempfile::TempDir) {
+        init_tls_test_provider();
+        let files = tempfile::tempdir().unwrap();
+        let cert_path = files.path().join("cert.pem");
+        let key_path = files.path().join("key.pem");
+        std::fs::write(&cert_path, cert).unwrap();
+        std::fs::write(&key_path, key).unwrap();
+        let mut config = cfg(8883, "mtls-test", 0);
+        config.tls = true;
+        config.client_cert_file = Some(cert_path.to_str().unwrap().into());
+        config.client_key_file = Some(key_path.to_str().unwrap().into());
+        (config, files)
+    }
+
+    #[test]
+    fn mtls_loads_operator_certificate_and_private_key() {
+        let (config, _files) = mtls_config(TLS_CERT, TLS_KEY);
+        let (_, eventloop) = build_client(&config, None).unwrap();
+        let rumqttc::Transport::Tls(rumqttc::TlsConfiguration::Rustls(tls)) =
+            eventloop.options.transport()
+        else {
+            panic!("mTLS must use the rustls configuration");
+        };
+        assert!(tls.client_auth_cert_resolver.has_certs());
+    }
+
+    #[test]
+    fn mtls_rejects_missing_certificate_file() {
+        let (config, files) = mtls_config(TLS_CERT, TLS_KEY);
+        std::fs::remove_file(files.path().join("cert.pem")).unwrap();
+        let error = build_client(&config, None)
+            .err()
+            .expect("missing certificate");
+        assert!(matches!(error, super::MqttError::ClientCert { .. }));
+        assert!(error.to_string().contains("read client certificate"));
+    }
+
+    #[test]
+    fn mtls_rejects_malformed_certificate() {
+        let (config, _files) = mtls_config(
+            b"-----BEGIN CERTIFICATE-----\n!\n-----END CERTIFICATE-----",
+            TLS_KEY,
+        );
+        let error = build_client(&config, None)
+            .err()
+            .expect("malformed certificate");
+        assert!(matches!(error, super::MqttError::ClientCert { .. }));
+        assert!(error.to_string().contains("parse client certificate"));
+    }
+
+    #[test]
+    fn mtls_rejects_certificate_instead_of_private_key() {
+        let (config, _files) = mtls_config(TLS_CERT, TLS_CERT);
+        let error = build_client(&config, None)
+            .err()
+            .expect("certificate is not a key");
+        assert!(matches!(error, super::MqttError::ClientCert { .. }));
+        assert!(error.to_string().contains("no private key found"));
+    }
+
     fn one_reading() -> Reading {
         Reading {
             patient_id: PatientId::new("p1").unwrap(),

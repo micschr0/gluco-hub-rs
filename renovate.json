@@ -2,6 +2,8 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:best-practices", ":semanticCommits"],
   "labels": ["dependencies"],
+  "baseBranchPatterns": ["staging"],
+  "automerge": false,
 
   "timezone": "Europe/Berlin",
 
@@ -19,9 +21,19 @@
 
   "lockFileMaintenance": {
     "enabled": true,
-    "automerge": true,
+    "automerge": false,
     "schedule": ["after 8am and before 6pm on Sunday"]
   },
+
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^Dockerfile$/", "/^Taskfile\\.yml$/", "/^CLAUDE\\.md$/", "/^\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": ["cargo install (?<depName>cargo-(?:chef|auditable|release)) --version (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) --locked"],
+      "datasourceTemplate": "crate",
+      "versioningTemplate": "semver"
+    }
+  ],
 
   "packageRules": [
     {
@@ -35,43 +47,43 @@
       "matchManagers": ["cargo"],
       "matchPackageNames": ["tokio*"],
       "groupName": "tokio ecosystem",
-      "automerge": true
+      "automerge": false
     },
     {
       "description": "Group the serde ecosystem into a single PR",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["serde*"],
       "groupName": "serde ecosystem",
-      "automerge": true
+      "automerge": false
     },
     {
       "description": "Group the axum / tower ecosystem into a single PR",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["axum*", "tower*"],
       "groupName": "axum + tower ecosystem",
-      "automerge": true
+      "automerge": false
     },
     {
       "description": "Group the tracing ecosystem into a single PR",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["tracing*"],
       "groupName": "tracing ecosystem",
-      "automerge": true
+      "automerge": false
     },
     {
-      "description": "Automerge non-major Cargo updates after 7d soak (CI is the gate)",
+      "description": "Hold non-major Cargo updates for 7d before the staging review gate",
       "matchManagers": ["cargo"],
       "matchUpdateTypes": ["patch", "minor"],
       "minimumReleaseAge": "7 days",
-      "automerge": true
+      "automerge": false
     },
     {
-      "description": "Group GitHub Actions bumps and automerge non-major. SHA pinning is enforced by helpers:pinGitHubActionDigestsToSemver (via config:best-practices).",
+      "description": "Group GitHub Actions bumps for the staging review gate. SHA pinning is enforced by helpers:pinGitHubActionDigestsToSemver (via config:best-practices).",
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "groupName": "github-actions",
       "minimumReleaseAge": "3 days",
-      "automerge": true
+      "automerge": false
     },
     {
       "description": "Major Cargo updates require manual review",

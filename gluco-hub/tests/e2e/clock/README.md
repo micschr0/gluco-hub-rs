@@ -8,7 +8,7 @@ Rust build.
 
 ```bash
 cd gluco-hub/tests/e2e/clock
-npm install
+npm ci
 npx playwright install --with-deps chromium
 npx playwright test
 ```
@@ -77,16 +77,22 @@ Screenshots are saved to `artifacts/` on every run:
 
 ## CI integration
 
-Add to your CI pipeline after Rust tests:
+The `clock browser (Chromium)` job in `.github/workflows/ci.yml` runs on every
+pull request and on pushes to `main`. It selects Node from `.node-version`,
+installs the lockfile with `npm ci`, runs the URL unit tests, then installs
+Playwright's matching Chromium and OS dependencies before running the browser
+suite. Reports, screenshots and failure output are retained as the
+`clock-browser-evidence` artifact for seven days.
 
-```yaml
-- name: Run Clock View E2E tests
-  working-directory: gluco-hub/tests/e2e/clock
-  run: |
-    npm ci
-    npx playwright install --with-deps chromium
-    npx playwright test
-```
+Baseline revalidated on 2026-11-08: **Node 26 LTS** and **Playwright 1.65.0**
+(`@playwright/test` uses a compatible minor range; `package-lock.json` selects
+the installed version). Use Node 26 locally too; `.node-version` records the
+major and `package.json` declares the supported range. After updating Playwright,
+regenerate the lockfile and reinstall Chromium before running the suite.
+
+- [Node release status](https://nodejs.org/en/about/previous-releases): Node 26 is LTS.
+- [Playwright requirements](https://playwright.dev/docs/intro#system-requirements): Node 26 is supported.
+- [Playwright browsers](https://playwright.dev/docs/browsers): each release needs matching browser binaries.
 
 ## Known limitations / fallback status
 
