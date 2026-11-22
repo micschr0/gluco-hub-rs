@@ -1,0 +1,77 @@
+name: Cosign smoke
+
+on:
+  push:
+    branches: [issue-135-update-cosign-tooling]
+
+permissions: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.6.5
+      - name: Build and push test image
+        id: image
+        env:
+          OWNER: ${{ github.repository_owner }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${OWNER,,}/gluco-hub-cosign-smoke"
+          context=$(mktemp -d)
+          trap 'rm -rf "$context"' EXIT
+          printf '%s\n' "$RUN_ID-$RUN_ATTEMPT" > "$context/smoke-content"
+          printf 'FROM scratch\nCOPY smoke-content /smoke-content\n' > "$context/Dockerfile"
+          docker build -t "$image:$RUN_ID-$RUN_ATTEMPT" "$context"
+          docker push "$image:$RUN_ID-$RUN_ATTEMPT"
+          digest=$(docker buildx imagetools inspect "$image:$RUN_ID-$RUN_ATTEMPT" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Sign and verify
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          cosign version
+          identity="${SERVER}/${REPO}/.github/workflows/cosign-smoke.yml@${REF}"
+          issuer="https://token.actions.githubusercontent.com"
+          echo "Image: ${IMAGE}@${DIGEST}"
+          echo "Identity: ${identity}"
+          echo "Issuer: ${issuer}"
+          cosign sign --yes \
+            -a "repo=${REPO}" \
+            -a "workflow=${WORKFLOW}" \
+            -a "ref=${SHA}" \
+            "${IMAGE}@${DIGEST}"
+          cosign verify --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "${IMAGE}@${DIGEST}"
+          if cosign verify --certificate-identity "${identity}-incorrect" --certificate-oidc-issuer "$issuer" "${IMAGE}@${DIGEST}" > /tmp/cosign-negative.log 2>&1; then
+            cat /tmp/cosign-negative.log
+            exit 1
+          fi
+          cat /tmp/cosign-negative.log
+          grep -F 'none of the expected identities matched what was in the certificate' /tmp/cosign-negative.log

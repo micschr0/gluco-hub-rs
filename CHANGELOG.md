@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Staging PRs run dependency-policy and container integration checks; future Renovate
+  updates target staging and use the existing review merge gate.
+
+- Build and release tasks select explicit Cargo tool versions with locked dependencies;
+  release tasks install the selected cargo-release before running.
+
 ### Added
 
 - **`build_sinks` test coverage** — the sink-wiring entry point had no tests at
@@ -23,6 +31,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   HTML shell (`/clock`, `/`) stays public.
 
 ### Fixed
+
+- Per-source MQTT topics and Home Assistant entities now receive only their selected source; source-scoped retry files prevent cross-source replay after restart and preserve ambiguous legacy queues. Shared MQTT and Nightscout destinations still receive all sources.
+- **TLS advisory assessment** — distinguish rumqttc's unused legacy WebPKI error
+  type from the patched active verifier, correct operator-PEM exposure, and
+  document separate container-test maintenance exceptions. Reject vulnerable
+  WebPKI dependencies outside the reviewed rumqttc path.
 
 - **Multi-source silent data loss** — `SinkRouter` held one watermark per
   sink, but multiple `[source.sources]` entries share the same `SinkRouter`

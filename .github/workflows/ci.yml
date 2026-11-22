@@ -6,7 +6,7 @@ on:
   # Run on every PR regardless of base branch so stacked feature→feature
   # PRs get fmt/clippy/test/build too — formatting drift on an inner branch
   # of a stack must not stay invisible until it retargets main. The heavy
-  # container `integration-tests` job below self-gates to base==main.
+  # container `integration-tests` job below self-gates to main/staging PRs.
   pull_request:
 
 # Cancel superseded runs on the same branch / PR — but never on main,
@@ -51,6 +51,26 @@ jobs:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
+
+  container-build:
+    name: container build (no push)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          # Docker pulls and build-stage downloads need broad registry access.
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build complete runtime image with selected Cargo tools
+        run: docker build --progress=plain --tag gluco-hub:ci .
 
   fmt:
     name: rustfmt
@@ -127,7 +147,7 @@ jobs:
       # The `integration-tests` feature pulls in the testcontainers
       # surface; lint it explicitly too so changes there don't slip
       # past clippy on main pushes (the dedicated `integration-tests`
-      # job below only runs for PRs to main).
+      # job below only runs for PRs to main or staging).
       - name: clippy --features integration-tests
         run: cargo clippy --all-targets --features integration-tests --locked -- -D warnings
 
@@ -163,7 +183,7 @@ jobs:
 
       # Run production features explicitly rather than `--all-features`
       # to avoid pulling in the container-backed `integration-tests`
-      # feature, which has its own dedicated job below (PRs to main only).
+      # feature, which has its own dedicated job below (PRs to main/staging).
       # `cargo check --all-features` (below) still verifies that every
       # feature gate compiles, including integration-tests.
       - name: test (production features)
@@ -204,7 +224,7 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-auditable
-        run: cargo install cargo-auditable --locked
+        run: cargo install cargo-auditable --version 0.7.7 --locked
 
       - name: cargo auditable build --release
         env:
@@ -249,12 +269,14 @@ jobs:
 
   # Container-backed integration tests (Mosquitto, Nightscout + MongoDB,
   # combined fan-out). Slow — ~5 minutes per test boot of NS — so gated
-  # to PRs against `main` only. main pushes get fmt/clippy/test/build
+  # to PRs against `main` or `staging`. main pushes get fmt/clippy/test/build
   # but not this lane.
   integration-tests:
     name: integration-tests (container-backed)
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'staging')
+    # Mongo 8.0.34 rejects the 7.0 kernels on current 24.04/26.04 runners.
+    # Use 22.04 temporarily; see SERVER-121912 and the exit plan in OPERATIONS.md.
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -275,15 +297,17 @@ jobs:
       - name: verify Docker is available
         # GH ubuntu-latest images ship Docker but make the version
         # explicit in the log so failures are easy to root-cause.
-        run: docker version
+        run: |
+          uname -srmo
+          docker version
 
       - name: pre-pull container images
         # Pulling in serial up-front avoids parallel test boots racing
         # for the same image layer.
         run: |
-          docker pull eclipse-mosquitto:2
-          docker pull mongo:6
-          docker pull nightscout/cgm-remote-monitor:15.0.3
+          docker pull eclipse-mosquitto:2.1.2-alpine@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
+          docker pull mongo:8.0.34@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
+          docker pull nightscout/cgm-remote-monitor:15.0.9@sha256:28ec928271a293745724f934df2ed9f2cddaf66442de734c2780662171b611a2
 
       - name: cargo test --features integration-tests
         # --test-threads=1 serialises tests because NS startup is heavy
@@ -316,3 +340,58 @@ jobs:
           min-confidence: medium
           advanced-security: false
           annotations: true
+
+  clock-browser:
+    name: clock browser (Chromium)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: gluco-hub/tests/e2e/clock
+    steps:
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          # GitHub artifacts, Node/npm, Playwright CDNs and runner apt sources.
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
+            *.blob.core.windows.net:443
+            nodejs.org:443
+            registry.npmjs.org:443
+            cdn.playwright.dev:443
+            storage.googleapis.com:443
+            playwright.download.prss.microsoft.com:443
+            cdn.download.prss.microsoft.com:443
+            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            security.ubuntu.com:80
+            packages.microsoft.com:443
+            ppa.launchpadcontent.net:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: gluco-hub/tests/e2e/clock/.node-version
+          package-manager-cache: false
+
+      - run: npm ci
+      - run: npm run test:unit
+      - run: npx playwright install --with-deps chromium
+      - run: npm test -- --project=chromium
+
+      - name: Upload clock browser evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clock-browser-evidence
+          path: |
+            gluco-hub/tests/e2e/clock/artifacts/
+            gluco-hub/tests/e2e/clock/test-results/
+          retention-days: 7

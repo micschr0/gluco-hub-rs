@@ -1,0 +1,20 @@
+{
+  "cargo-chef": {
+    "url": "https://crates.io/api/v1/crates/cargo-chef/0.1.78",
+    "num": "0.1.78",
+    "rust_version": null,
+    "yanked": false
+  },
+  "cargo-auditable": {
+    "url": "https://crates.io/api/v1/crates/cargo-auditable/0.7.7",
+    "num": "0.7.7",
+    "rust_version": null,
+    "yanked": false
+  },
+  "cargo-release": {
+    "url": "https://crates.io/api/v1/crates/cargo-release/1.1.7",
+    "num": "1.1.7",
+    "rust_version": "1.97",
+    "yanked": false
+  }
+}

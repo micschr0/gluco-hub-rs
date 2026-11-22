@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1.28@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 #
 # Multi-stage build for gluco-hub.
 #
@@ -41,7 +41,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends cmake
 
-RUN cargo install cargo-chef --locked && cargo install cargo-auditable --locked
+RUN cargo install cargo-chef --version 0.1.78 --locked \
+    && cargo install cargo-auditable --version 0.7.7 --locked
 
 WORKDIR /src
 

@@ -140,7 +140,7 @@ bump `Cargo.toml` version manually — that drifts from the tag and the
 CHANGELOG.
 
 ```bash
-cargo install cargo-release   # one-time per workstation
+cargo install cargo-release --version 1.1.7 --locked   # one-time per workstation
 task release:dry              # preview today's CalVer cut (dry-run)
 task release                  # cut today's CalVer (commit + tag + push)
 task release:patch            # same-day hotfix (PATCH bump)

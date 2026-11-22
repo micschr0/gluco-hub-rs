@@ -2,7 +2,7 @@
 
 //! Eclipse Mosquitto v5 broker for integration tests.
 //!
-//! `eclipse-mosquitto:2` ships with `allow_anonymous false` by default,
+//! `eclipse-mosquitto:2.1.2-alpine` ships with `allow_anonymous false` by default,
 //! so we mount a minimal `mosquitto.conf` via a temp dir to enable a
 //! single anonymous listener on 1883.
 //!
@@ -18,6 +18,9 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
 const MQTT_PORT: u16 = 1883;
+// Keep this reference in sync with the CI image prepull.
+const MOSQUITTO_TAG: &str =
+    "2.1.2-alpine@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98";
 
 /// Wrapper around a running Mosquitto container plus the temp dir
 /// holding its config. The temp dir lives as long as the container so
@@ -63,22 +66,26 @@ pub async fn start_mosquitto() -> Result<Mosquitto, Box<dyn std::error::Error + 
         writeln!(f, "log_dest stdout")?;
     }
 
-    let host_conf = conf_path
+    let host_config_dir = dir
+        .path()
         .to_str()
-        .ok_or("non-UTF8 path for mosquitto.conf")?
+        .ok_or("non-UTF8 path for mosquitto config directory")?
         .to_string();
 
-    let image = GenericImage::new("eclipse-mosquitto", "2")
+    let image = GenericImage::new("eclipse-mosquitto", MOSQUITTO_TAG)
         .with_exposed_port(MQTT_PORT.tcp())
         .with_wait_for(WaitFor::message_on_stdout("mosquitto version 2."));
 
-    let container = image
-        .with_mount(Mount::bind_mount(
-            host_conf,
-            "/mosquitto/config/mosquitto.conf",
-        ))
-        .start()
-        .await?;
+    // A directory bind also works on runners where O_DIRECTORY incorrectly
+    // succeeds for a single-file mount and Mosquitto rejects it as a directory.
+    let mut request = image.with_mount(Mount::bind_mount(host_config_dir, "/mosquitto/config"));
+    match std::env::var("GLUCO_HUB_TEST_DOCKER_NETWORK") {
+        Ok(network) if !network.is_empty() => request = request.with_network(network),
+        Ok(_) => return Err("GLUCO_HUB_TEST_DOCKER_NETWORK must not be empty".into()),
+        Err(std::env::VarError::NotPresent) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let container = request.start().await?;
 
     let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(MQTT_PORT.tcp()).await?;

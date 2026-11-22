@@ -27,12 +27,14 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
-use gluco_hub_core::{CoreError, Reading, Sink};
+use gluco_hub_core::{CoreError, Reading, Sink, SourceId};
 use tracing::debug;
 
 /// Wraps a `Sink` with a watermark per upstream source.
 pub struct SinkRouter {
     sink: std::sync::Arc<dyn Sink>,
+    /// None for a shared destination; otherwise only this source may push.
+    source: Option<SourceId>,
     /// Highest `timestamp` of any reading successfully pushed to the
     /// wrapped sink, keyed by the `source_id` of the batch it came from.
     /// Keyed per-source (rather than one shared watermark) because
@@ -66,8 +68,22 @@ impl SinkRouter {
     pub fn new(sink: std::sync::Arc<dyn Sink>) -> Self {
         Self {
             sink,
+            source: None,
             watermarks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Retain the configured source name outside any DLQ wrapper.
+    pub fn with_source(mut self, source: Option<SourceId>) -> Self {
+        self.source = source;
+        self
+    }
+
+    /// Shared destinations accept every poller; selected ones accept only their name.
+    pub fn accepts_source(&self, name: &str) -> bool {
+        self.source
+            .as_ref()
+            .is_none_or(|source| source.as_str() == name)
     }
 
     pub fn name(&self) -> &'static str {
